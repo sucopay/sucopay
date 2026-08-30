@@ -7,10 +7,10 @@ English: [CONTRIBUTING.md](CONTRIBUTING.md)
 ```bash
 make dev
 make test
-make lint
+make check
 ```
 
-Go 1.26 以降が必要です。`make dev` は Docker で PostgreSQL を起動します。
+Go 1.26 以降が必要です。`make dev` は Docker、`make check` は golangci-lint を使います。
 
 ## コード、テスト、コミット、コメント
 
@@ -51,7 +51,8 @@ internal/payment/
   ドメインイベントか公開したサービスを経由します。他のコンテキストのリポジトリを直接
   呼ばないでください。
 
-設定の解決を担うファイルの import をテストが読み、短い許可リストの外にあるものを検出します。
+向きはテストで確かめます。パッケージ内のファイルの import を読み、内側のファイルに許して
+いないものがあれば失敗するテストです。`internal/config` にあります。
 
 ## ドメインモデル
 
@@ -142,8 +143,8 @@ func TestObserver_SameTransactionObservedTwiceCreatesOneRow(t *testing.T)
 Conventional Commits に従います（`feat:` `fix:` `docs:` `refactor:` `test:` `chore:`）。
 1 つの PR には 1 つの論理的な変更だけを含めてください。コミット前に `make check` を実行してください。
 
-読み手はリポジトリしか持っていません。開けない文書を根拠として挙げると、理由があることだけを
-伝えて理由そのものを渡さないことになります。
+読み手が参照できるのはリポジトリの中だけです。開けない文書を根拠に挙げても、理由があることが
+分かるだけで、理由そのものは伝わりません。
 
 何を変えたかは diff が示します。本文には、変更の動機、検討して採らなかった案、受け入れた
 トレードオフを書いてください。

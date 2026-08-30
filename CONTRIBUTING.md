@@ -5,12 +5,12 @@
 ## Getting set up
 
 ```bash
-make dev        # start the development stack
+make dev        # run the database in Docker
 make test
-make lint
+make check      # everything CI runs
 ```
 
-Requires Go 1.26+. Docker runs the database that `make dev` starts.
+Requires Go 1.26+. `make dev` needs Docker, and `make check` needs golangci-lint.
 
 ## Code, tests, commits, comments
 
@@ -51,8 +51,8 @@ internal/payment/
 - Keep a context's internals inside it. Cross-context work goes through domain events or an
   exported service, never through another context's repository.
 
-A test reads the imports of the files holding configuration resolution and fails on anything
-outside a short allow list.
+Check the direction with a test that reads a package's imports and fails on anything the
+inner files are not allowed. `internal/config` has one.
 
 ## Domain model
 
