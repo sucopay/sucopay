@@ -131,10 +131,10 @@ func (p Problem) String() string {
 // terminal through a report, where a newline forges a line of its own and an
 // escape sequence is acted on rather than shown.
 //
-// Line and paragraph separators and the bidirectional overrides are here with
-// the C0 and C1 controls: a terminal breaks a line on the first pair and
-// reverses the reading order of what follows on the second, so either one
-// rewrites a report without holding a byte a reader would notice.
+// The line and paragraph separators and the bidirectional overrides are here
+// with the C0 and C1 controls. A terminal breaks a line on the first pair and
+// reverses the reading order on the second, and neither leaves a byte a reader
+// would notice.
 func Quote(s string) string {
 	suspect := func(r rune) bool {
 		switch {

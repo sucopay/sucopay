@@ -53,7 +53,7 @@ func load() (config.Resolved, string, error) {
 
 // unimplemented names the sections a document sets that no part of this build
 // reads. Refusing them in the schema would take the settings out before the
-// code that needs them arrives, so they are accepted and then refused here.
+// code that needs them arrives.
 func unimplemented(r config.Resolved) []string {
 	var out []string
 	for _, path := range []string{"database.managed", "database.url"} {

@@ -20,7 +20,7 @@
 Create a payment, get paid on chain, know when it's final, refund it, and get a webhook.
 suco Pay runs on your own infrastructure. Funds go straight from the customer's wallet to yours.
 
-> **Pre-alpha.** Nothing works yet. Watch the repository or join
+> **Pre-alpha.** Only the CLI exists so far. Watch the repository or join
 > [Discussions](https://github.com/sucopay/sucopay/discussions).
 
 - [ ] Payments: lifecycle, expiry, under/overpayment, idempotency
@@ -43,7 +43,7 @@ go build -o suco ./cmd/suco
 ```
 
 `suco init` writes a `suco.yaml` you can read and commit. `suco doctor` prints the settings it
-resolves to and where each value came from, with secrets shown as set or not set. `suco serve`
+resolved and where each value came from, saying of a secret only whether it is set. `suco serve`
 listens on `http://localhost:7826`, where `/healthz` answers.
 
 An install script and released binaries arrive with the first release. Everything in the list

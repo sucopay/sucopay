@@ -18,11 +18,9 @@ func doctor(_ context.Context, args []string, stdout io.Writer) error {
 		return err
 	}
 
-	// The report is assembled before any of it is written, so that the one
-	// write that reaches the operator is the one whose failure is reported.
 	// What this command produces is the bytes, and half of them is worse than
-	// none: a full disk would otherwise leave a truncated report and a status
-	// saying it went well.
+	// none: a full disk would otherwise leave a truncated report behind a
+	// status saying it went well.
 	var report bytes.Buffer
 	fmt.Fprintf(&report, "%s\n\n", document)
 	tw := tabwriter.NewWriter(&report, 0, 0, 2, ' ', 0)

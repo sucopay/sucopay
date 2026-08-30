@@ -340,8 +340,8 @@ func TestRun_DoctorGivesEverySettingItsValueAndSource(t *testing.T) {
 	if !strings.Contains(stdout, path) {
 		t.Errorf("the report does not name the document it read:\n%s", stdout)
 	}
-	// Every setting the resolver reads. A report that quietly stopped naming
-	// one would leave an operator certain of a value nothing had shown them.
+	// Every setting the resolver reads. A report that stopped naming one would
+	// leave an operator certain of a value nothing had shown them.
 	for _, want := range []struct{ path, value, source string }{
 		{"database.managed", "true", "default"},
 		{"database.url", "not set", "default"},
@@ -364,10 +364,9 @@ func TestRun_DoctorSaysWhetherASecretIsSetAndNeverItsValue(t *testing.T) {
 		document string
 		value    string
 		source   string
-		// A configured database is a section this build refuses, which
-		// TestRun_DoctorPrintsTheReportAndThenRefusesASectionNothingActsOn
-		// covers. The report is written before that, and it is the report
-		// under test here.
+		// Configuring a database is refused, and the refusal is covered
+		// elsewhere. The report is written before it, and the report is
+		// what this case is about.
 		refused bool
 	}{
 		{

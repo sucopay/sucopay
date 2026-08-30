@@ -163,8 +163,7 @@ func (r *reader) text(path, def string) string {
 // rule safe: credentials reach the paths built to hold them or they do not
 // start the instance.
 //
-// The message holds no part of the value. The path is already the one thing
-// the operator needs, and the value is what must not be printed.
+// The message holds no part of the value.
 func (r *reader) refuseCredentials(path, value string) {
 	if Secret(path) {
 		return
