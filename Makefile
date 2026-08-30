@@ -9,8 +9,7 @@ dev: ## Run the development stack (for working on suco Pay itself)
 	docker compose up
 
 .PHONY: build
-build: ## Build sucod and suco
-	go build -o bin/sucod ./cmd/sucod
+build: ## Build suco
 	go build -o bin/suco ./cmd/suco
 
 .PHONY: test

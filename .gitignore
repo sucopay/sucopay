@@ -1,4 +1,4 @@
-# Internal planning material is never committed here. See docs/repository-layout.md
+# Internal planning material is never committed here.
 private/
 strategy/
 *-private.md
@@ -6,7 +6,6 @@ strategy/
 # Secrets
 .env
 .env.*
-!.env.example
 *.pem
 *.key
 secrets.yaml
