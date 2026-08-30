@@ -3,6 +3,8 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -28,15 +30,44 @@ func TestDecode_AcceptsAnEmptyDocument(t *testing.T) {
 	}
 }
 
-func TestDecode_ReportsTheLineOfASyntaxError(t *testing.T) {
-	_, err := config.Decode([]byte("listen:\n  port: 7826\n   base_url: x\n"))
+func TestDecode_ReportsWhereTheSyntaxErrorIs(t *testing.T) {
+	cases := []struct {
+		name string
+		doc  string
+		line int
+	}{
+		{"a key indented under a value", "listen:\n  port: 7826\n   base_url: x\n", 2},
+		{"a sequence that never ends", "a: 1\nb: [\n", 2},
+		{"a key defined twice", "listen:\n  port: 1\nlisten:\n  port: 2\n", 3},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := config.Decode([]byte(c.doc))
 
-	if err == nil {
-		t.Fatal("want an error, got none")
+			if err == nil {
+				t.Fatal("want an error, got none")
+			}
+			if got := errorLine(t, err); got != c.line {
+				t.Errorf("error points at line %d, want %d:\n%v", got, c.line, err)
+			}
+		})
 	}
-	if !strings.Contains(err.Error(), "3") {
-		t.Errorf("error does not name the line:\n%v", err)
+}
+
+// errorLine reads the [line:column] a decoding error opens with. The excerpt
+// that follows carries line numbers of its own, so matching a bare digit
+// anywhere in the message would pass without the position being right.
+func errorLine(t *testing.T, err error) int {
+	t.Helper()
+	m := regexp.MustCompile(`\[(\d+):\d+\]`).FindStringSubmatch(err.Error())
+	if m == nil {
+		t.Fatalf("error carries no [line:column]:\n%v", err)
 	}
+	line, convErr := strconv.Atoi(m[1])
+	if convErr != nil {
+		t.Fatal(convErr)
+	}
+	return line
 }
 
 func TestLoad_ReadsTheDocumentAndResolvesIt(t *testing.T) {

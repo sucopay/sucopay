@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -127,12 +128,13 @@ func TestResolve_ReportsEveryProblemAtOnce(t *testing.T) {
 
 	_, err := config.Resolve(doc, noEnv)
 
-	got := problems(t, err)
-	for _, path := range []string{"listen.port", "listen.base_url", "database", "networks.local.kind"} {
-		wantProblemAt(t, err, path)
+	want := []string{"database", "listen.base_url", "listen.port", "networks.local.kind"}
+	var got []string
+	for _, p := range problems(t, err) {
+		got = append(got, p.Path)
 	}
-	if len(got) < 4 {
-		t.Errorf("got %d problems, want at least 4: %v", len(got), got)
+	if !slices.Equal(got, want) {
+		t.Errorf("problem paths = %v, want exactly %v", got, want)
 	}
 }
 
@@ -200,14 +202,16 @@ func TestResolve_RejectsAPortOutsideTheValidRange(t *testing.T) {
 	}
 }
 
-func TestResolve_RejectsABaseURLWithoutAHost(t *testing.T) {
+func TestResolve_RejectsABaseURLThatIsNotReachableOverHTTP(t *testing.T) {
 	cases := []struct {
 		name string
 		url  string
+		says string
 	}{
-		{"no scheme", "localhost:7826"},
-		{"unsupported scheme", "ftp://localhost:7826"},
-		{"scheme only", "http://"},
+		{"no scheme", "localhost:7826", "scheme"},
+		{"unsupported scheme", "ftp://localhost:7826", "scheme"},
+		{"scheme with no host", "http://", "host"},
+		{"not a URL at all", "://x", "not a URL"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -215,7 +219,10 @@ func TestResolve_RejectsABaseURLWithoutAHost(t *testing.T) {
 
 			_, err := config.Resolve(doc, noEnv)
 
-			wantProblemAt(t, err, "listen.base_url")
+			p := wantProblemAt(t, err, "listen.base_url")
+			if !strings.Contains(p.Message, c.says) {
+				t.Errorf("message %q does not say %q", p.Message, c.says)
+			}
 		})
 	}
 }
@@ -345,7 +352,17 @@ func TestResolve_AcceptsADocumentWhereEveryKeyIsRead(t *testing.T) {
 		"networks": map[string]any{"local": map[string]any{"kind": "simulated", "rpc": ""}},
 	}
 
-	mustResolve(t, doc, noEnv)
+	got := mustResolve(t, doc, noEnv)
+
+	for _, path := range []string{
+		"listen.host", "listen.port", "listen.base_url",
+		"database.managed", "database.url",
+		"networks.local.kind", "networks.local.rpc",
+	} {
+		if _, ok := got.Sources[path]; !ok {
+			t.Errorf("no source recorded for %s", path)
+		}
+	}
 }
 
 func TestResolve_RejectsANetworkNameWithADot(t *testing.T) {
@@ -447,5 +464,115 @@ func TestResolve_StillShowsTheValueAtAPathThatIsNotSecret(t *testing.T) {
 	p := wantProblemAt(t, err, "listen.base_url")
 	if !strings.Contains(p.Message, "gopher://localhost") {
 		t.Errorf("message %q hides a value that is not a secret", p.Message)
+	}
+}
+
+func TestResolve_AcceptsThePortsAtTheEdgesOfTheRange(t *testing.T) {
+	cases := []struct {
+		name string
+		port uint64
+	}{
+		{"the lowest", 1},
+		{"the highest", 65535},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			doc := map[string]any{"listen": map[string]any{"port": c.port}}
+
+			got := mustResolve(t, doc, noEnv).Config
+
+			if got.Listen.Port != int(c.port) {
+				t.Errorf("port = %d, want %d", got.Listen.Port, c.port)
+			}
+		})
+	}
+}
+
+func TestResolve_RejectsAValueOfTheWrongShape(t *testing.T) {
+	cases := []struct {
+		name string
+		doc  map[string]any
+		path string
+	}{
+		{
+			name: "text where a number belongs",
+			doc:  map[string]any{"listen": map[string]any{"port": "seven"}},
+			path: "listen.port",
+		},
+		{
+			name: "a number where text belongs",
+			doc:  map[string]any{"listen": map[string]any{"host": uint64(8080)}},
+			path: "listen.host",
+		},
+		{
+			name: "text that is not true or false",
+			doc:  map[string]any{"database": map[string]any{"managed": "maybe"}},
+			path: "database.managed",
+		},
+		{
+			name: "a number where true or false belongs",
+			doc:  map[string]any{"database": map[string]any{"managed": uint64(1)}},
+			path: "database.managed",
+		},
+		{
+			name: "a list where networks belong",
+			doc:  map[string]any{"networks": []any{"local"}},
+			path: "networks",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := config.Resolve(c.doc, noEnv)
+
+			wantProblemAt(t, err, c.path)
+		})
+	}
+}
+
+func TestResolve_ReadsTrueAndFalseWrittenAsText(t *testing.T) {
+	doc := map[string]any{"database": map[string]any{
+		"managed": "false",
+		"url":     "postgres://localhost/suco",
+	}}
+
+	got := mustResolve(t, doc, noEnv).Config
+
+	if got.Database.Managed {
+		t.Error("database.managed = true, want false")
+	}
+}
+
+func TestResolve_KeepsOneNetworksProblemOutOfAnother(t *testing.T) {
+	doc := map[string]any{"networks": map[string]any{
+		"good": map[string]any{"kind": "simulated"},
+		"bad":  map[string]any{"kind": "carrier-pigeon"},
+	}}
+
+	_, err := config.Resolve(doc, noEnv)
+
+	got := problems(t, err)
+	if len(got) != 1 {
+		t.Fatalf("got %d problems, want 1: %v", len(got), got)
+	}
+	if got[0].Path != "networks.bad.kind" {
+		t.Errorf("path = %q, want networks.bad.kind", got[0].Path)
+	}
+}
+
+func TestResolve_ResolvesEveryNetworkInTheDocument(t *testing.T) {
+	doc := map[string]any{"networks": map[string]any{
+		"one": map[string]any{"kind": "simulated"},
+		"two": map[string]any{"kind": "simulated"},
+	}}
+
+	got := mustResolve(t, doc, noEnv).Config
+
+	if len(got.Networks) != 2 {
+		t.Fatalf("got %d networks, want 2: %v", len(got.Networks), got.Networks)
+	}
+	for _, name := range []string{"one", "two"} {
+		if got.Networks[name].Kind != "simulated" {
+			t.Errorf("networks.%s.kind = %q, want simulated", name, got.Networks[name].Kind)
+		}
 	}
 }

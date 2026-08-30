@@ -85,7 +85,7 @@ func TestOrigin_StringNamesTheOriginAndAdmitsAnUnknownOne(t *testing.T) {
 	}
 }
 
-func TestSecret_HoldsForTheKeyRatherThanTheSupply(t *testing.T) {
+func TestSecret_MatchesTheSecretPathsAndNothingElse(t *testing.T) {
 	cases := []struct {
 		path string
 		want bool

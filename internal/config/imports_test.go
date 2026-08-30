@@ -5,56 +5,41 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
-	"strings"
 	"testing"
 )
 
-// TestImports_TheResolutionFilesTouchNothingOutsideThemselves reads the
-// imports of the files that hold resolution, so that it stays callable without
-// a filesystem, an environment or a parser.
-//
-// The guard covers the import graph alone. A type the parser chooses for a
-// decoded value still reaches resolve.go through the document it is given.
-func TestImports_TheResolutionFilesTouchNothingOutsideThemselves(t *testing.T) {
-	inner := map[string]bool{
-		"config.go":  true,
-		"resolve.go": true,
-		"report.go":  true,
-	}
-	forbidden := []string{
-		"os",
-		"io",
-		"io/fs",
-		"path/filepath",
-		"net/http",
-		"database/sql",
-		"github.com/goccy/go-yaml",
-	}
+// resolutionFiles hold the part of this package that turns a document into a
+// [config.Config]. They stay callable without a filesystem, an environment or a
+// parser, so that their tests can cover every case as data.
+var resolutionFiles = []string{"config.go", "report.go", "resolve.go"}
 
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatal(err)
-	}
+// resolutionImports is everything those files may import. An allow list rather
+// than a block list, because the imports worth catching are the ones nobody
+// thought to forbid: an outward package of this project, or whatever a future
+// dependency is called.
+var resolutionImports = []string{
+	"cmp", "errors", "fmt", "math", "net/url", "slices", "strconv", "strings",
+}
+
+func TestImports_ResolutionReachesNothingOutsideItself(t *testing.T) {
 	seen := 0
-	for _, e := range entries {
-		name := e.Name()
-		if !inner[name] {
+	for _, name := range resolutionFiles {
+		if _, err := os.Stat(name); err != nil {
 			continue
 		}
 		seen++
 		t.Run(name, func(t *testing.T) {
 			for _, path := range importsOf(t, name) {
-				for _, bad := range forbidden {
-					if path == bad || strings.HasPrefix(path, bad+"/") {
-						t.Errorf("imports %q", path)
-					}
+				if !slices.Contains(resolutionImports, path) {
+					t.Errorf("imports %q, which is not on the allow list in this test", path)
 				}
 			}
 		})
 	}
-	if seen != len(inner) {
-		t.Errorf("checked %d files, want %d; the list in this test is stale", seen, len(inner))
+	if seen != len(resolutionFiles) {
+		t.Errorf("checked %d files, want %d; the list in this test is stale", seen, len(resolutionFiles))
 	}
 }
 
