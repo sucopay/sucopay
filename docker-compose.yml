@@ -1,0 +1,27 @@
+# Development stack for working on suco Pay itself. Started by `make dev`.
+#
+# If you are *using* suco Pay rather than changing it, you don't need this file:
+# `suco init` generates a compose.yaml for your own project. See the README.
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: sucopay
+      POSTGRES_PASSWORD: sucopay
+      POSTGRES_DB: sucopay
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sucopay"]
+      interval: 5s
+      retries: 10
+
+  # sucod:
+  #   build: { context: ., dockerfile: deploy/docker/Dockerfile }
+  #   env_file: .env
+  #   ports: ["8080:8080"]
+  #   depends_on:
+  #     postgres: { condition: service_healthy }
+
+volumes:
+  pgdata:

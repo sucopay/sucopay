@@ -1,0 +1,37 @@
+# Internal planning material is never committed here. See docs/repository-layout.md
+private/
+strategy/
+*-private.md
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.yaml
+
+# Build
+/bin/
+/dist/
+/out/
+*.exe
+
+# Go
+*.test
+*.out
+/vendor/
+
+# Node
+node_modules/
+.next/
+.turbo/
+*.tsbuildinfo
+
+# Local
+.DS_Store
+*.log
+.idea/
+.vscode/*
+!.vscode/extensions.json
+tmp/
