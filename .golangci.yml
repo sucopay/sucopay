@@ -4,21 +4,36 @@ linters:
   default: standard
   enable:
     - revive
+    - nolintlint
 
   settings:
     revive:
       rules:
-        # CONTRIBUTING.md requires a doc comment on every exported name.
         - name: exported
         - name: package-comments
         - name: error-strings
         - name: indent-error-flow
         - name: unreachable-code
 
+    nolintlint:
+      # A silencing comment has to say what it is silencing and why, or it
+      # becomes the way findings get made to go away.
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
+
     errcheck:
-      # A failed write to a terminal leaves nothing to do, and a handler that
-      # fails mid-body has already sent its status line. Every other unchecked
-      # error stays a finding.
+      # `x, _ := f()` drops an error as thoroughly as ignoring the call, and it
+      # is the form that actually gets written.
+      check-blank: true
+      # A bare `v := x.(T)` panics on the value the assertion did not expect,
+      # and this code walks a document a stranger wrote.
+      check-type-assertions: true
+
+      # These write the CLI's own output to a terminal. A failed write there
+      # leaves nothing to do and nowhere to report it. The exclusion goes by
+      # function and not by destination, so keep them out of code that writes
+      # anywhere else.
       exclude-functions:
         - fmt.Fprint
         - fmt.Fprintf

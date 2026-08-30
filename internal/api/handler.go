@@ -22,5 +22,5 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.WriteHeader(status)
 	// The status line is already written, so a failed encode cannot become an
 	// error response.
-	_ = json.NewEncoder(w).Encode(body)
+	_ = json.NewEncoder(w).Encode(body) //nolint:errcheck // nothing to report it to
 }
