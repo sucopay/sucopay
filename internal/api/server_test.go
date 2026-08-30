@@ -101,3 +101,21 @@ func TestServer_StopsWhenItsContextIsCancelled(t *testing.T) {
 		t.Fatal("the server did not stop")
 	}
 }
+
+func TestClose_ReleasesThePortWithoutServing(t *testing.T) {
+	s, err := api.Listen("127.0.0.1:0", api.Handler())
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := s.Addr()
+
+	if err := s.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	again, err := api.Listen(addr, api.Handler())
+	if err != nil {
+		t.Fatalf("the port is still held after Close: %v", err)
+	}
+	_ = again.Close()
+}

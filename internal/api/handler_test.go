@@ -9,14 +9,35 @@ import (
 	"github.com/sucopay/sucopay/internal/api"
 )
 
-func TestHandler_HealthzReportsOK(t *testing.T) {
+func TestHandler_AnswersOnlyTheRoutesItServes(t *testing.T) {
+	cases := []struct {
+		name   string
+		method string
+		path   string
+		want   int
+	}{
+		{"health", http.MethodGet, "/healthz", http.StatusOK},
+		{"an unknown path", http.MethodGet, "/nothing-here", http.StatusNotFound},
+		{"the wrong method on a known path", http.MethodPost, "/healthz", http.StatusMethodNotAllowed},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+
+			api.Handler().ServeHTTP(rec, httptest.NewRequest(c.method, c.path, nil))
+
+			if rec.Code != c.want {
+				t.Errorf("status = %d, want %d", rec.Code, c.want)
+			}
+		})
+	}
+}
+
+func TestHandler_HealthzReportsOKAsJSON(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	api.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
-	}
 	if got := rec.Header().Get("Content-Type"); got != "application/json" {
 		t.Errorf("content-type = %q, want application/json", got)
 	}
@@ -26,25 +47,5 @@ func TestHandler_HealthzReportsOK(t *testing.T) {
 	}
 	if body["status"] != "ok" {
 		t.Errorf("status = %q, want ok", body["status"])
-	}
-}
-
-func TestHandler_RejectsAnUnknownPath(t *testing.T) {
-	rec := httptest.NewRecorder()
-
-	api.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/nothing-here", nil))
-
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)
-	}
-}
-
-func TestHandler_RejectsTheWrongMethodOnHealthz(t *testing.T) {
-	rec := httptest.NewRecorder()
-
-	api.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/healthz", nil))
-
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
 	}
 }

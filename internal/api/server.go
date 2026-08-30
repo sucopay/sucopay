@@ -9,9 +9,24 @@ import (
 	"time"
 )
 
-// shutdownGrace is how long in-flight requests have to finish once a shutdown
-// begins.
-const shutdownGrace = 10 * time.Second
+const (
+	// shutdownGrace is how long in-flight requests have to finish once a
+	// shutdown begins.
+	shutdownGrace = 10 * time.Second
+	// readHeaderTimeout bounds a client that opens a connection and sends its
+	// request line slowly.
+	readHeaderTimeout = 10 * time.Second
+	// readTimeout bounds a client that sends its body slowly.
+	readTimeout = 30 * time.Second
+	// writeTimeout bounds a response. Raise it before serving anything that
+	// streams.
+	writeTimeout = 30 * time.Second
+	// idleTimeout bounds a kept-alive connection that sends nothing.
+	idleTimeout = 2 * time.Minute
+	// maxHeaderBytes is well above any header suco Pay reads and well below
+	// what a client can use to occupy memory.
+	maxHeaderBytes = 64 << 10
+)
 
 // Server serves an instance until its context is cancelled.
 type Server struct {
@@ -28,7 +43,14 @@ func Listen(addr string, h http.Handler) (*Server, error) {
 		return nil, fmt.Errorf("listen on %s: %w", addr, err)
 	}
 	return &Server{
-		http:     &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second},
+		http: &http.Server{
+			Handler:           h,
+			ReadHeaderTimeout: readHeaderTimeout,
+			ReadTimeout:       readTimeout,
+			WriteTimeout:      writeTimeout,
+			IdleTimeout:       idleTimeout,
+			MaxHeaderBytes:    maxHeaderBytes,
+		},
 		listener: l,
 	}, nil
 }
@@ -37,8 +59,13 @@ func Listen(addr string, h http.Handler) (*Server, error) {
 // when addr asked for port 0.
 func (s *Server) Addr() string { return s.listener.Addr().String() }
 
-// Run serves until ctx is cancelled, then waits up to ten seconds for
-// in-flight requests before returning.
+// Close releases the bound port without serving. [Server.Run] closes the
+// listener itself, so Close is for a caller that gives up between [Listen] and
+// Run.
+func (s *Server) Close() error { return s.listener.Close() }
+
+// Run serves until ctx is cancelled, then gives in-flight requests
+// shutdownGrace to finish.
 func (s *Server) Run(ctx context.Context) error {
 	served := make(chan error, 1)
 	go func() {
@@ -55,6 +82,8 @@ func (s *Server) Run(ctx context.Context) error {
 	case <-ctx.Done():
 	}
 
+	// Not deriving from ctx: it is already cancelled, which is what brought us
+	// here, and a shutdown deadline taken from it would expire at once.
 	stopping, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownGrace)
 	defer cancel()
 	if err := s.http.Shutdown(stopping); err != nil {
