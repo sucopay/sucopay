@@ -1,7 +1,5 @@
-# Development stack for working on suco Pay itself. Started by `make dev`.
-#
-# If you are *using* suco Pay rather than changing it, you don't need this file:
-# `suco init` generates a compose.yaml for your own project. See the README.
+# A PostgreSQL for working on suco Pay itself. Started by `make dev`.
+# Nothing in the code reads it yet.
 services:
   postgres:
     image: postgres:17-alpine

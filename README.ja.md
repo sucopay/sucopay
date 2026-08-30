@@ -21,17 +21,17 @@ Payment を作成し、オンチェーンで受け取り、確定を判定し、
 suco Pay は自社のインフラで動作します。資金は顧客のウォレットから加盟店のウォレットへ直接
 移動します。
 
-> **開発初期です。** まだ動作しません。進捗は
-> [Discussions](https://github.com/sucopay/sucopay/discussions) でお知らせします。
+> **開発初期です。** 動くのは上の 1 行だけです。
+> [Discussions](https://github.com/sucopay/sucopay/discussions) で進捗を追えます。
 
 - [ ] Payment: ライフサイクル、期限、過払いと不足、冪等性
 - [ ] Finality: ネットワークごとに設定する確定判定
-- [ ] Checkout: ホスト型と埋め込み型
+- [ ] 支払い画面: ホスト型と埋め込み型
 - [ ] Webhook: 署名、リトライ、配送履歴
 - [ ] Refund: 記録と送金指示の作成
-- [ ] Reconciliation: 内部状態とチェーンの定期照合
+- [ ] 照合: 内部状態とチェーンの定期突合
 - [ ] Console: Payment と Transaction の照会、返金、Webhook 配送履歴
-- [ ] CLI: `init` `dev` `listen` `migrate` `doctor` `upgrade`
+- [x] CLI: `init` `serve`
 
 ## インストール
 

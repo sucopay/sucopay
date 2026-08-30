@@ -21,12 +21,6 @@ secrets.yaml
 *.out
 /vendor/
 
-# Node
-node_modules/
-.next/
-.turbo/
-*.tsbuildinfo
-
 # Local
 .DS_Store
 *.log
