@@ -1,15 +1,8 @@
 // Command suco is the suco Pay server and CLI.
 //
-//	suco serve     run the server: HTTP API, chain observer, webhooks, reconciliation
-//	suco init      create a project and a runnable environment
-//	suco dev       run the server locally, with .env loaded and a managed database
-//	suco listen    stream events and forward them to a local endpoint
-//	suco migrate   apply database migrations
-//	suco doctor    report the effective configuration and check connectivity
-//	suco upgrade   check, migrate and update to a newer version
+//	suco serve   run the server
 //
-// The CLI orchestrates; it is not a required control plane. Everything it does
-// can also be done by operating the container image and configuration directly.
+// Configuration comes from suco.yaml, or from the file SUCO_CONFIG names.
 package main
 
 import (
@@ -30,13 +23,20 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
+	err := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
+	switch {
+	case err == nil:
+	case errors.Is(err, errUsage):
+		// run has already written the usage text, so repeating the sentinel
+		// here would put the word "usage" under it.
+		os.Exit(1)
+	default:
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
 }
 
-// errUsage asks main to print how to invoke the command.
+// errUsage reports that run wrote the usage text and the command should fail.
 var errUsage = errors.New("usage")
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {

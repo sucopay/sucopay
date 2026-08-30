@@ -19,7 +19,7 @@ func health(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	// The status line is already written, so a failed encode can only be
-	// logged by the caller's middleware, never turned into an error response.
+	// The status line is already written, so a failed encode cannot become an
+	// error response.
 	_ = json.NewEncoder(w).Encode(body)
 }

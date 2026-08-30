@@ -10,10 +10,12 @@ import (
 	"testing"
 )
 
-// TestImports_TheResolutionFilesTouchNothingOutsideThemselves keeps the
-// dependency rule from CONTRIBUTING.md enforceable rather than reviewable.
-// Resolution has to stay callable without a filesystem, an environment or a
-// parser, so that its tests can cover every case as data.
+// TestImports_TheResolutionFilesTouchNothingOutsideThemselves reads the
+// imports of the files that hold resolution, so that it stays callable without
+// a filesystem, an environment or a parser.
+//
+// The guard covers the import graph alone. A type the parser chooses for a
+// decoded value still reaches resolve.go through the document it is given.
 func TestImports_TheResolutionFilesTouchNothingOutsideThemselves(t *testing.T) {
 	inner := map[string]bool{
 		"config.go":  true,

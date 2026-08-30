@@ -49,9 +49,9 @@ type Source struct {
 	Var string
 }
 
-// Listen is where the instance serves its API, console and checkout. Host is
-// the interface to bind; BaseURL is how others reach the instance, which
-// differs from Host behind a proxy or inside a container.
+// Listen is where the instance serves. Host is the interface to bind; BaseURL
+// is how others reach the instance, which differs from Host behind a proxy or
+// inside a container.
 type Listen struct {
 	Host    string
 	Port    int
@@ -65,7 +65,8 @@ type Database struct {
 	URL     string
 }
 
-// Network is one chain the instance can observe.
+// Network is one chain the instance can observe. Kind names how to reach it;
+// only "simulated", a chain that runs inside the server, is accepted so far.
 type Network struct {
 	Kind string
 	RPC  string
