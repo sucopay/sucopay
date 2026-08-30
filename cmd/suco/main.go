@@ -14,11 +14,27 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"text/tabwriter"
 )
 
 // defaultDocument is where suco looks for its configuration when SUCO_CONFIG
 // does not say otherwise.
 const defaultDocument = "suco.yaml"
+
+// command is one subcommand. Dispatch and the usage text read the same list, so
+// a command cannot exist without being named or be named without existing.
+type command struct {
+	name  string
+	about string
+	run   func(ctx context.Context, args []string, stdout io.Writer) error
+}
+
+var commands = []command{
+	{"init", "write a configuration document", func(_ context.Context, args []string, stdout io.Writer) error {
+		return initialise(args, stdout)
+	}},
+	{"serve", "run the server", serve},
+}
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -46,24 +62,26 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return errUsage
 	}
 	switch args[0] {
-	case "init":
-		return initialise(args[1:], stdout)
-	case "serve":
-		return serve(ctx, args[1:], stdout)
 	case "help", "-h", "--help":
 		usage(stdout)
 		return nil
+	}
+	for _, c := range commands {
+		if c.name == args[0] {
+			return c.run(ctx, args[1:], stdout)
+		}
 	}
 	usage(stderr)
 	return fmt.Errorf("unknown command %q", args[0])
 }
 
 func usage(w io.Writer) {
-	fmt.Fprint(w, `suco Pay
-
-Usage:
-  suco init     write a configuration document
-  suco serve    run the server
-
-`)
+	fmt.Fprint(w, "suco Pay\n\nUsage:\n")
+	tw := tabwriter.NewWriter(w, 0, 0, 4, ' ', 0)
+	for _, c := range commands {
+		fmt.Fprintf(tw, "  suco %s\t%s\n", c.name, c.about)
+	}
+	fmt.Fprintf(tw, "  suco %s\t%s\n", "help", "show this text")
+	tw.Flush()
+	fmt.Fprintln(w)
 }

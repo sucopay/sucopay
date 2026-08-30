@@ -122,18 +122,39 @@ func TestUsage_NamesEveryCommandThatExistsAndNoOther(t *testing.T) {
 
 	// A word boundary rather than surrounding spaces: a command at the end of
 	// a line would slip past a space-delimited search.
-	named := func(command string) bool {
-		return regexp.MustCompile(`\b` + regexp.QuoteMeta(command) + `\b`).MatchString(out.String())
+	named := func(name string) bool {
+		return regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\b`).MatchString(out.String())
 	}
-	for _, present := range []string{"init", "serve"} {
-		if !named(present) {
-			t.Errorf("usage does not name %s:\n%s", present, out.String())
+	for _, c := range commands {
+		if !named(c.name) {
+			t.Errorf("usage does not name %s:\n%s", c.name, out.String())
 		}
+	}
+	if !named("help") {
+		t.Errorf("usage does not name help, which run dispatches:\n%s", out.String())
 	}
 	for _, absent := range []string{"dev", "listen", "migrate", "doctor", "upgrade"} {
 		if named(absent) {
 			t.Errorf("usage names %q, which is not implemented", absent)
 		}
+	}
+}
+
+// TestRun_DispatchesEveryCommandItNames keeps the usage text and the dispatch
+// from drifting apart by reading the same list both do.
+func TestRun_DispatchesEveryCommandItNames(t *testing.T) {
+	for _, c := range commands {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("SUCO_CONFIG", filepath.Join(t.TempDir(), "suco.yaml"))
+			_, _, err := runArgs(t, c.name, "an-argument-no-command-takes")
+
+			if err == nil {
+				t.Fatal("want an error, got none")
+			}
+			if strings.Contains(err.Error(), "unknown command") {
+				t.Errorf("%s is named in the usage text but not dispatched", c.name)
+			}
+		})
 	}
 }
 
@@ -222,5 +243,73 @@ func TestRun_ServeAcceptsWhatInitWrote(t *testing.T) {
 	}
 	if err != nil {
 		t.Fatalf("serve rejected the document init wrote: %v", err)
+	}
+}
+
+func TestRun_InitWritesADocumentOnlyItsOwnerCanRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "suco.yaml")
+	t.Setenv("SUCO_CONFIG", path)
+
+	if _, _, err := runArgs(t, "init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The document is where a database URL and an RPC endpoint end up.
+	if mode := info.Mode().Perm(); mode&0o077 != 0 {
+		t.Errorf("mode = %04o, want nothing for group or other", mode)
+	}
+}
+
+func TestRun_ServeRefusesASectionNothingActsOn(t *testing.T) {
+	cases := []struct {
+		name string
+		doc  string
+		says string
+	}{
+		{"database", "database:\n  managed: true\n", "database"},
+		{"networks", "networks:\n  local:\n    kind: simulated\n", "networks"},
+		{"both", "database:\n  managed: true\nnetworks:\n  local:\n    kind: simulated\n", "database and networks"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "suco.yaml")
+			if err := os.WriteFile(path, []byte(c.doc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("SUCO_CONFIG", path)
+
+			_, _, err := runArgs(t, "serve")
+
+			if err == nil {
+				t.Fatal("want an error, got none")
+			}
+			if !strings.Contains(err.Error(), c.says) {
+				t.Errorf("error does not name the section: %v", err)
+			}
+		})
+	}
+}
+
+func TestRun_ServeAcceptsADocumentWithoutThoseSections(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "suco.yaml")
+	t.Setenv("SUCO_CONFIG", path)
+	if _, _, err := runArgs(t, "init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	// serve blocks once it binds, so the run is cut short by a context that is
+	// already cancelled.
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	var out, errOut bytes.Buffer
+
+	err := run(ctx, []string{"serve"}, &out, &errOut)
+
+	if err != nil && strings.Contains(err.Error(), "does not act on") {
+		t.Fatalf("the document init writes was refused: %v", err)
 	}
 }
