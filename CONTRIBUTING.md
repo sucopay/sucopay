@@ -81,6 +81,17 @@ asset.
 - Never add or compare `Money` values of different assets.
 - JPYC has 18 decimals. Amounts do not fit in `int64`.
 
+## Defaults
+
+Every setting has a default that works for the common case.
+
+- Require a setting only where no default can be right. A destination wallet has no sensible
+  default; a confirmation policy does.
+- Write the values a command chose into the document it generates, including the ones that match
+  the built-in default.
+- Ship the command that produces anything you require. `suco serve` requires `suco.yaml`, so
+  `suco init` writes one.
+
 ## Comments
 
 Follow the [Go doc comment conventions](https://go.dev/doc/comment). Every exported name gets a
