@@ -11,8 +11,8 @@
 コマンドを実行したあとに起きることは、平叙文で事実だけを書きます。
 
 ```
-悪い: これだけで動く。ブラウザで http://localhost:8080 が開くので、そこから Payment を作る。
-良い: Console は http://localhost:8080 で起動します。ここで最初の Payment を作成します。
+悪い: これだけで動く。ブラウザで http://localhost:7826 が開くので、そこから Payment を作る。
+良い: Console は http://localhost:7826 で起動します。ここで最初の Payment を作成します。
 ```
 
 悪い例では、だ・である調に会話体が混ざり、「〜ので、そこから」という口語の接続でつなぎ、
@@ -55,7 +55,7 @@
 
 ```
 悪い: Console が最初の Payment まで案内します。
-良い: Console は http://localhost:8080 で起動します。
+良い: Console は http://localhost:7826 で起動します。
 ```
 
 受動態で主体を隠さないでください。

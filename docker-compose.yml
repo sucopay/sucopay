@@ -19,7 +19,7 @@ services:
   # suco:
   #   build: { context: ., dockerfile: deploy/docker/Dockerfile }
   #   command: serve
-  #   ports: ["8080:8080"]
+  #   ports: ["7826:7826"]
   #   depends_on:
   #     postgres: { condition: service_healthy }
 

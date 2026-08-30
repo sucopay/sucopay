@@ -40,10 +40,10 @@ suco init
 cd suco && suco dev
 ```
 
-The console is served at `http://localhost:8080`. Create your first payment there.
+The console is served at `http://localhost:7826`. Create your first payment there.
 
 ```bash
-curl -X POST http://localhost:8080/v1/payments \
+curl -X POST http://localhost:7826/v1/payments \
   -H 'Authorization: Bearer sk_test_...' \
   -d '{"amount":"1000","asset":"JPYC","network":"polygon"}'
 

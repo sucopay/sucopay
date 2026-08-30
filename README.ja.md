@@ -41,10 +41,10 @@ suco init
 cd suco && suco dev
 ```
 
-Console は `http://localhost:8080` で起動します。ここで最初の Payment を作成します。
+Console は `http://localhost:7826` で起動します。ここで最初の Payment を作成します。
 
 ```bash
-curl -X POST http://localhost:8080/v1/payments \
+curl -X POST http://localhost:7826/v1/payments \
   -H 'Authorization: Bearer sk_test_...' \
   -d '{"amount":"1000","asset":"JPYC","network":"polygon"}'
 
