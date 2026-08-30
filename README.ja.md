@@ -53,8 +53,8 @@ suco listen --forward http://localhost:3000/webhooks
 
 ## コントリビュート
 
-[CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。
-脆弱性の報告は [SECURITY.md](SECURITY.md) の手順に従ってください。
+[CONTRIBUTING.ja.md](CONTRIBUTING.ja.md) を参照してください。
+脆弱性の報告は [SECURITY.ja.md](SECURITY.ja.md) の手順に従ってください。
 
 ## ライセンス
 

@@ -1,12 +1,12 @@
 # Security policy
 
+日本語: [SECURITY.ja.md](SECURITY.ja.md)
+
 ## Reporting a vulnerability
 
 Report privately through GitHub's [private vulnerability
 reporting](https://docs.github.com/code-security/security-advisories/guidance-on-reporting-and-writing/privately-reporting-a-security-vulnerability).
-
-Please don't open a public issue. We'll acknowledge within 3 business days and keep you updated
-as we work on a fix. Credit in the advisory if you want it.
+Do not put vulnerability details in an issue, a discussion, or anywhere else public.
 
 ## Scope
 
@@ -18,10 +18,15 @@ Reports we most want:
 - private key or secret exposure
 - idempotency failures leading to double processing
 - reorg or confirmation-policy handling that can be gamed
+- the install script, release artifacts, and the container image
+- defaults that are unsafe before an operator changes anything
+- a dependency or build step that could inject code into a release
 
-Out of scope: findings against a deployment's own misconfiguration, and anything requiring
-control of the host.
+Out of scope:
+
+- configuration mistakes in one deployment
+- attacks that need existing control of the host, the database, or the wallet keys
 
 ## Supported versions
 
-Pre-alpha. Only `main` is supported.
+Only `main` receives fixes.
