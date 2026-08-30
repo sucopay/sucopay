@@ -32,7 +32,7 @@ func Resolve(doc map[string]any, env Lookup) (Resolved, error) {
 
 	host := r.text("listen.host", DefaultHost)
 	port := r.integer("listen.port", DefaultPort)
-	baseURL := r.text("listen.base_url", fmt.Sprintf("http://localhost:%d", port))
+	baseURL := r.text("listen.base_url", defaultBaseURL(port))
 	managed := r.boolean("database.managed", true)
 	dbURL := r.text("database.url", "")
 	networks := r.networks()
@@ -64,6 +64,11 @@ type reader struct {
 
 func (r *reader) fail(path, format string, args ...any) {
 	r.problems = append(r.problems, Problem{Path: path, Message: fmt.Sprintf(format, args...)})
+}
+
+// defaultBaseURL is how others reach an instance that says nothing about it.
+func defaultBaseURL(port int) string {
+	return fmt.Sprintf("http://localhost:%d", port)
 }
 
 // shown returns a value as it may appear in a problem. A problem reaches an
