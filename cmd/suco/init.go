@@ -24,7 +24,10 @@ func initialise(args []string, stdout io.Writer) error {
 
 	// O_EXCL rather than a plain create: the check above leaves a window, and
 	// overwriting a document someone has edited is not recoverable.
-	f, err := os.OpenFile(document, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	// 0600 rather than 0644: this is the file an operator adds a database URL
+	// and an RPC endpoint to, and it is read on a host that may have other
+	// accounts on it.
+	f, err := os.OpenFile(document, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return fmt.Errorf("configuration document: %w", err)
 	}
