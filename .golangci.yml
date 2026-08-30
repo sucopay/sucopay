@@ -28,7 +28,8 @@ linters:
     rules:
       - path: _test\.go$
         linters:
-          # Tests report failures through t.Fatal; a deferred Close in a test
-          # has nothing to report to.
+          # Tests report failures through t.Fatal, so a deferred Close has
+          # nothing to report to, and a test helper is not part of any
+          # package's documented surface.
           - errcheck
           - revive
