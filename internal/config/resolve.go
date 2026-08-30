@@ -2,6 +2,7 @@ package config
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"math"
 	"net/url"
@@ -65,6 +66,16 @@ func (r *reader) fail(path, format string, args ...any) {
 	r.problems = append(r.problems, Problem{Path: path, Message: fmt.Sprintf(format, args...)})
 }
 
+// shown returns a value as it may appear in a problem. A problem reaches an
+// operator's terminal and their logs, so a value at a secret path is replaced
+// rather than quoted.
+func shown(path string, v any) any {
+	if Secret(path) {
+		return "(secret)"
+	}
+	return v
+}
+
 // failed reports whether a path already has a problem. Validation skips such a
 // path so that a report holds causes rather than their consequences: a
 // reference that did not resolve leaves the key empty, and saying it is also
@@ -95,7 +106,7 @@ func (r *reader) raw(path string) (any, bool) {
 	name, isRef, err := reference(s)
 	switch {
 	case err != nil:
-		r.fail(path, "%s", err)
+		r.fail(path, "%s: %v", err, shown(path, s))
 		return nil, false
 	case !isRef:
 		r.sources[path] = Source{Origin: FromFile}
@@ -121,7 +132,7 @@ func (r *reader) text(path, def string) string {
 	}
 	s, isString := v.(string)
 	if !isString {
-		r.fail(path, "want text, got %s", kindOf(v))
+		r.fail(path, "want text, got %s: %v", kindOf(v), shown(path, v))
 		return def
 	}
 	return s
@@ -134,7 +145,7 @@ func (r *reader) integer(path string, def int) int {
 	}
 	n, err := toInt(v)
 	if err != nil {
-		r.fail(path, "%s%s", err, suppliedBy(r.sources[path]))
+		r.fail(path, "%s: %v%s", err, shown(path, v), suppliedBy(r.sources[path]))
 		return def
 	}
 	return n
@@ -151,12 +162,12 @@ func (r *reader) boolean(path string, def bool) bool {
 	case string:
 		parsed, err := strconv.ParseBool(b)
 		if err != nil {
-			r.fail(path, "want true or false, got %q%s", b, suppliedBy(r.sources[path]))
+			r.fail(path, "want true or false: %v%s", shown(path, b), suppliedBy(r.sources[path]))
 			return def
 		}
 		return parsed
 	}
-	r.fail(path, "want true or false, got %s", kindOf(v))
+	r.fail(path, "want true or false, got %s: %v", kindOf(v), shown(path, v))
 	return def
 }
 
@@ -211,7 +222,7 @@ func (r *reader) validate(cfg Config) {
 	for name, n := range cfg.Networks {
 		path := "networks." + name + ".kind"
 		if !r.failed(path) && !slices.Contains(knownNetworkKinds, n.Kind) {
-			r.fail(path, "unknown kind %q, want one of %s", n.Kind, strings.Join(knownNetworkKinds, ", "))
+			r.fail(path, "unknown kind %v, want one of %s", shown(path, n.Kind), strings.Join(knownNetworkKinds, ", "))
 		}
 	}
 }
@@ -230,6 +241,10 @@ func (r *reader) reportUnknownKeys() {
 // leaves lists the dotted path of every value in doc that is not itself a
 // mapping. An empty mapping counts as a leaf so that it is not silently
 // accepted.
+//
+// A secret path is a leaf whatever it holds. Descending into one would put the
+// keys a secret is written with into a report, which is the shape of the secret
+// even when its values are hidden.
 func leaves(doc map[string]any, prefix string) []string {
 	var out []string
 	for key, value := range doc {
@@ -237,7 +252,8 @@ func leaves(doc map[string]any, prefix string) []string {
 		if prefix != "" {
 			path = prefix + "." + key
 		}
-		if nested, ok := value.(map[string]any); ok && len(nested) > 0 {
+		nested, isMapping := value.(map[string]any)
+		if isMapping && len(nested) > 0 && !Secret(path) {
 			out = append(out, leaves(nested, path)...)
 			continue
 		}
@@ -247,14 +263,15 @@ func leaves(doc map[string]any, prefix string) []string {
 }
 
 func (r *reader) validateBaseURL(raw string) {
+	const path = "listen.base_url"
 	u, err := url.Parse(raw)
 	switch {
 	case err != nil:
-		r.fail("listen.base_url", "not a URL: %q", raw)
+		r.fail(path, "not a URL: %v", shown(path, raw))
 	case u.Scheme != "http" && u.Scheme != "https":
-		r.fail("listen.base_url", "needs an http or https scheme: %q", raw)
+		r.fail(path, "needs an http or https scheme: %v", shown(path, raw))
 	case u.Host == "":
-		r.fail("listen.base_url", "has no host: %q", raw)
+		r.fail(path, "has no host: %v", shown(path, raw))
 	}
 }
 
@@ -267,20 +284,28 @@ func (r *reader) validateDatabase(db Database) {
 	}
 }
 
+var (
+	errPartialReference = errors.New("a reference has to be the whole value")
+	errEmptyReference   = errors.New("a reference names no variable")
+)
+
 // reference reports the variable named by a whole ${NAME} string. A string
 // that mixes literal text with a reference is an error rather than a partial
 // expansion, so that every value has exactly one origin.
+//
+// The errors carry no part of the string. The caller holds the path and is the
+// only one that can decide whether the value may be shown.
 func reference(s string) (name string, isRef bool, err error) {
 	i := strings.Index(s, "${")
 	if i < 0 {
 		return "", false, nil
 	}
 	if i != 0 || !strings.HasSuffix(s, "}") || strings.Count(s, "${") > 1 {
-		return "", false, fmt.Errorf("a reference has to be the whole value: %q", s)
+		return "", false, errPartialReference
 	}
 	name = s[2 : len(s)-1]
 	if name == "" {
-		return "", false, fmt.Errorf("empty reference: %q", s)
+		return "", false, errEmptyReference
 	}
 	return name, true, nil
 }
@@ -300,6 +325,11 @@ func walk(doc map[string]any, path []string) (any, bool) {
 	return cur, true
 }
 
+var (
+	errNotWhole  = errors.New("want a whole number")
+	errNotNumber = errors.New("want a number")
+)
+
 func toInt(v any) (int, error) {
 	switch n := v.(type) {
 	case int:
@@ -308,18 +338,18 @@ func toInt(v any) (int, error) {
 		return int(n), nil
 	case uint64:
 		if n > math.MaxInt64 {
-			return 0, fmt.Errorf("want a number, got %d", n)
+			return 0, errNotNumber
 		}
 		return int(n), nil
 	case float64:
 		if n != float64(int(n)) {
-			return 0, fmt.Errorf("want a whole number, got %v", n)
+			return 0, errNotWhole
 		}
 		return int(n), nil
 	case string:
 		parsed, err := strconv.Atoi(n)
 		if err != nil {
-			return 0, fmt.Errorf("want a number, got %q", n)
+			return 0, errNotNumber
 		}
 		return parsed, nil
 	}

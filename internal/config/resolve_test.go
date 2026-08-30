@@ -376,3 +376,76 @@ func TestResolve_DoesNotCallTheKeysOfARejectedNetworkUnknown(t *testing.T) {
 		t.Errorf("path = %q, want networks", got[0].Path)
 	}
 }
+
+// TestResolve_NeverPutsASecretInAProblem walks the paths marked secret through
+// every failure that embeds a value. A problem reaches a terminal and a log, so
+// one carrying a DSN password or an RPC key is a disclosure.
+func TestResolve_NeverPutsASecretInAProblem(t *testing.T) {
+	const secret = "hunter2-do-not-print"
+
+	cases := []struct {
+		name string
+		doc  map[string]any
+		env  config.Lookup
+	}{
+		{
+			name: "a reference mixed with literal text at database.url",
+			doc: map[string]any{"database": map[string]any{
+				"managed": false,
+				"url":     "postgres://user:" + secret + "@db/suco${SUFFIX}",
+			}},
+			env: noEnv,
+		},
+		{
+			name: "a reference mixed with literal text at networks rpc",
+			doc: map[string]any{"networks": map[string]any{
+				"local": map[string]any{"kind": "simulated", "rpc": "https://rpc/" + secret + "${X}"},
+			}},
+			env: noEnv,
+		},
+		{
+			name: "a reference naming no variable",
+			doc: map[string]any{"database": map[string]any{
+				"managed": false,
+				"url":     "${}" + secret,
+			}},
+			env: noEnv,
+		},
+		{
+			name: "a value of the wrong type at a secret path",
+			doc: map[string]any{"database": map[string]any{
+				"managed": false,
+				"url":     map[string]any{secret: "x"},
+			}},
+			env: noEnv,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := config.Resolve(c.doc, c.env)
+
+			if err == nil {
+				t.Fatal("want a problem, got none")
+			}
+			if strings.Contains(err.Error(), secret) {
+				t.Fatalf("the secret reached the problem:\n%v", err)
+			}
+			for _, p := range problems(t, err) {
+				if strings.Contains(p.String(), secret) {
+					t.Fatalf("the secret reached %s", p.Path)
+				}
+			}
+		})
+	}
+}
+
+func TestResolve_StillShowsTheValueAtAPathThatIsNotSecret(t *testing.T) {
+	doc := map[string]any{"listen": map[string]any{"base_url": "gopher://localhost"}}
+
+	_, err := config.Resolve(doc, noEnv)
+
+	p := wantProblemAt(t, err, "listen.base_url")
+	if !strings.Contains(p.Message, "gopher://localhost") {
+		t.Errorf("message %q hides a value that is not a secret", p.Message)
+	}
+}
