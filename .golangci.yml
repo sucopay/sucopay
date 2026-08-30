@@ -15,8 +15,20 @@ linters:
         - name: indent-error-flow
         - name: unreachable-code
 
+    errcheck:
+      # A failed write to a terminal leaves nothing to do, and a handler that
+      # fails mid-body has already sent its status line. Every other unchecked
+      # error stays a finding.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+
   exclusions:
     rules:
       - path: _test\.go$
         linters:
+          # Tests report failures through t.Fatal; a deferred Close in a test
+          # has nothing to report to.
+          - errcheck
           - revive
