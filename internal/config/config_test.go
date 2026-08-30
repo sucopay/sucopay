@@ -1,0 +1,110 @@
+package config_test
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/sucopay/sucopay/internal/config"
+)
+
+func TestProblems_ErrorListsEveryProblemOnePerLine(t *testing.T) {
+	cases := []struct {
+		name string
+		in   config.Problems
+		want []string
+	}{
+		{
+			name: "one problem stays on a single line",
+			in:   config.Problems{{Path: "listen.port", Message: "outside 1-65535: 0"}},
+			want: []string{"configuration: listen.port: outside 1-65535: 0"},
+		},
+		{
+			name: "several are counted and indented",
+			in: config.Problems{
+				{Path: "listen.port", Message: "m1"},
+				{Path: "database.url", Message: "m2"},
+			},
+			want: []string{"configuration: 2 problems", "  listen.port: m1", "  database.url: m2"},
+		},
+		{
+			name: "a problem without a path shows only its message",
+			in:   config.Problems{{Message: "the document is not a mapping"}},
+			want: []string{"configuration: the document is not a mapping"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := strings.Split(c.in.Error(), "\n")
+
+			if len(got) != len(c.want) {
+				t.Fatalf("got %d lines, want %d:\n%s", len(got), len(c.want), c.in.Error())
+			}
+			for i := range c.want {
+				if got[i] != c.want[i] {
+					t.Errorf("line %d = %q, want %q", i, got[i], c.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestProblem_StringCarriesThePathWhenThereIsOne(t *testing.T) {
+	cases := []struct {
+		name string
+		in   config.Problem
+		want string
+	}{
+		{"with a path", config.Problem{Path: "listen.port", Message: "empty"}, "listen.port: empty"},
+		{"without one", config.Problem{Message: "empty"}, "empty"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.in.String(); got != c.want {
+				t.Errorf("String() = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestOrigin_StringNamesTheOriginAndAdmitsAnUnknownOne(t *testing.T) {
+	cases := []struct {
+		in   config.Origin
+		want string
+	}{
+		{config.FromDefault, "default"},
+		{config.FromFile, "file"},
+		{config.FromEnv, "env"},
+		{config.Origin(9), "Origin(9)"},
+	}
+	for _, c := range cases {
+		t.Run(c.want, func(t *testing.T) {
+			if got := c.in.String(); got != c.want {
+				t.Errorf("String() = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestSecret_HoldsForTheKeyRatherThanTheSupply(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"database.url", true},
+		{"networks.local.rpc", true},
+		{"networks.polygon.rpc", true},
+		{"listen.port", false},
+		{"listen.host", false},
+		{"database.managed", false},
+		{"networks.local.kind", false},
+		{"networks.rpc", false},
+		{"database", false},
+	}
+	for _, c := range cases {
+		t.Run(c.path, func(t *testing.T) {
+			if got := config.Secret(c.path); got != c.want {
+				t.Errorf("Secret(%q) = %v, want %v", c.path, got, c.want)
+			}
+		})
+	}
+}

@@ -18,38 +18,55 @@ func lineAt(t *testing.T, lines []config.ReportLine, path string) config.ReportL
 	return config.ReportLine{}
 }
 
-func TestReport_SecretValueNeverAppears(t *testing.T) {
+func TestReport_ReducesASecretToWhetherItIsSet(t *testing.T) {
 	const dsn = "postgres://user:hunter2@db.internal/suco"
-	doc := map[string]any{"database": map[string]any{
-		"managed": false,
-		"url":     "${SUCO_DATABASE_URL}",
-	}}
-	env := envOf(map[string]string{"SUCO_DATABASE_URL": dsn})
+	cases := []struct {
+		name string
+		doc  map[string]any
+		env  config.Lookup
+		want string
+	}{
+		{
+			name: "supplied",
+			doc:  map[string]any{"database": map[string]any{"managed": false, "url": "${SUCO_DATABASE_URL}"}},
+			env:  envOf(map[string]string{"SUCO_DATABASE_URL": dsn}),
+			want: "set",
+		},
+		{
+			name: "absent",
+			doc:  map[string]any{},
+			env:  noEnv,
+			want: "not set",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			lines := mustResolve(t, c.doc, c.env).Report()
 
-	lines := mustResolve(t, doc, env).Report()
-
-	line := lineAt(t, lines, "database.url")
-	if !line.Secret {
-		t.Error("database.url is not marked secret")
-	}
-	if line.Value != "set" {
-		t.Errorf("value = %q, want %q", line.Value, "set")
-	}
-	for _, l := range lines {
-		if strings.Contains(l.Value, "hunter2") {
-			t.Fatalf("the secret appears in the report at %s", l.Path)
-		}
-	}
-	if line.Source.Var != "SUCO_DATABASE_URL" {
-		t.Errorf("source var = %q, want the variable name to stay visible", line.Source.Var)
+			line := lineAt(t, lines, "database.url")
+			if !line.Secret {
+				t.Error("database.url is not marked secret")
+			}
+			if line.Value != c.want {
+				t.Errorf("value = %q, want %q", line.Value, c.want)
+			}
+			for _, l := range lines {
+				if strings.Contains(l.Value, "hunter2") {
+					t.Fatalf("the secret appears in the report at %s", l.Path)
+				}
+			}
+		})
 	}
 }
 
-func TestReport_SaysWhenASecretIsAbsent(t *testing.T) {
-	lines := mustResolve(t, map[string]any{}, noEnv).Report()
+func TestReport_KeepsTheVariableNameOfASecretVisible(t *testing.T) {
+	doc := map[string]any{"database": map[string]any{"managed": false, "url": "${SUCO_DATABASE_URL}"}}
+	env := envOf(map[string]string{"SUCO_DATABASE_URL": "postgres://localhost/suco"})
 
-	if got := lineAt(t, lines, "database.url").Value; got != "not set" {
-		t.Errorf("value = %q, want %q", got, "not set")
+	lines := mustResolve(t, doc, env).Report()
+
+	if got := lineAt(t, lines, "database.url").Source.Var; got != "SUCO_DATABASE_URL" {
+		t.Errorf("source var = %q, want the variable name to stay visible", got)
 	}
 }
 

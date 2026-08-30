@@ -1,7 +1,9 @@
 package config
 
 import (
+	"cmp"
 	"fmt"
+	"math"
 	"net/url"
 	"slices"
 	"strconv"
@@ -25,7 +27,7 @@ var knownNetworkKinds = []string{"simulated"}
 // form ${NAME}. Resolve returns a problem for a reference whose variable is
 // unset or empty, and for a string that mixes literal text with a reference.
 func Resolve(doc map[string]any, env Lookup) (Resolved, error) {
-	r := &reader{doc: doc, env: env, sources: map[string]Source{}}
+	r := &reader{doc: doc, env: env, sources: map[string]Source{}, seen: map[string]bool{}}
 
 	host := r.text("listen.host", DefaultHost)
 	port := r.integer("listen.port", DefaultPort)
@@ -40,10 +42,11 @@ func Resolve(doc map[string]any, env Lookup) (Resolved, error) {
 		Networks: networks,
 	}
 	r.validate(cfg)
+	r.reportUnknownKeys()
 
 	if len(r.problems) > 0 {
 		slices.SortStableFunc(r.problems, func(a, b Problem) int {
-			return strings.Compare(a.Path, b.Path)
+			return cmp.Compare(a.Path, b.Path)
 		})
 		return Resolved{}, Problems(r.problems)
 	}
@@ -54,6 +57,7 @@ type reader struct {
 	doc      map[string]any
 	env      Lookup
 	sources  map[string]Source
+	seen     map[string]bool
 	problems []Problem
 }
 
@@ -77,6 +81,7 @@ func (r *reader) failed(path string) bool {
 // raw returns the value at a dotted path, after resolving a reference. The
 // second result is false when the key is absent or the reference failed.
 func (r *reader) raw(path string) (any, bool) {
+	r.seen[path] = true
 	v, ok := walk(r.doc, strings.Split(path, "."))
 	if !ok {
 		r.sources[path] = Source{Origin: FromDefault}
@@ -167,6 +172,21 @@ func (r *reader) networks() map[string]Network {
 	}
 	out := make(map[string]Network, len(entries))
 	for name := range entries {
+		// A name becomes a segment of the dotted paths that carry provenance
+		// and mark secrets, so a dot inside one would split it in two and take
+		// networks.*.rpc out of the secret set.
+		if strings.Contains(name, ".") {
+			r.fail("networks", "network name %q contains a dot", name)
+			// Nothing under a rejected name is read, and reporting each of its
+			// keys as unknown would bury the name that caused it.
+			for _, path := range leaves(r.doc, "") {
+				if strings.HasPrefix(path, "networks."+name+".") {
+					r.seen[path] = true
+				}
+			}
+			continue
+		}
+		r.seen["networks."+name] = true
 		out[name] = Network{
 			Kind: r.text("networks."+name+".kind", ""),
 			RPC:  r.text("networks."+name+".rpc", ""),
@@ -194,6 +214,36 @@ func (r *reader) validate(cfg Config) {
 			r.fail(path, "unknown kind %q, want one of %s", n.Kind, strings.Join(knownNetworkKinds, ", "))
 		}
 	}
+}
+
+// reportUnknownKeys names every leaf in the document that nothing read. A
+// misspelt key would otherwise leave its default in place and say nothing,
+// which is the mistake a configuration document invites most.
+func (r *reader) reportUnknownKeys() {
+	for _, path := range leaves(r.doc, "") {
+		if !r.seen[path] {
+			r.fail(path, "unknown key")
+		}
+	}
+}
+
+// leaves lists the dotted path of every value in doc that is not itself a
+// mapping. An empty mapping counts as a leaf so that it is not silently
+// accepted.
+func leaves(doc map[string]any, prefix string) []string {
+	var out []string
+	for key, value := range doc {
+		path := key
+		if prefix != "" {
+			path = prefix + "." + key
+		}
+		if nested, ok := value.(map[string]any); ok && len(nested) > 0 {
+			out = append(out, leaves(nested, path)...)
+			continue
+		}
+		out = append(out, path)
+	}
+	return out
 }
 
 func (r *reader) validateBaseURL(raw string) {
@@ -257,6 +307,9 @@ func toInt(v any) (int, error) {
 	case int64:
 		return int(n), nil
 	case uint64:
+		if n > math.MaxInt64 {
+			return 0, fmt.Errorf("want a number, got %d", n)
+		}
 		return int(n), nil
 	case float64:
 		if n != float64(int(n)) {

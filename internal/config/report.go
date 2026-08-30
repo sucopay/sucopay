@@ -1,9 +1,9 @@
 package config
 
 import (
+	"cmp"
 	"slices"
 	"strconv"
-	"strings"
 )
 
 // ReportLine is one setting as it appears to an operator.
@@ -46,6 +46,6 @@ func (r Resolved) Report() []ReportLine {
 			Secret: secret,
 		})
 	}
-	slices.SortFunc(lines, func(a, b ReportLine) int { return strings.Compare(a.Path, b.Path) })
+	slices.SortFunc(lines, func(a, b ReportLine) int { return cmp.Compare(a.Path, b.Path) })
 	return lines
 }

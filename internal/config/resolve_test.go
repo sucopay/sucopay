@@ -81,32 +81,32 @@ func TestResolve_BaseURLFollowsThePortWhenOnlyThePortIsSet(t *testing.T) {
 	}
 }
 
-func TestResolve_UnsetReferenceIsAProblem(t *testing.T) {
-	doc := map[string]any{"database": map[string]any{
-		"managed": false,
-		"url":     "${SUCO_DATABASE_URL}",
-	}}
-
-	_, err := config.Resolve(doc, noEnv)
-
-	p := wantProblemAt(t, err, "database.url")
-	if !strings.Contains(p.Message, "SUCO_DATABASE_URL") {
-		t.Errorf("message %q does not name the variable", p.Message)
+func TestResolve_AReferenceThatDoesNotResolveIsAProblem(t *testing.T) {
+	cases := []struct {
+		name string
+		env  config.Lookup
+		says string
+	}{
+		{"unset", noEnv, "not set"},
+		{"empty", envOf(map[string]string{"SUCO_DATABASE_URL": ""}), "empty"},
 	}
-}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			doc := map[string]any{"database": map[string]any{
+				"managed": false,
+				"url":     "${SUCO_DATABASE_URL}",
+			}}
 
-func TestResolve_EmptyReferenceIsAProblem(t *testing.T) {
-	doc := map[string]any{"database": map[string]any{
-		"managed": false,
-		"url":     "${SUCO_DATABASE_URL}",
-	}}
-	env := envOf(map[string]string{"SUCO_DATABASE_URL": ""})
+			_, err := config.Resolve(doc, c.env)
 
-	_, err := config.Resolve(doc, env)
-
-	p := wantProblemAt(t, err, "database.url")
-	if !strings.Contains(p.Message, "empty") {
-		t.Errorf("message %q does not say the variable is empty", p.Message)
+			p := wantProblemAt(t, err, "database.url")
+			if !strings.Contains(p.Message, "SUCO_DATABASE_URL") {
+				t.Errorf("message %q does not name the variable", p.Message)
+			}
+			if !strings.Contains(p.Message, c.says) {
+				t.Errorf("message %q does not say %q", p.Message, c.says)
+			}
+		})
 	}
 }
 
@@ -302,5 +302,77 @@ func TestResolve_ReportsTheCauseNotItsConsequence(t *testing.T) {
 	}
 	if strings.Contains(got[0].Message, "required") {
 		t.Errorf("message %q reports the consequence instead of the cause", got[0].Message)
+	}
+}
+
+func TestResolve_NamesAKeyNothingReads(t *testing.T) {
+	cases := []struct {
+		name string
+		doc  map[string]any
+		path string
+	}{
+		{
+			name: "misspelt inside a section",
+			doc:  map[string]any{"listen": map[string]any{"prot": uint64(9000)}},
+			path: "listen.prot",
+		},
+		{
+			name: "at the top level",
+			doc:  map[string]any{"lisen": map[string]any{"port": uint64(9000)}},
+			path: "lisen.port",
+		},
+		{
+			name: "inside a network",
+			doc: map[string]any{"networks": map[string]any{
+				"local": map[string]any{"kind": "simulated", "url": "x"},
+			}},
+			path: "networks.local.url",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := config.Resolve(c.doc, noEnv)
+
+			wantProblemAt(t, err, c.path)
+		})
+	}
+}
+
+func TestResolve_AcceptsADocumentWhereEveryKeyIsRead(t *testing.T) {
+	doc := map[string]any{
+		"listen":   map[string]any{"host": "0.0.0.0", "port": uint64(9000), "base_url": "https://pay.example"},
+		"database": map[string]any{"managed": true},
+		"networks": map[string]any{"local": map[string]any{"kind": "simulated", "rpc": ""}},
+	}
+
+	mustResolve(t, doc, noEnv)
+}
+
+func TestResolve_RejectsANetworkNameWithADot(t *testing.T) {
+	doc := map[string]any{"networks": map[string]any{
+		"eth.mainnet": map[string]any{"kind": "simulated"},
+	}}
+
+	_, err := config.Resolve(doc, noEnv)
+
+	p := wantProblemAt(t, err, "networks")
+	if !strings.Contains(p.Message, "eth.mainnet") {
+		t.Errorf("message %q does not name the network", p.Message)
+	}
+}
+
+func TestResolve_DoesNotCallTheKeysOfARejectedNetworkUnknown(t *testing.T) {
+	doc := map[string]any{"networks": map[string]any{
+		"eth.mainnet": map[string]any{"kind": "simulated", "rpc": "x"},
+	}}
+
+	_, err := config.Resolve(doc, noEnv)
+
+	got := problems(t, err)
+	if len(got) != 1 {
+		t.Fatalf("got %d problems, want 1: %v", len(got), got)
+	}
+	if got[0].Path != "networks" {
+		t.Errorf("path = %q, want networks", got[0].Path)
 	}
 }
