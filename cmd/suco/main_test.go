@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -20,6 +21,31 @@ func runArgs(t *testing.T, args ...string) (stdout, stderr string, err error) {
 	var out, errOut bytes.Buffer
 	err = run(t.Context(), args, &out, &errOut)
 	return out.String(), errOut.String(), err
+}
+
+// document writes a configuration document and points SUCO_CONFIG at it.
+func document(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "suco.yaml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SUCO_CONFIG", path)
+	return path
+}
+
+// reportLine returns the line of a report for one setting, so that a value and
+// a source are asserted against the setting they belong to rather than against
+// the whole report.
+func reportLine(t *testing.T, report, path string) string {
+	t.Helper()
+	for _, line := range strings.Split(report, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), path+" ") {
+			return line
+		}
+	}
+	t.Fatalf("the report has no line for %s:\n%s", path, report)
+	return ""
 }
 
 func TestRun_WithoutArgumentsWritesUsageAndFails(t *testing.T) {
@@ -71,28 +97,47 @@ func TestRun_HelpWritesUsageToStdoutAndSucceeds(t *testing.T) {
 	}
 }
 
-func TestRun_ServeWithoutADocumentNamesTheCommandThatWritesOne(t *testing.T) {
-	t.Setenv("SUCO_CONFIG", filepath.Join(t.TempDir(), "absent.yaml"))
+// Every command reading a document meets a missing one through load, so the
+// sentence it gives is asserted once rather than once per command.
+func TestRun_WithoutADocumentNamesTheCommandThatWritesOne(t *testing.T) {
+	for _, name := range []string{"serve", "doctor"} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("SUCO_CONFIG", filepath.Join(t.TempDir(), "absent.yaml"))
 
-	_, _, err := runArgs(t, "serve")
+			_, _, err := runArgs(t, name)
 
-	if err == nil {
-		t.Fatal("want an error, got none")
+			if err == nil {
+				t.Fatal("want an error, got none")
+			}
+			if !strings.Contains(err.Error(), "suco init") {
+				t.Errorf("error does not name the command that writes a document: %v", err)
+			}
+			if !strings.Contains(err.Error(), "absent.yaml") {
+				t.Errorf("error does not name the document it looked for: %v", err)
+			}
+		})
 	}
-	if !strings.Contains(err.Error(), "suco init") {
-		t.Errorf("error does not name the command that writes a document: %v", err)
-	}
-	if !strings.Contains(err.Error(), "absent.yaml") {
-		t.Errorf("error does not name the document it looked for: %v", err)
+}
+
+func TestRun_EveryCommandNamesAnArgumentItDoesNotTake(t *testing.T) {
+	for _, c := range commands {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("SUCO_CONFIG", filepath.Join(t.TempDir(), "suco.yaml"))
+
+			_, _, err := runArgs(t, c.name, "extra")
+
+			if err == nil {
+				t.Fatal("want an error, got none")
+			}
+			if !strings.Contains(err.Error(), `"extra"`) {
+				t.Errorf("error does not name the argument: %v", err)
+			}
+		})
 	}
 }
 
 func TestRun_ServeReportsAConfigurationProblem(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "suco.yaml")
-	if err := os.WriteFile(path, []byte("listen:\n  port: 99999\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("SUCO_CONFIG", path)
+	document(t, "listen:\n  port: 99999\n")
 
 	_, _, err := runArgs(t, "serve")
 
@@ -101,17 +146,6 @@ func TestRun_ServeReportsAConfigurationProblem(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "listen.port") {
 		t.Errorf("error does not name the key: %v", err)
-	}
-}
-
-func TestRun_ServeRejectsExtraArguments(t *testing.T) {
-	_, _, err := runArgs(t, "serve", "extra")
-
-	if err == nil {
-		t.Fatal("want an error, got none")
-	}
-	if !strings.Contains(err.Error(), `"extra"`) {
-		t.Errorf("error does not name the argument: %v", err)
 	}
 }
 
@@ -133,7 +167,7 @@ func TestUsage_NamesEveryCommandThatExistsAndNoOther(t *testing.T) {
 	if !named("help") {
 		t.Errorf("usage does not name help, which run dispatches:\n%s", out.String())
 	}
-	for _, absent := range []string{"dev", "listen", "migrate", "doctor", "upgrade"} {
+	for _, absent := range []string{"dev", "listen", "migrate", "upgrade"} {
 		if named(absent) {
 			t.Errorf("usage names %q, which is not implemented", absent)
 		}
@@ -207,21 +241,6 @@ func TestRun_InitRefusesToOverwriteADocument(t *testing.T) {
 	}
 }
 
-func TestRun_InitRejectsExtraArguments(t *testing.T) {
-	t.Setenv("SUCO_CONFIG", filepath.Join(t.TempDir(), "suco.yaml"))
-
-	_, _, err := runArgs(t, "init", "extra")
-
-	if err == nil {
-		t.Fatal("want an error, got none")
-	}
-	if !strings.Contains(err.Error(), `"extra"`) {
-		t.Errorf("error does not name the argument: %v", err)
-	}
-}
-
-// TestRun_ServeAcceptsWhatInitWrote is the pair the Defaults rule asks for:
-// serve requires a document, so init has to produce one serve takes.
 func TestRun_ServeAcceptsWhatInitWrote(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "suco.yaml")
 	t.Setenv("SUCO_CONFIG", path)
@@ -276,11 +295,7 @@ func TestRun_ServeRefusesASectionNothingActsOn(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "suco.yaml")
-			if err := os.WriteFile(path, []byte(c.doc), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			t.Setenv("SUCO_CONFIG", path)
+			document(t, c.doc)
 
 			_, _, err := runArgs(t, "serve")
 
@@ -311,5 +326,143 @@ func TestRun_ServeAcceptsADocumentWithoutThoseSections(t *testing.T) {
 
 	if err != nil && strings.Contains(err.Error(), "does not act on") {
 		t.Fatalf("the document init writes was refused: %v", err)
+	}
+}
+
+func TestRun_DoctorGivesEverySettingItsValueAndSource(t *testing.T) {
+	path := document(t, "listen:\n  port: 9000\n")
+
+	stdout, _, err := runArgs(t, "doctor")
+
+	if err != nil {
+		t.Fatalf("err = %v, want none", err)
+	}
+	if !strings.Contains(stdout, path) {
+		t.Errorf("the report does not name the document it read:\n%s", stdout)
+	}
+	// Every setting the resolver reads. A report that quietly stopped naming
+	// one would leave an operator certain of a value nothing had shown them.
+	for _, want := range []struct{ path, value, source string }{
+		{"database.managed", "true", "default"},
+		{"database.url", "not set", "default"},
+		{"listen.base_url", "http://localhost:9000", "default"},
+		{"listen.host", "127.0.0.1", "default"},
+		{"listen.port", "9000", "file"},
+	} {
+		line := reportLine(t, stdout, want.path)
+		if !strings.Contains(line, want.value) || !strings.Contains(line, want.source) {
+			t.Errorf("%s reads %q, want the value %s from %s", want.path, line, want.value, want.source)
+		}
+	}
+}
+
+func TestRun_DoctorSaysWhetherASecretIsSetAndNeverItsValue(t *testing.T) {
+	const password = "hunter2"
+
+	for _, c := range []struct {
+		name     string
+		document string
+		value    string
+		source   string
+		// A configured database is a section this build refuses, which
+		// TestRun_DoctorPrintsTheReportAndThenRefusesASectionNothingActsOn
+		// covers. The report is written before that, and it is the report
+		// under test here.
+		refused bool
+	}{
+		{
+			name:     "supplied by a variable",
+			document: "database:\n  managed: false\n  url: ${SUCO_DATABASE_URL}\n",
+			value:    "set",
+			source:   "${SUCO_DATABASE_URL}",
+			refused:  true,
+		},
+		{
+			name:     "absent from the document",
+			document: "listen:\n  port: 9000\n",
+			value:    "not set",
+			source:   "default",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			document(t, c.document)
+			t.Setenv("SUCO_DATABASE_URL", "postgres://admin:"+password+"@db.internal/sucopay")
+
+			stdout, _, err := runArgs(t, "doctor")
+
+			if c.refused && err == nil {
+				t.Fatal("want the refusal, got none")
+			}
+			if !c.refused && err != nil {
+				t.Fatalf("err = %v, want none", err)
+			}
+			if strings.Contains(stdout, password) {
+				t.Errorf("the report carries the password:\n%s", stdout)
+			}
+			line := reportLine(t, stdout, "database.url")
+			if !strings.Contains(line, c.value) {
+				t.Errorf("database.url reads %q, want it to say %q", line, c.value)
+			}
+			if !strings.Contains(line, c.source) {
+				t.Errorf("database.url reads %q, want the source %s", line, c.source)
+			}
+		})
+	}
+}
+
+func TestRun_DoctorPassesEveryConfigurationProblemThrough(t *testing.T) {
+	document(t, "listen:\n  port: 99999\n  base_url: nonsense\n")
+
+	_, _, err := runArgs(t, "doctor")
+
+	if err == nil {
+		t.Fatal("want an error, got none")
+	}
+	for _, want := range []string{"listen.port", "listen.base_url"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not name %s: %v", want, err)
+		}
+	}
+}
+
+func TestRun_DoctorPrintsTheReportAndThenRefusesASectionNothingActsOn(t *testing.T) {
+	path := document(t, "networks:\n  local:\n    kind: simulated\n")
+
+	stdout, _, err := runArgs(t, "doctor")
+
+	if err == nil {
+		t.Fatal("want an error, got none")
+	}
+	if !strings.Contains(err.Error(), "networks") {
+		t.Errorf("error does not name the section: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Remove the section") {
+		t.Errorf("error does not say what to do about it: %v", err)
+	}
+	if !strings.Contains(err.Error(), filepath.Base(path)) {
+		t.Errorf("error does not name the document: %v", err)
+	}
+	if !strings.Contains(stdout, "listen.port") {
+		t.Errorf("the report was withheld, leaving nothing to diagnose:\n%s", stdout)
+	}
+}
+
+// failingWriter stands in for a full disk or a closed pipe.
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, errors.New("no space left on device")
+}
+
+func TestRun_DoctorFailsWhenTheReportCannotBeWritten(t *testing.T) {
+	document(t, "listen:\n  port: 9000\n")
+
+	err := run(t.Context(), []string{"doctor"}, failingWriter{}, io.Discard)
+
+	if err == nil {
+		t.Fatal("want an error, got none: the report is what this command produces")
+	}
+	if !strings.Contains(err.Error(), "no space left on device") {
+		t.Errorf("error does not carry what went wrong: %v", err)
 	}
 }

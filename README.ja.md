@@ -21,7 +21,7 @@ Payment を作成し、オンチェーンで受け取り、確定を判定し、
 suco Pay は自社のインフラで動作します。資金は顧客のウォレットから加盟店のウォレットへ直接
 移動します。
 
-> **開発初期です。** 動くのは上の 1 行だけです。
+> **開発初期です。** まだ何も動きません。
 > [Discussions](https://github.com/sucopay/sucopay/discussions) で進捗を追えます。
 
 - [ ] Payment: ライフサイクル、期限、過払いと不足、冪等性
@@ -31,7 +31,7 @@ suco Pay は自社のインフラで動作します。資金は顧客のウォ�
 - [ ] Refund: 記録と送金指示の作成
 - [ ] 照合: 内部状態とチェーンの定期突合
 - [ ] Console: Payment と Transaction の照会、返金、Webhook 配送履歴
-- [x] CLI: `init` `serve`
+- [x] CLI: `init` `serve` `doctor`
 
 ## インストール
 
@@ -39,11 +39,13 @@ suco Pay は自社のインフラで動作します。資金は顧客のウォ�
 git clone https://github.com/sucopay/sucopay && cd sucopay
 go build -o suco ./cmd/suco
 ./suco init
+./suco doctor
 ./suco serve
 ```
 
-`suco init` が `suco.yaml` を書き出します。読んでコミットできる設定です。`suco serve` はそれを
-読み、`http://localhost:7826` で待ち受けます。現時点で応答するのは `/healthz` だけです。
+`suco init` が `suco.yaml` を書き出します。読んでコミットできる設定です。`suco doctor` は
+その設定がどう解決されたかと、各値の出所を表示します。秘密の値は設定の有無だけを表示します。
+`suco serve` は `http://localhost:7826` で待ち受けます。現時点で応答するのは `/healthz` だけです。
 
 インストールスクリプトとビルド済みバイナリは最初のリリースで用意します。上の一覧にある機能は
 まだありません。

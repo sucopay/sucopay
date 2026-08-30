@@ -30,7 +30,7 @@ suco Pay runs on your own infrastructure. Funds go straight from the customer's 
 - [ ] Refunds: records and transfer intents
 - [ ] Reconciliation: periodic diff between internal state and the chain
 - [ ] Console: payments, transactions, refunds, webhook deliveries
-- [x] CLI: `init` `serve`
+- [x] CLI: `init` `serve` `doctor`
 
 ## Getting started
 
@@ -38,11 +38,13 @@ suco Pay runs on your own infrastructure. Funds go straight from the customer's 
 git clone https://github.com/sucopay/sucopay && cd sucopay
 go build -o suco ./cmd/suco
 ./suco init
+./suco doctor
 ./suco serve
 ```
 
-`suco init` writes a `suco.yaml` you can read and commit. `suco serve` reads it and listens on
-`http://localhost:7826`, where `/healthz` answers.
+`suco init` writes a `suco.yaml` you can read and commit. `suco doctor` prints the settings it
+resolves to and where each value came from, with secrets shown as set or not set. `suco serve`
+listens on `http://localhost:7826`, where `/healthz` answers.
 
 An install script and released binaries arrive with the first release. Everything in the list
 above is still to come.

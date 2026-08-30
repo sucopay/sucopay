@@ -1,7 +1,5 @@
-// Command suco is the suco Pay server and CLI.
-//
-//	suco init    write a configuration document
-//	suco serve   run the server
+// Command suco is the suco Pay server and CLI. Run "suco help" for the
+// commands.
 //
 // Configuration comes from suco.yaml, or from the file SUCO_CONFIG names.
 package main
@@ -11,10 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"text/tabwriter"
+
+	"github.com/sucopay/sucopay/internal/config"
 )
 
 // defaultDocument is where suco looks for its configuration when SUCO_CONFIG
@@ -34,6 +36,46 @@ var commands = []command{
 		return initialise(args, stdout)
 	}},
 	{"serve", "run the server", serve},
+	{"doctor", "show the resolved configuration and its sources", doctor},
+}
+
+// load reads the configuration the way every command needing it does, so that
+// a missing document says the same thing wherever it is met.
+func load() (config.Resolved, string, error) {
+	document := config.Path(os.LookupEnv, defaultDocument)
+	resolved, err := config.Load(document, os.LookupEnv)
+	if errors.Is(err, fs.ErrNotExist) {
+		return config.Resolved{}, document,
+			fmt.Errorf("no configuration at %s. Run `suco init` to write one", document)
+	}
+	return resolved, document, err
+}
+
+// unimplemented names the sections a document sets that no part of this build
+// reads. Refusing them in the schema would take the settings out before the
+// code that needs them arrives, so they are accepted and then refused here.
+func unimplemented(r config.Resolved) []string {
+	var out []string
+	for _, path := range []string{"database.managed", "database.url"} {
+		if r.Sources[path].Origin != config.FromDefault {
+			out = append(out, "database")
+			break
+		}
+	}
+	if len(r.Config.Networks) > 0 {
+		out = append(out, "networks")
+	}
+	return out
+}
+
+// unimplementedError is the refusal both commands give, so that the one a
+// reader meets from doctor is the one serve will give them.
+func unimplementedError(document string, missing []string) error {
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s configures %s, which this build does not act on. Remove the section rather than run a server that ignores it",
+		document, strings.Join(missing, " and "))
 }
 
 func main() {
