@@ -74,12 +74,17 @@ func TestListen_ReportsAPortThatIsAlreadyTaken(t *testing.T) {
 }
 
 func TestServer_ServesTheHandlerItWasGiven(t *testing.T) {
-	s := serving(t, api.Handler())
+	// A handler the package does not build, so a server answering out of its
+	// own routes rather than the one it was handed would fail here.
+	own := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	})
+	s := serving(t, own)
 
 	resp := get(t, "http://"+s.Addr()+"/healthz")
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	if resp.StatusCode != http.StatusTeapot {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusTeapot)
 	}
 }
 

@@ -29,6 +29,10 @@ const (
 )
 
 // Server serves an instance until its context is cancelled.
+//
+// [Server.Run] is meant to be called once, from a goroutine of its own.
+// [Server.Addr] and [Server.Close] are safe to call from another goroutine
+// while it runs.
 type Server struct {
 	http     *http.Server
 	listener net.Listener

@@ -49,3 +49,16 @@ func TestHandler_HealthzReportsOKAsJSON(t *testing.T) {
 		t.Errorf("status = %q, want ok", body["status"])
 	}
 }
+
+// TestHandler_TellsBrowsersNotToSniffTheContentType keeps a JSON body from
+// being interpreted as something else by a browser that disagrees with the
+// header.
+func TestHandler_TellsBrowsersNotToSniffTheContentType(t *testing.T) {
+	rec := httptest.NewRecorder()
+
+	api.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+}
