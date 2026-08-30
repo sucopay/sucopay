@@ -11,6 +11,15 @@ import (
 	"github.com/sucopay/sucopay/internal/api"
 )
 
+const (
+	// shutdownWait is how long a test waits for Run to return. It is well
+	// above the grace period the server gives in-flight requests.
+	shutdownWait = 15 * time.Second
+	// replyWait is how long a test waits for a response. Without it a server
+	// that stops answering would hold the package until the go test deadline.
+	replyWait = 10 * time.Second
+)
+
 // serving starts a server on a port the kernel chooses and stops it when the
 // test ends.
 func serving(t *testing.T, h http.Handler) *api.Server {
@@ -36,7 +45,16 @@ func serving(t *testing.T, h http.Handler) *api.Server {
 	return s
 }
 
-const shutdownWait = 5 * time.Second
+func get(t *testing.T, url string) *http.Response {
+	t.Helper()
+	client := &http.Client{Timeout: replyWait}
+	resp, err := client.Get(url)
+	if err != nil {
+		t.Fatalf("get %s: %v", url, err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
 
 func TestListen_ReportsAPortThatIsAlreadyTaken(t *testing.T) {
 	held, err := net.Listen("tcp", "127.0.0.1:0")
@@ -55,24 +73,25 @@ func TestListen_ReportsAPortThatIsAlreadyTaken(t *testing.T) {
 	}
 }
 
-func TestServer_ServesUntilItsContextIsCancelled(t *testing.T) {
+func TestServer_ServesTheHandlerItWasGiven(t *testing.T) {
 	s := serving(t, api.Handler())
 
-	resp, err := http.Get("http://" + s.Addr() + "/healthz")
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	defer resp.Body.Close()
+	resp := get(t, "http://"+s.Addr()+"/healthz")
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 }
 
-func TestServer_AddrCarriesTheChosenPort(t *testing.T) {
-	s := serving(t, api.Handler())
+func TestListen_AddrCarriesTheChosenPort(t *testing.T) {
+	s, err := api.Listen("127.0.0.1:0", api.Handler())
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = s.Close() }()
 
 	_, port, err := net.SplitHostPort(s.Addr())
+
 	if err != nil {
 		t.Fatalf("addr %q: %v", s.Addr(), err)
 	}
@@ -102,7 +121,71 @@ func TestServer_StopsWhenItsContextIsCancelled(t *testing.T) {
 	}
 }
 
-func TestClose_ReleasesThePortWithoutServing(t *testing.T) {
+// TestServer_LetsAnInFlightRequestFinishAfterCancellation is what separates a
+// shutdown from a close. A deployment cancels the context of a server that is
+// still answering, and a payment request cut off mid-response leaves the caller
+// unable to tell what happened.
+func TestServer_LetsAnInFlightRequestFinishAfterCancellation(t *testing.T) {
+	// The handler stays busy for well past the moment the shutdown begins, so
+	// that a server which closed connections instead of draining them would
+	// cut this response off rather than win a race with it.
+	const busy = 300 * time.Millisecond
+	entered := make(chan struct{})
+	slow := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(entered)
+		time.Sleep(busy)
+		w.WriteHeader(http.StatusTeapot)
+	})
+	s, err := api.Listen("127.0.0.1:0", slow)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	served := make(chan error, 1)
+	go func() { served <- s.Run(ctx) }()
+
+	type reply struct {
+		status int
+		err    error
+	}
+	answered := make(chan reply, 1)
+	go func() {
+		client := &http.Client{Timeout: replyWait}
+		resp, err := client.Get("http://" + s.Addr() + "/")
+		if err != nil {
+			answered <- reply{err: err}
+			return
+		}
+		defer resp.Body.Close()
+		answered <- reply{status: resp.StatusCode}
+	}()
+
+	<-entered
+	cancel()
+
+	select {
+	case got := <-answered:
+		if got.err != nil {
+			t.Fatalf("the request begun before the shutdown did not finish: %v", got.err)
+		}
+		if got.status != http.StatusTeapot {
+			t.Errorf("status = %d, want %d", got.status, http.StatusTeapot)
+		}
+	case <-time.After(replyWait):
+		t.Fatal("the request begun before the shutdown never got a response")
+	}
+
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Errorf("run: %v", err)
+		}
+	case <-time.After(shutdownWait):
+		t.Fatal("the server did not stop")
+	}
+}
+
+func TestClose_ReleasesThePort(t *testing.T) {
 	s, err := api.Listen("127.0.0.1:0", api.Handler())
 	if err != nil {
 		t.Fatalf("listen: %v", err)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -113,13 +114,21 @@ func TestRun_ServeRejectsExtraArguments(t *testing.T) {
 	}
 }
 
-func TestUsage_NamesOnlyTheCommandsThatExist(t *testing.T) {
+func TestUsage_NamesEveryCommandThatExistsAndNoOther(t *testing.T) {
 	var out bytes.Buffer
 
 	usage(&out)
 
+	// A word boundary rather than surrounding spaces: a command at the end of
+	// a line would slip past a space-delimited search.
+	named := func(command string) bool {
+		return regexp.MustCompile(`\b` + regexp.QuoteMeta(command) + `\b`).MatchString(out.String())
+	}
+	if !named("serve") {
+		t.Errorf("usage does not name serve:\n%s", out.String())
+	}
 	for _, absent := range []string{"init", "dev", "listen", "migrate", "doctor", "upgrade"} {
-		if strings.Contains(out.String(), " "+absent+" ") {
+		if named(absent) {
 			t.Errorf("usage names %q, which is not implemented", absent)
 		}
 	}
