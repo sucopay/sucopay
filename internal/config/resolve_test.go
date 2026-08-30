@@ -54,6 +54,9 @@ func mustResolve(t *testing.T, doc map[string]any, env config.Lookup) config.Res
 func TestResolve_UsesDefaultsWhenTheDocumentIsEmpty(t *testing.T) {
 	got := mustResolve(t, map[string]any{}, noEnv).Config
 
+	if got.Listen.Host != config.DefaultHost {
+		t.Errorf("host = %q, want %q", got.Listen.Host, config.DefaultHost)
+	}
 	if got.Listen.Port != config.DefaultPort {
 		t.Errorf("port = %d, want %d", got.Listen.Port, config.DefaultPort)
 	}
@@ -159,6 +162,7 @@ func TestResolve_RecordsWhereEachValueCameFrom(t *testing.T) {
 		origin config.Origin
 		envVar string
 	}{
+		{"listen.host", config.FromDefault, ""},
 		{"listen.port", config.FromFile, ""},
 		{"listen.base_url", config.FromDefault, ""},
 		{"database.managed", config.FromFile, ""},
@@ -257,5 +261,46 @@ func TestResolve_AcceptsASimulatedNetwork(t *testing.T) {
 
 	if got.Networks["local"].Kind != "simulated" {
 		t.Errorf("networks.local.kind = %q, want simulated", got.Networks["local"].Kind)
+	}
+}
+
+func TestResolve_RejectsAnEmptyHost(t *testing.T) {
+	doc := map[string]any{"listen": map[string]any{"host": ""}}
+
+	_, err := config.Resolve(doc, noEnv)
+
+	wantProblemAt(t, err, "listen.host")
+}
+
+func TestResolve_KeepsTheHostFromTheDocument(t *testing.T) {
+	doc := map[string]any{"listen": map[string]any{"host": "0.0.0.0"}}
+
+	got := mustResolve(t, doc, noEnv).Config
+
+	if got.Listen.Host != "0.0.0.0" {
+		t.Errorf("host = %q, want 0.0.0.0", got.Listen.Host)
+	}
+	if want := "http://localhost:7826"; got.Listen.BaseURL != want {
+		t.Errorf("base_url = %q, want %q; the bind address is not how others reach it", got.Listen.BaseURL, want)
+	}
+}
+
+func TestResolve_ReportsTheCauseNotItsConsequence(t *testing.T) {
+	doc := map[string]any{"database": map[string]any{
+		"managed": false,
+		"url":     "${SUCO_DATABASE_URL}",
+	}}
+
+	_, err := config.Resolve(doc, noEnv)
+
+	got := problems(t, err)
+	if len(got) != 1 {
+		t.Fatalf("got %d problems, want 1: %v", len(got), got)
+	}
+	if !strings.Contains(got[0].Message, "SUCO_DATABASE_URL") {
+		t.Errorf("message %q does not name the variable that failed to resolve", got[0].Message)
+	}
+	if strings.Contains(got[0].Message, "required") {
+		t.Errorf("message %q reports the consequence instead of the cause", got[0].Message)
 	}
 }

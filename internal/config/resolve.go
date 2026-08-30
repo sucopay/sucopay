@@ -27,6 +27,7 @@ var knownNetworkKinds = []string{"simulated"}
 func Resolve(doc map[string]any, env Lookup) (Resolved, error) {
 	r := &reader{doc: doc, env: env, sources: map[string]Source{}}
 
+	host := r.text("listen.host", DefaultHost)
 	port := r.integer("listen.port", DefaultPort)
 	baseURL := r.text("listen.base_url", fmt.Sprintf("http://localhost:%d", port))
 	managed := r.boolean("database.managed", true)
@@ -34,7 +35,7 @@ func Resolve(doc map[string]any, env Lookup) (Resolved, error) {
 	networks := r.networks()
 
 	cfg := Config{
-		Listen:   Listen{Port: port, BaseURL: baseURL},
+		Listen:   Listen{Host: host, Port: port, BaseURL: baseURL},
 		Database: Database{Managed: managed, URL: dbURL},
 		Networks: networks,
 	}
@@ -58,6 +59,19 @@ type reader struct {
 
 func (r *reader) fail(path, format string, args ...any) {
 	r.problems = append(r.problems, Problem{Path: path, Message: fmt.Sprintf(format, args...)})
+}
+
+// failed reports whether a path already has a problem. Validation skips such a
+// path so that a report holds causes rather than their consequences: a
+// reference that did not resolve leaves the key empty, and saying it is also
+// required sends the reader after the wrong thing.
+func (r *reader) failed(path string) bool {
+	for _, p := range r.problems {
+		if p.Path == path {
+			return true
+		}
+	}
+	return false
 }
 
 // raw returns the value at a dotted path, after resolving a reference. The
@@ -162,29 +176,44 @@ func (r *reader) networks() map[string]Network {
 }
 
 func (r *reader) validate(cfg Config) {
-	if cfg.Listen.Port < 1 || cfg.Listen.Port > 65535 {
+	if !r.failed("listen.host") && cfg.Listen.Host == "" {
+		r.fail("listen.host", "empty")
+	}
+	if !r.failed("listen.port") && (cfg.Listen.Port < 1 || cfg.Listen.Port > 65535) {
 		r.fail("listen.port", "outside 1-65535: %d", cfg.Listen.Port)
 	}
-	if u, err := url.Parse(cfg.Listen.BaseURL); err != nil {
-		r.fail("listen.base_url", "not a URL: %q", cfg.Listen.BaseURL)
-	} else if u.Scheme != "http" && u.Scheme != "https" {
-		r.fail("listen.base_url", "needs an http or https scheme: %q", cfg.Listen.BaseURL)
-	} else if u.Host == "" {
-		r.fail("listen.base_url", "has no host: %q", cfg.Listen.BaseURL)
+	if !r.failed("listen.base_url") {
+		r.validateBaseURL(cfg.Listen.BaseURL)
 	}
-
-	switch {
-	case cfg.Database.Managed && cfg.Database.URL != "":
-		r.fail("database", "managed and url are mutually exclusive")
-	case !cfg.Database.Managed && cfg.Database.URL == "":
-		r.fail("database.url", "required when database.managed is false")
+	if !r.failed("database.managed") && !r.failed("database.url") {
+		r.validateDatabase(cfg.Database)
 	}
-
 	for name, n := range cfg.Networks {
-		if !slices.Contains(knownNetworkKinds, n.Kind) {
-			r.fail("networks."+name+".kind",
-				"unknown kind %q, want one of %s", n.Kind, strings.Join(knownNetworkKinds, ", "))
+		path := "networks." + name + ".kind"
+		if !r.failed(path) && !slices.Contains(knownNetworkKinds, n.Kind) {
+			r.fail(path, "unknown kind %q, want one of %s", n.Kind, strings.Join(knownNetworkKinds, ", "))
 		}
+	}
+}
+
+func (r *reader) validateBaseURL(raw string) {
+	u, err := url.Parse(raw)
+	switch {
+	case err != nil:
+		r.fail("listen.base_url", "not a URL: %q", raw)
+	case u.Scheme != "http" && u.Scheme != "https":
+		r.fail("listen.base_url", "needs an http or https scheme: %q", raw)
+	case u.Host == "":
+		r.fail("listen.base_url", "has no host: %q", raw)
+	}
+}
+
+func (r *reader) validateDatabase(db Database) {
+	switch {
+	case db.Managed && db.URL != "":
+		r.fail("database", "managed and url are mutually exclusive")
+	case !db.Managed && db.URL == "":
+		r.fail("database.url", "required when database.managed is false")
 	}
 }
 

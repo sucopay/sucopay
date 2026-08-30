@@ -19,6 +19,7 @@ type ReportLine struct {
 // callers cannot leak one by rendering the report.
 func (r Resolved) Report() []ReportLine {
 	values := map[string]string{
+		"listen.host":      r.Config.Listen.Host,
 		"listen.port":      strconv.Itoa(r.Config.Listen.Port),
 		"listen.base_url":  r.Config.Listen.BaseURL,
 		"database.managed": strconv.FormatBool(r.Config.Database.Managed),

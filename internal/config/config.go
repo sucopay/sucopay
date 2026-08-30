@@ -5,8 +5,14 @@ import (
 	"strings"
 )
 
-// DefaultPort is the port suco Pay listens on when the document sets none.
-const DefaultPort = 7826
+const (
+	// DefaultPort is the port suco Pay listens on when the document sets none.
+	DefaultPort = 7826
+	// DefaultHost is the interface suco Pay binds when the document sets none.
+	// Reaching an instance from another machine is a deployment decision, so it
+	// is made in the document rather than assumed.
+	DefaultHost = "127.0.0.1"
+)
 
 // Origin says where a resolved value came from.
 type Origin int
@@ -43,8 +49,11 @@ type Source struct {
 	Var string
 }
 
-// Listen is where the instance serves its API, console and checkout.
+// Listen is where the instance serves its API, console and checkout. Host is
+// the interface to bind; BaseURL is how others reach the instance, which
+// differs from Host behind a proxy or inside a container.
 type Listen struct {
+	Host    string
 	Port    int
 	BaseURL string
 }
