@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -124,12 +125,102 @@ func TestUsage_NamesEveryCommandThatExistsAndNoOther(t *testing.T) {
 	named := func(command string) bool {
 		return regexp.MustCompile(`\b` + regexp.QuoteMeta(command) + `\b`).MatchString(out.String())
 	}
-	if !named("serve") {
-		t.Errorf("usage does not name serve:\n%s", out.String())
+	for _, present := range []string{"init", "serve"} {
+		if !named(present) {
+			t.Errorf("usage does not name %s:\n%s", present, out.String())
+		}
 	}
-	for _, absent := range []string{"init", "dev", "listen", "migrate", "doctor", "upgrade"} {
+	for _, absent := range []string{"dev", "listen", "migrate", "doctor", "upgrade"} {
 		if named(absent) {
 			t.Errorf("usage names %q, which is not implemented", absent)
 		}
+	}
+}
+
+func TestRun_InitWritesADocumentAndNamesWhatToDoNext(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "suco.yaml")
+	t.Setenv("SUCO_CONFIG", path)
+
+	stdout, stderr, err := runArgs(t, "init")
+
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("no document at %s: %v", path, statErr)
+	}
+	if !strings.Contains(stdout, path) {
+		t.Errorf("stdout does not name the document it wrote: %q", stdout)
+	}
+	if !strings.Contains(stdout, "suco serve") {
+		t.Errorf("stdout does not name the next step: %q", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want nothing", stderr)
+	}
+}
+
+func TestRun_InitRefusesToOverwriteADocument(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "suco.yaml")
+	const edited = "listen:\n  port: 9999\n"
+	if err := os.WriteFile(path, []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SUCO_CONFIG", path)
+
+	_, _, err := runArgs(t, "init")
+
+	if err == nil {
+		t.Fatal("want an error, got none")
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("error does not name the document: %v", err)
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != edited {
+		t.Errorf("the document was changed:\n%s", got)
+	}
+}
+
+func TestRun_InitRejectsExtraArguments(t *testing.T) {
+	t.Setenv("SUCO_CONFIG", filepath.Join(t.TempDir(), "suco.yaml"))
+
+	_, _, err := runArgs(t, "init", "extra")
+
+	if err == nil {
+		t.Fatal("want an error, got none")
+	}
+	if !strings.Contains(err.Error(), `"extra"`) {
+		t.Errorf("error does not name the argument: %v", err)
+	}
+}
+
+// TestRun_ServeAcceptsWhatInitWrote is the pair the Defaults rule asks for:
+// serve requires a document, so init has to produce one serve takes.
+func TestRun_ServeAcceptsWhatInitWrote(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "suco.yaml")
+	t.Setenv("SUCO_CONFIG", path)
+	if _, _, err := runArgs(t, "init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	// serve binds the port the document names and blocks, so the run is cut
+	// short by a cancelled context. Reaching that point means the document
+	// resolved and the port was free.
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	var out, errOut bytes.Buffer
+
+	err := run(ctx, []string{"serve"}, &out, &errOut)
+
+	if err != nil && strings.Contains(err.Error(), "listen on") {
+		t.Skipf("the port the document names is held by something else: %v", err)
+	}
+	if err != nil {
+		t.Fatalf("serve rejected the document init wrote: %v", err)
 	}
 }

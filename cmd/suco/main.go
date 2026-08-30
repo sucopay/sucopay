@@ -1,5 +1,6 @@
 // Command suco is the suco Pay server and CLI.
 //
+//	suco init    write a configuration document
 //	suco serve   run the server
 //
 // Configuration comes from suco.yaml, or from the file SUCO_CONFIG names.
@@ -45,6 +46,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return errUsage
 	}
 	switch args[0] {
+	case "init":
+		return initialise(args[1:], stdout)
 	case "serve":
 		return serve(ctx, args[1:], stdout)
 	case "help", "-h", "--help":
@@ -59,6 +62,7 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, `suco Pay
 
 Usage:
+  suco init     write a configuration document
   suco serve    run the server
 
 `)
