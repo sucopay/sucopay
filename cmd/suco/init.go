@@ -28,11 +28,9 @@ func initialise(args []string, stdout io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("configuration document: %w", err)
 	}
-	if _, err := f.Write(config.Document()); err != nil {
-		f.Close()
-		return fmt.Errorf("configuration document: %w", err)
-	}
-	if err := f.Close(); err != nil {
+	_, writeErr := f.Write(config.Document())
+	closeErr := f.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
 		return fmt.Errorf("configuration document: %w", err)
 	}
 
