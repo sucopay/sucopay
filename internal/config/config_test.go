@@ -108,3 +108,32 @@ func TestSecret_MatchesTheSecretPathsAndNothingElse(t *testing.T) {
 		})
 	}
 }
+
+// TestProblem_QuotesAPathThatCarriesControlCharacters keeps a key from forging
+// a line of a report. A document names its own keys, and a newline inside one
+// would otherwise print as a problem of its own.
+func TestProblem_QuotesAPathThatCarriesControlCharacters(t *testing.T) {
+	cases := []struct {
+		name  string
+		path  string
+		quote bool
+	}{
+		{"a newline", "listen.a\nlisten.host: 0.0.0.0 is safe", true},
+		{"a carriage return", "listen.a\rOVERWRITTEN", true},
+		{"an escape sequence", "listen.\x1b[31mRED\x1b[0m", true},
+		{"an ordinary key", "listen.port", false},
+		{"a key with a space", "listen.a key", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := config.Problem{Path: c.path, Message: "unknown key"}.String()
+
+			if strings.ContainsAny(got, "\n\r\x1b") {
+				t.Errorf("the path reached the output unquoted: %q", got)
+			}
+			if quoted := strings.HasPrefix(got, `"`); quoted != c.quote {
+				t.Errorf("quoted = %v, want %v: %s", quoted, c.quote, got)
+			}
+		})
+	}
+}

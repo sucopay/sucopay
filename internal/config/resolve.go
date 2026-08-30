@@ -55,15 +55,24 @@ func Resolve(doc map[string]any, env Lookup) (Resolved, error) {
 }
 
 type reader struct {
-	doc      map[string]any
-	env      Lookup
-	sources  map[string]Source
-	seen     map[string]bool
-	problems []Problem
+	doc       map[string]any
+	env       Lookup
+	sources   map[string]Source
+	seen      map[string]bool
+	problems  []Problem
+	truncated bool
 }
 
 func (r *reader) fail(path, format string, args ...any) {
-	r.problems = append(r.problems, Problem{Path: path, Message: fmt.Sprintf(format, args...)})
+	switch {
+	case len(r.problems) < maxProblems:
+		r.problems = append(r.problems, Problem{Path: path, Message: fmt.Sprintf(format, args...)})
+	case !r.truncated:
+		r.truncated = true
+		r.problems = append(r.problems, Problem{
+			Message: fmt.Sprintf("more problems follow; only the first %d are listed", maxProblems),
+		})
+	}
 }
 
 // defaultBaseURL is how others reach an instance that says nothing about it.
@@ -82,7 +91,7 @@ func shown(path string, v any) any {
 }
 
 // failed reports whether a path already has a problem. Validation skips such a
-// path so that a report holds causes rather than their consequences: a
+// path so that a report holds causes and not the consequences they leave: a
 // reference that did not resolve leaves the key empty, and saying it is also
 // required sends the reader after the wrong thing.
 func (r *reader) failed(path string) bool {
@@ -251,6 +260,10 @@ func (r *reader) reportUnknownKeys() {
 // keys a secret is written with into a report, which is the shape of the secret
 // even when its values are hidden.
 func leaves(doc map[string]any, prefix string) []string {
+	return leavesTo(doc, prefix, maxDepth)
+}
+
+func leavesTo(doc map[string]any, prefix string, depth int) []string {
 	var out []string
 	for key, value := range doc {
 		path := key
@@ -258,8 +271,8 @@ func leaves(doc map[string]any, prefix string) []string {
 			path = prefix + "." + key
 		}
 		nested, isMapping := value.(map[string]any)
-		if isMapping && len(nested) > 0 && !Secret(path) {
-			out = append(out, leaves(nested, path)...)
+		if isMapping && len(nested) > 0 && !Secret(path) && depth > 0 {
+			out = append(out, leavesTo(nested, path, depth-1)...)
 			continue
 		}
 		out = append(out, path)
@@ -277,6 +290,10 @@ func (r *reader) validateBaseURL(raw string) {
 		r.fail(path, "needs an http or https scheme: %v", shown(path, raw))
 	case u.Host == "":
 		r.fail(path, "has no host: %v", shown(path, raw))
+	case u.User != nil:
+		// The value is printed at every start, so a password written into it
+		// would reach the log of every deployment that restarts.
+		r.fail(path, "carries a username or password, which this value is not for")
 	}
 }
 
@@ -289,14 +306,23 @@ func (r *reader) validateDatabase(db Database) {
 	}
 }
 
+// maxProblems bounds a report. A document can hold thousands of keys nothing
+// reads, and a reader stops using a list long before it reaches the end of one
+// that long.
+const maxProblems = 50
+
+// maxDepth bounds how far leaves descends. A document deep enough to exhaust
+// the stack fits well inside [MaxDocumentBytes].
+const maxDepth = 32
+
 var (
 	errPartialReference = errors.New("a reference has to be the whole value")
 	errEmptyReference   = errors.New("a reference names no variable")
 )
 
 // reference reports the variable named by a whole ${NAME} string. A string
-// that mixes literal text with a reference is an error rather than a partial
-// expansion, so that every value has exactly one origin.
+// that mixes literal text with a reference is an error, so that every value
+// has exactly one origin.
 //
 // The errors carry no part of the string. The caller holds the path and is the
 // only one that can decide whether the value may be shown.

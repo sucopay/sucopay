@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -43,6 +44,8 @@ func (o Origin) String() string {
 // default with no variable behind it, so look a path up in [Resolved.Sources]
 // only after [Resolve] has recorded it.
 type Source struct {
+	// Origin says whether the value came from the document, an environment
+	// variable the document named, or a built-in default.
 	Origin Origin
 	// Var is the environment variable that supplied the value. It is empty
 	// unless Origin is FromEnv.
@@ -98,11 +101,24 @@ type Problem struct {
 
 // String returns the problem with its path, or the message alone when the
 // problem is not about one key.
+//
+// The path is quoted. A key comes from the document, so an unquoted one could
+// carry a newline and forge a line of its own in a report, or an escape
+// sequence a terminal would act on.
 func (p Problem) String() string {
 	if p.Path == "" {
 		return p.Message
 	}
-	return p.Path + ": " + p.Message
+	return quotePath(p.Path) + ": " + p.Message
+}
+
+// quotePath renders a path readably, quoting it only when it holds something a
+// reader would not expect in a key.
+func quotePath(path string) string {
+	if strings.IndexFunc(path, func(r rune) bool { return r < 0x20 || r == 0x7f }) < 0 {
+		return path
+	}
+	return strconv.Quote(path)
 }
 
 // Problems is every problem found in one document. [Resolve] reports all of

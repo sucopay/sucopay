@@ -3,12 +3,9 @@ package config
 import "fmt"
 
 // Document returns a configuration document holding the values suco Pay would
-// otherwise choose on its own.
+// otherwise choose on its own, including the ones equal to a built-in default.
 //
-// Every value is written out, including the ones that match a built-in
-// default, so that whoever runs the instance can read what it decided instead
-// of inferring it. Keys for a subsystem arrive with that subsystem: a document
-// naming one that nothing acts on would describe a server that ignores it.
+// Keys for a subsystem arrive with that subsystem.
 func Document() []byte {
 	return fmt.Appendf(nil, `# Written by suco init.
 # Commit this file. Keep secrets in the environment, not here.

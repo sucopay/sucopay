@@ -10,8 +10,21 @@ import (
 // asking for it.
 const PathVar = "SUCO_CONFIG"
 
-// Load reads a configuration document and resolves it against env.
+// Load reads a configuration document and resolves it against env. It reads at
+// most [MaxDocumentBytes], and only from a regular file: a named pipe or a
+// device would otherwise be read until it ran out of memory.
 func Load(path string, env Lookup) (Resolved, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return Resolved{}, fmt.Errorf("configuration document: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return Resolved{}, fmt.Errorf("configuration document: %s is not a regular file", path)
+	}
+	if info.Size() > MaxDocumentBytes {
+		return Resolved{}, fmt.Errorf("configuration document: %w: %d bytes, limit is %d",
+			ErrDocumentTooLarge, info.Size(), MaxDocumentBytes)
+	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return Resolved{}, fmt.Errorf("configuration document: %w", err)

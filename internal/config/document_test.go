@@ -1,7 +1,6 @@
 package config_test
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/sucopay/sucopay/internal/config"
@@ -29,10 +28,10 @@ func TestDocument_ResolvesWithoutAProblem(t *testing.T) {
 	}
 }
 
-// TestDocument_WritesEveryValueItChose keeps the document a record rather than
-// a set of overrides. A key left out would put the decision back inside the
-// binary where nobody running it can see it.
-func TestDocument_WritesEveryValueItChose(t *testing.T) {
+// TestDocument_CarriesEveryValueItNames keeps the document a record. A value
+// left to a default would put the decision back inside the binary where nobody
+// running the instance can see it.
+func TestDocument_CarriesEveryValueItNames(t *testing.T) {
 	doc, err := config.Decode(config.Document())
 	if err != nil {
 		t.Fatalf("decode: %v", err)
@@ -42,14 +41,29 @@ func TestDocument_WritesEveryValueItChose(t *testing.T) {
 		t.Fatalf("resolve: %v", err)
 	}
 
-	for path, source := range resolved.Sources {
-		if !strings.HasPrefix(path, "listen.") {
-			continue
-		}
-		if source.Origin != config.FromFile {
+	for _, path := range leafPaths(t, doc, "") {
+		if source := resolved.Sources[path]; source.Origin != config.FromFile {
 			t.Errorf("%s came from %v, want the document to carry it", path, source.Origin)
 		}
 	}
+}
+
+// leafPaths lists the dotted path of every value in a decoded document.
+func leafPaths(t *testing.T, doc map[string]any, prefix string) []string {
+	t.Helper()
+	var out []string
+	for key, value := range doc {
+		path := key
+		if prefix != "" {
+			path = prefix + "." + key
+		}
+		if nested, ok := value.(map[string]any); ok && len(nested) > 0 {
+			out = append(out, leafPaths(t, nested, path)...)
+			continue
+		}
+		out = append(out, path)
+	}
+	return out
 }
 
 // TestDocument_NamesNoSubsystemThatDoesNotExist stops the document from

@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -114,5 +115,28 @@ func TestPath_PrefersTheEnvironmentVariable(t *testing.T) {
 				t.Errorf("path = %q, want %q", got, c.want)
 			}
 		})
+	}
+}
+
+func TestLoad_RefusesAnythingThatIsNotARegularFile(t *testing.T) {
+	dir := t.TempDir()
+
+	_, err := config.Load(dir, noEnv)
+
+	if err == nil {
+		t.Fatal("want an error, got none")
+	}
+	if !strings.Contains(err.Error(), "regular file") {
+		t.Errorf("error does not say what is wrong with it: %v", err)
+	}
+}
+
+func TestLoad_RefusesAFilePastTheSizeLimit(t *testing.T) {
+	path := writeDocument(t, "a: "+strings.Repeat("x", config.MaxDocumentBytes))
+
+	_, err := config.Load(path, noEnv)
+
+	if !errors.Is(err, config.ErrDocumentTooLarge) {
+		t.Fatalf("err = %v, want ErrDocumentTooLarge", err)
 	}
 }

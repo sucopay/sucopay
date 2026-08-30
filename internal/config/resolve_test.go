@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -574,5 +575,38 @@ func TestResolve_ResolvesEveryNetworkInTheDocument(t *testing.T) {
 		if got.Networks[name].Kind != "simulated" {
 			t.Errorf("networks.%s.kind = %q, want simulated", name, got.Networks[name].Kind)
 		}
+	}
+}
+
+func TestResolve_RejectsABaseURLCarryingCredentials(t *testing.T) {
+	doc := map[string]any{"listen": map[string]any{
+		"base_url": "http://admin:PASSWORD@pay.example.com",
+	}}
+
+	_, err := config.Resolve(doc, noEnv)
+
+	p := wantProblemAt(t, err, "listen.base_url")
+	if strings.Contains(p.Message, "PASSWORD") {
+		t.Fatalf("the credentials reached the message: %v", p)
+	}
+}
+
+// TestResolve_StopsListingProblemsPastTheLimit keeps a document of many
+// unreadable keys from turning into a report nobody can read and a string
+// nobody asked to hold in memory.
+func TestResolve_StopsListingProblemsPastTheLimit(t *testing.T) {
+	keys := map[string]any{}
+	for i := range 500 {
+		keys[fmt.Sprintf("k%d", i)] = 1
+	}
+
+	_, err := config.Resolve(keys, noEnv)
+
+	got := problems(t, err)
+	if len(got) > 60 {
+		t.Errorf("got %d problems, want the report capped", len(got))
+	}
+	if !strings.Contains(err.Error(), "more problems follow") {
+		t.Errorf("the report does not say it was cut short:\n%v", err)
 	}
 }

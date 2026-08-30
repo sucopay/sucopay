@@ -8,15 +8,23 @@ import (
 
 // ReportLine is one setting as it appears to an operator.
 type ReportLine struct {
-	Path   string
-	Value  string
+	// Path is the dotted path of the setting, such as "listen.port".
+	Path string
+	// Value is the resolved value, or whether it is set when Secret is true.
+	Value string
+	// Source is where the value came from.
 	Source Source
+	// Secret says whether Value was reduced to whether the setting is set.
 	Secret bool
 }
 
-// Report returns every setting the document was read for, sorted by path.
-// A secret setting reports whether it is set instead of its value, so that
-// callers cannot leak one by rendering the report.
+// Report returns every setting the document was read for, sorted by path. For
+// a secret setting the value is replaced by whether it is set, so that a caller
+// rendering the report cannot disclose one.
+//
+// Secrecy is decided by path, and a path is built from names the document
+// chooses. [Resolve] refuses a network name holding a dot for that reason; a
+// Config assembled without it can put a secret at a path this does not match.
 func (r Resolved) Report() []ReportLine {
 	values := map[string]string{
 		"listen.host":      r.Config.Listen.Host,
