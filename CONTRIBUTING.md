@@ -10,8 +10,7 @@ make test
 make lint
 ```
 
-Requires Go 1.26+ and Docker. The web packages additionally require Node 24, the current
-Active LTS.
+Requires Go 1.26+. Docker runs the database that `make dev` starts.
 
 ## Code, tests, commits, comments
 
@@ -23,9 +22,6 @@ Each answers a different question. Put the answer where it belongs.
 | Tests | What |
 | Commit messages | Why |
 | Comments | Why not |
-
-Code says how the machine does it. Tests say what the software promises. Commit messages say
-why the change was made. Comments say why the obvious version was rejected.
 
 ## Architecture
 
@@ -55,7 +51,8 @@ internal/payment/
 - Keep a context's internals inside it. Cross-context work goes through domain events or an
   exported service, never through another context's repository.
 
-A test verifies the import direction.
+A test reads the imports of the files holding configuration resolution and fails on anything
+outside a short allow list.
 
 ## Domain model
 
@@ -131,6 +128,8 @@ func TestPayment_ConcurrentUpdatesLoseOnStaleVersion(t *testing.T)
 func TestObserver_SameTransactionObservedTwiceCreatesOneRow(t *testing.T)
 ```
 
+- Break what a test is named for and watch it fail before you keep it. A name is a claim, and
+  a test that passes either way makes the claim without checking it.
 - Table-driven tests with `t.Run` per case. `t.Helper()` in assertion helpers.
 - Every state transition needs a test for its failure path.
 - Anything scoped by account needs a test with two accounts asserting isolation.
@@ -139,7 +138,10 @@ func TestObserver_SameTransactionObservedTwiceCreatesOneRow(t *testing.T)
 ## Commits and PRs
 
 Conventional commits (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`). One logical
-change per PR.
+change per PR. Run `make check` before you commit.
+
+Write for someone with the repository and nothing else. A message that cites a document they
+cannot open tells them a reason exists and withholds it.
 
 The diff already says what changed. Use the body for the motivation, the alternatives you
 rejected, and the trade-off you accepted.

@@ -10,8 +10,7 @@ make test
 make lint
 ```
 
-`make dev` は開発用スタックを起動します。Go 1.26 以降と Docker が必要です。web パッケージを
-ビルドする場合は、Active LTS である Node.js 24 も必要です。
+Go 1.26 以降が必要です。`make dev` は Docker で PostgreSQL を起動します。
 
 ## コード、テスト、コミット、コメント
 
@@ -52,7 +51,7 @@ internal/payment/
   ドメインイベントか公開したサービスを経由します。他のコンテキストのリポジトリを直接
   呼ばないでください。
 
-依存の向きはテストで検証します。
+設定の解決を担うファイルの import をテストが読み、短い許可リストの外にあるものを検出します。
 
 ## ドメインモデル
 
@@ -129,6 +128,8 @@ func TestPayment_ConcurrentUpdatesLoseOnStaleVersion(t *testing.T)
 func TestObserver_SameTransactionObservedTwiceCreatesOneRow(t *testing.T)
 ```
 
+- テストの名前が指す挙動を壊し、落ちることを確認してから残してください。名前は主張であり、
+  壊しても通るテストは、検証せずに主張していることになります。
 - テーブル駆動テストで書き、ケースごとに `t.Run` を使ってください。アサーションのヘルパーには
   `t.Helper()` を入れてください。
 - すべての状態遷移に、失敗経路のテストを書いてください。
@@ -139,7 +140,10 @@ func TestObserver_SameTransactionObservedTwiceCreatesOneRow(t *testing.T)
 ## コミットと PR
 
 Conventional Commits に従います（`feat:` `fix:` `docs:` `refactor:` `test:` `chore:`）。
-1 つの PR には 1 つの論理的な変更だけを含めてください。
+1 つの PR には 1 つの論理的な変更だけを含めてください。コミット前に `make check` を実行してください。
+
+読み手はリポジトリしか持っていません。開けない文書を根拠として挙げると、理由があることだけを
+伝えて理由そのものを渡さないことになります。
 
 何を変えたかは diff が示します。本文には、変更の動機、検討して採らなかった案、受け入れた
 トレードオフを書いてください。

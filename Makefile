@@ -5,12 +5,22 @@ help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: dev
-dev: ## Run the development stack (for working on suco Pay itself)
+dev: ## Run the database suco Pay will use
 	docker compose up
 
 .PHONY: build
 build: ## Build suco
 	go build -o bin/suco ./cmd/suco
+
+.PHONY: check
+check: ## Everything CI runs
+	gofmt -l . | tee /dev/stderr | (! read)
+	go build ./...
+	go vet ./...
+	go test -race ./...
+	golangci-lint run ./...
+	./scripts/check-docs.sh
+	./scripts/check-public-only.sh
 
 .PHONY: test
 test: ## Run tests
@@ -25,9 +35,6 @@ lint: ## Run linters
 fmt: ## Format
 	gofmt -w .
 
-.PHONY: migrate
-migrate: ## Apply database migrations
-	go run ./cmd/suco migrate
 
 .PHONY: clean
 clean:
