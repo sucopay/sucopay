@@ -35,20 +35,17 @@ suco Pay runs on your own infrastructure. Funds go straight from the customer's 
 ## Getting started
 
 ```bash
-curl -fsSL https://get.sucopay.dev | sh
-suco init
-cd suco && suco dev
+git clone https://github.com/sucopay/sucopay && cd sucopay
+go build -o suco ./cmd/suco
+./suco init
+./suco serve
 ```
 
-The console is served at `http://localhost:7826`. Create your first payment there.
+`suco init` writes a `suco.yaml` you can read and commit. `suco serve` reads it and listens on
+`http://localhost:7826`, where `/healthz` answers.
 
-```bash
-curl -X POST http://localhost:7826/v1/payments \
-  -H 'Authorization: Bearer sk_test_...' \
-  -d '{"amount":"1000","asset":"JPYC","network":"polygon"}'
-
-suco listen --forward http://localhost:3000/webhooks
-```
+An install script and released binaries arrive with the first release. Everything in the list
+above is still to come.
 
 ## Contributing
 

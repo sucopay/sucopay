@@ -36,20 +36,17 @@ suco Pay は自社のインフラで動作します。資金は顧客のウォ�
 ## インストール
 
 ```bash
-curl -fsSL https://get.sucopay.dev | sh
-suco init
-cd suco && suco dev
+git clone https://github.com/sucopay/sucopay && cd sucopay
+go build -o suco ./cmd/suco
+./suco init
+./suco serve
 ```
 
-Console は `http://localhost:7826` で起動します。ここで最初の Payment を作成します。
+`suco init` が `suco.yaml` を書き出します。読んでコミットできる設定です。`suco serve` はそれを
+読み、`http://localhost:7826` で待ち受けます。現時点で応答するのは `/healthz` だけです。
 
-```bash
-curl -X POST http://localhost:7826/v1/payments \
-  -H 'Authorization: Bearer sk_test_...' \
-  -d '{"amount":"1000","asset":"JPYC","network":"polygon"}'
-
-suco listen --forward http://localhost:3000/webhooks
-```
+インストールスクリプトとビルド済みバイナリは最初のリリースで用意します。上の一覧にある機能は
+まだありません。
 
 ## コントリビュート
 
