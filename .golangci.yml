@@ -1,0 +1,22 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - revive
+
+  settings:
+    revive:
+      rules:
+        # CONTRIBUTING.md requires a doc comment on every exported name.
+        - name: exported
+        - name: package-comments
+        - name: error-strings
+        - name: indent-error-flow
+        - name: unreachable-code
+
+  exclusions:
+    rules:
+      - path: _test\.go$
+        linters:
+          - revive
