@@ -14,7 +14,7 @@ func lineAt(t *testing.T, lines []config.ReportLine, path string) config.ReportL
 			return l
 		}
 	}
-	t.Fatalf("want a line for %q, got %v", path, lines)
+	t.Fatalf("want a line for %q, got %#v", path, lines)
 	return config.ReportLine{}
 }
 
@@ -84,7 +84,7 @@ func TestReport_ShowsTheValueAndSourceForEverythingElse(t *testing.T) {
 		t.Errorf("value = %q, want %q", port.Value, "9000")
 	}
 	if port.Source.Origin != config.FromEnv || port.Source.Var != "SUCO_LISTEN_PORT" {
-		t.Errorf("source = %+v, want env SUCO_LISTEN_PORT", port.Source)
+		t.Errorf("source = %#v, want env SUCO_LISTEN_PORT", port.Source)
 	}
 
 	base := lineAt(t, lines, "listen.base_url")
@@ -99,6 +99,27 @@ func TestReport_IsSortedByPath(t *testing.T) {
 	for i := 1; i < len(lines); i++ {
 		if lines[i-1].Path > lines[i].Path {
 			t.Fatalf("line %d (%s) sorts after %s", i, lines[i].Path, lines[i-1].Path)
+		}
+	}
+}
+
+func TestReport_QuotesWhatWouldOtherwiseForgeALine(t *testing.T) {
+	// A report is laid out in columns. A value or a name holding a newline and
+	// a tab writes a row of its own, which reads as a setting nobody set.
+	got, err := config.Resolve(map[string]any{
+		"listen":   map[string]any{"host": "127.0.0.1\n  listen.port\t1\tdefault"},
+		"networks": map[string]any{"local\x1b[31m": map[string]any{"kind": "simulated"}},
+	}, noEnv)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	for _, line := range got.Report() {
+		if strings.ContainsAny(line.Path, "\n\t\x1b") {
+			t.Errorf("path %q reaches a report unquoted", line.Path)
+		}
+		if strings.ContainsAny(line.Value, "\n\t\x1b") {
+			t.Errorf("value %q reaches a report unquoted", line.Value)
 		}
 	}
 }

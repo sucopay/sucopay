@@ -610,3 +610,75 @@ func TestResolve_StopsListingProblemsPastTheLimit(t *testing.T) {
 		t.Errorf("the report does not say it was cut short:\n%v", err)
 	}
 }
+
+func TestResolve_RefusesCredentialsAtASettingThatIsNotSecret(t *testing.T) {
+	// A document names any variable at any key, and a report prints in full
+	// whatever reaches a key that is not secret. Refusing the value is what
+	// keeps a password out of the report.
+	const dsn = "postgres://admin:hunter2@db.internal/sucopay"
+
+	for _, c := range []struct {
+		name string
+		doc  map[string]any
+	}{
+		{"written in the document", map[string]any{
+			"listen": map[string]any{"host": dsn},
+		}},
+		{"supplied by a variable", map[string]any{
+			"listen": map[string]any{"host": "${SUCO_DATABASE_URL}"},
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := config.Resolve(c.doc, envOf(map[string]string{"SUCO_DATABASE_URL": dsn}))
+
+			p := wantProblemAt(t, err, "listen.host")
+			if !strings.Contains(p.Message, "username or password") {
+				t.Errorf("message = %q, want it to name what it refused", p.Message)
+			}
+			if strings.Contains(p.String(), "hunter2") {
+				t.Errorf("the problem carries the password: %s", p.String())
+			}
+		})
+	}
+}
+
+func TestResolve_AcceptsCredentialsAtASecretSetting(t *testing.T) {
+	const dsn = "postgres://admin:hunter2@db.internal/sucopay"
+
+	got, err := config.Resolve(map[string]any{
+		"database": map[string]any{"managed": false, "url": dsn},
+	}, noEnv)
+
+	if err != nil {
+		t.Fatalf("err = %v, want none: a database URL is where credentials belong", err)
+	}
+	if got.Config.Database.URL != dsn {
+		t.Errorf("database.url = %q, want it kept whole", got.Config.Database.URL)
+	}
+}
+
+func TestResolve_RefusesAReferenceToSomethingThatIsNotAVariableName(t *testing.T) {
+	// The name is printed back in the report and in the message naming an
+	// unset variable, so it may hold only what a variable name holds.
+	for _, name := range []string{
+		"A\n  listen.base_url: looks fine",
+		"A\x1b[2K\rlisten.host is fine",
+		"HAS-A-DASH",
+		"1STARTS_WITH_A_DIGIT",
+		"HAS A SPACE",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := config.Resolve(map[string]any{
+				"listen": map[string]any{"host": "${" + name + "}"},
+			}, envOf(map[string]string{name: "127.0.0.1"}))
+
+			p := wantProblemAt(t, err, "listen.host")
+			if strings.Contains(p.String(), "\n") {
+				t.Errorf("the problem spans more than its own line: %q", p.String())
+			}
+			if strings.Contains(p.String(), "\x1b") {
+				t.Errorf("the problem carries an escape sequence: %q", p.String())
+			}
+		})
+	}
+}

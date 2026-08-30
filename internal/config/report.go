@@ -22,6 +22,9 @@ type ReportLine struct {
 // a secret setting the value is replaced by whether it is set, so that a caller
 // rendering the report cannot disclose one.
 //
+// Paths and values are quoted by [Quote]. Both are chosen by the document, and
+// a report is laid out in columns a newline would forge a row of.
+//
 // Secrecy is decided by path, and a path is built from names the document
 // chooses. [Resolve] refuses a network name holding a dot for that reason; a
 // Config assembled without it can put a secret at a path this does not match.
@@ -48,8 +51,8 @@ func (r Resolved) Report() []ReportLine {
 			}
 		}
 		lines = append(lines, ReportLine{
-			Path:   path,
-			Value:  value,
+			Path:   Quote(path),
+			Value:  Quote(value),
 			Source: r.Sources[path],
 			Secret: secret,
 		})

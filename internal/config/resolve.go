@@ -87,6 +87,9 @@ func shown(path string, v any) any {
 	if Secret(path) {
 		return "(secret)"
 	}
+	if text, isString := v.(string); isString {
+		return Quote(text)
+	}
 	return v
 }
 
@@ -149,7 +152,26 @@ func (r *reader) text(path, def string) string {
 		r.fail(path, "want text, got %s: %v", kindOf(v), shown(path, v))
 		return def
 	}
+	r.refuseCredentials(path, s)
 	return s
+}
+
+// refuseCredentials keeps a username or password out of every setting except
+// the ones declared secret. Secrecy is decided by the key, so a document is
+// free to name any variable at any key, and a report prints in full whatever
+// arrives at a key that is not secret. Refusing the value is what makes that
+// rule safe: credentials reach the paths built to hold them or they do not
+// start the instance.
+//
+// The message holds no part of the value. The path is already the one thing
+// the operator needs, and the value is what must not be printed.
+func (r *reader) refuseCredentials(path, value string) {
+	if Secret(path) {
+		return
+	}
+	if u, err := url.Parse(value); err == nil && u.User != nil {
+		r.fail(path, "carries a username or password, which only a secret setting may hold")
+	}
 }
 
 func (r *reader) integer(path string, def int) int {
@@ -290,10 +312,6 @@ func (r *reader) validateBaseURL(raw string) {
 		r.fail(path, "needs an http or https scheme: %v", shown(path, raw))
 	case u.Host == "":
 		r.fail(path, "has no host: %v", shown(path, raw))
-	case u.User != nil:
-		// The value is printed at every start, so a password written into it
-		// would reach the log of every deployment that restarts.
-		r.fail(path, "carries a username or password, which this value is not for")
 	}
 }
 
@@ -318,7 +336,27 @@ const maxDepth = 32
 var (
 	errPartialReference = errors.New("a reference has to be the whole value")
 	errEmptyReference   = errors.New("a reference names no variable")
+	errNotAVariableName = errors.New("a reference names something that is not a variable")
 )
+
+// isVariableName reports whether s has the shape an environment variable name
+// has. A reference is held to it so that a document cannot reach a report
+// through [Source.Var] or through the message naming an unset variable, both
+// of which print the name as it was written.
+func isVariableName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r == '_':
+		case i > 0 && r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return true
+}
 
 // reference reports the variable named by a whole ${NAME} string. A string
 // that mixes literal text with a reference is an error, so that every value
@@ -337,6 +375,9 @@ func reference(s string) (name string, isRef bool, err error) {
 	name = s[2 : len(s)-1]
 	if name == "" {
 		return "", false, errEmptyReference
+	}
+	if !isVariableName(name) {
+		return "", false, errNotAVariableName
 	}
 	return name, true, nil
 }

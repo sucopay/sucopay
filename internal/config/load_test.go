@@ -84,7 +84,7 @@ func TestLoad_ReadsTheDocumentAndResolvesIt(t *testing.T) {
 		t.Errorf("port = %d, want 9000", got.Config.Listen.Port)
 	}
 	if got.Sources["database.url"].Var != "SUCO_DATABASE_URL" {
-		t.Errorf("database.url source = %+v, want the variable name", got.Sources["database.url"])
+		t.Errorf("database.url source = %#v, want the variable name", got.Sources["database.url"])
 	}
 }
 

@@ -137,3 +137,21 @@ func TestProblem_QuotesAPathThatCarriesControlCharacters(t *testing.T) {
 		})
 	}
 }
+
+func TestSource_StringNamesTheOriginAndTheVariableBehindIt(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		source config.Source
+		want   string
+	}{
+		{"default", config.Source{Origin: config.FromDefault}, "default"},
+		{"file", config.Source{Origin: config.FromFile}, "file"},
+		{"env", config.Source{Origin: config.FromEnv, Var: "SUCO_DATABASE_URL"}, "${SUCO_DATABASE_URL}"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.source.String(); got != tc.want {
+				t.Errorf("String() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

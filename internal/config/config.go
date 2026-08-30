@@ -27,7 +27,7 @@ const (
 	FromEnv
 )
 
-// String returns the origin as it appears in a configuration report.
+// String names the origin.
 func (o Origin) String() string {
 	switch o {
 	case FromDefault:
@@ -50,6 +50,20 @@ type Source struct {
 	// Var is the environment variable that supplied the value. It is empty
 	// unless Origin is FromEnv.
 	Var string
+}
+
+// String names where a value came from, for a report an operator reads. An
+// environment origin carries the variable with it, because that is the part
+// telling an operator where to go and change the value.
+//
+// Var needs no quoting here. [Resolve] accepts a reference only to a name of
+// the shape an environment variable has, so nothing a document writes reaches
+// a report through this.
+func (s Source) String() string {
+	if s.Origin == FromEnv {
+		return "${" + s.Var + "}"
+	}
+	return s.Origin.String()
 }
 
 // Listen is where the instance serves. Host is the interface to bind; BaseURL
@@ -109,16 +123,34 @@ func (p Problem) String() string {
 	if p.Path == "" {
 		return p.Message
 	}
-	return quotePath(p.Path) + ": " + p.Message
+	return Quote(p.Path) + ": " + p.Message
 }
 
-// quotePath renders a path readably, quoting it only when it holds something a
-// reader would not expect in a key.
-func quotePath(path string) string {
-	if strings.IndexFunc(path, func(r rune) bool { return r < 0x20 || r == 0x7f }) < 0 {
-		return path
+// Quote renders text from a document readably, quoting it only when it holds
+// something a reader would not expect. Anything a document chooses reaches a
+// terminal through a report, where a newline forges a line of its own and an
+// escape sequence is acted on rather than shown.
+//
+// Line and paragraph separators and the bidirectional overrides are here with
+// the C0 and C1 controls: a terminal breaks a line on the first pair and
+// reverses the reading order of what follows on the second, so either one
+// rewrites a report without holding a byte a reader would notice.
+func Quote(s string) string {
+	suspect := func(r rune) bool {
+		switch {
+		case r < 0x20, r == 0x7f, r >= 0x80 && r <= 0x9f:
+			return true
+		case r == 0x2028, r == 0x2029:
+			return true
+		case r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069:
+			return true
+		}
+		return false
 	}
-	return strconv.Quote(path)
+	if strings.IndexFunc(s, suspect) < 0 {
+		return s
+	}
+	return strconv.Quote(s)
 }
 
 // Problems is every problem found in one document. [Resolve] reports all of
