@@ -33,7 +33,7 @@ Backend and CLI both follow the dependency rule from Clean Architecture: inner c
 reference outer code. Domain types do not import a repository implementation, an HTTP handler,
 or a chain adapter.
 
-Split packages by bounded context. Split layers by file inside them.
+Split domain packages by bounded context. Split layers by file inside them.
 
 ```
 internal/payment/
@@ -45,7 +45,11 @@ internal/payment/
 ```
 
 - Do not create packages named `domain`, `application`, `infrastructure`, `common`, `utils`
-  or `helpers`.
+  or `helpers`. A package name says what it carries, never which layer it belongs to.
+- A package that serves the whole process rather than one context is named for its concern.
+  `config` is one.
+- `api` holds the server and the routing that mounts contexts. A context's own handlers live
+  with it, in `internal/<context>/http.go`.
 - Declare interfaces in the package that calls them, next to the caller.
 - Wire dependencies in `main` only.
 - Keep a context's internals inside it. Cross-context work goes through domain events or an
