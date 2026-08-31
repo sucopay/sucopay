@@ -21,6 +21,9 @@ var resolutionFiles = []string{"config.go", "report.go", "resolve.go"}
 // dependency is called.
 var resolutionImports = []string{
 	"cmp", "errors", "fmt", "math", "net/url", "slices", "strconv", "strings",
+	// invisible decides which characters a report may carry. It reads
+	// nothing and reaches nothing; it is a list of runes.
+	"github.com/sucopay/sucopay/internal/invisible",
 }
 
 func TestImports_ResolutionReachesNothingOutsideItself(t *testing.T) {

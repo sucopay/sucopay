@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/sucopay/sucopay/internal/invisible"
 )
 
 // Lookup reports the value of an environment variable and whether it was set.
@@ -88,7 +90,7 @@ func shown(path string, v any) any {
 		return "(secret)"
 	}
 	if text, isString := v.(string); isString {
-		return Quote(text)
+		return invisible.Quote(text)
 	}
 	return v
 }

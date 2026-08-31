@@ -22,7 +22,7 @@ check: ## Everything CI runs
 	go build ./...
 	go test -race ./...
 	$(MAKE) lint
-	$(MAKE) docs
+	$(MAKE) repo
 	$(MAKE) vuln
 
 .PHONY: test
@@ -39,10 +39,11 @@ vuln: ## Check dependencies for known vulnerabilities
 	go mod verify
 	go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
 
-.PHONY: docs
-docs: ## Check the documentation against the code
+.PHONY: repo
+repo: ## Check the repository against its own rules
 	./scripts/check-docs.sh
 	./scripts/check-public-only.sh
+	./scripts/check-source.sh
 
 .PHONY: fmt
 fmt: ## Format

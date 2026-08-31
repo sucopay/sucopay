@@ -2,8 +2,9 @@ package config
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
+
+	"github.com/sucopay/sucopay/internal/invisible"
 )
 
 const (
@@ -118,39 +119,12 @@ type Problem struct {
 //
 // The path is quoted. A key comes from the document, so an unquoted one could
 // carry a newline and forge a line of its own in a report, or an escape
-// sequence a terminal would act on.
+// sequence a terminal would act on. [invisible.Quote] holds that list.
 func (p Problem) String() string {
 	if p.Path == "" {
 		return p.Message
 	}
-	return Quote(p.Path) + ": " + p.Message
-}
-
-// Quote renders text from a document readably, quoting it only when it holds
-// something a reader would not expect. Anything a document chooses reaches a
-// terminal through a report, where a newline forges a line of its own and an
-// escape sequence is acted on rather than shown.
-//
-// The line and paragraph separators and the bidirectional overrides are here
-// with the C0 and C1 controls. A terminal breaks a line on the first pair and
-// reverses the reading order on the second, and neither leaves a byte a reader
-// would notice.
-func Quote(s string) string {
-	suspect := func(r rune) bool {
-		switch {
-		case r < 0x20, r == 0x7f, r >= 0x80 && r <= 0x9f:
-			return true
-		case r == 0x2028, r == 0x2029:
-			return true
-		case r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069:
-			return true
-		}
-		return false
-	}
-	if strings.IndexFunc(s, suspect) < 0 {
-		return s
-	}
-	return strconv.Quote(s)
+	return invisible.Quote(p.Path) + ": " + p.Message
 }
 
 // Problems is every problem found in one document. [Resolve] reports all of

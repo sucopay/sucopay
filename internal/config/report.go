@@ -4,6 +4,8 @@ import (
 	"cmp"
 	"slices"
 	"strconv"
+
+	"github.com/sucopay/sucopay/internal/invisible"
 )
 
 // ReportLine is one setting as it appears to an operator.
@@ -22,7 +24,7 @@ type ReportLine struct {
 // a secret setting the value is replaced by whether it is set, so that a caller
 // rendering the report cannot disclose one.
 //
-// Paths and values are quoted by [Quote]. Both are chosen by the document, and
+// Paths and values are quoted by [invisible.Quote]. Both are chosen by the document, and
 // a report is laid out in columns a newline would forge a row of.
 //
 // Secrecy is decided by path, and a path is built from names the document
@@ -51,8 +53,8 @@ func (r Resolved) Report() []ReportLine {
 			}
 		}
 		lines = append(lines, ReportLine{
-			Path:   Quote(path),
-			Value:  Quote(value),
+			Path:   invisible.Quote(path),
+			Value:  invisible.Quote(value),
 			Source: r.Sources[path],
 			Secret: secret,
 		})

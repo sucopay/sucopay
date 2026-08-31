@@ -9,7 +9,7 @@ import (
 	"text/tabwriter"
 	"unicode/utf8"
 
-	"github.com/sucopay/sucopay/internal/config"
+	"github.com/sucopay/sucopay/internal/invisible"
 	"github.com/sucopay/sucopay/internal/postgres"
 )
 
@@ -69,13 +69,13 @@ func describeDatabase(ctx context.Context, url string) (string, error) {
 	}
 	db, err := postgres.Open(ctx, url)
 	if err != nil {
-		return "unreachable", errors.New(config.Quote(err.Error()))
+		return "unreachable", errors.New(invisible.Quote(err.Error()))
 	}
 	defer db.Close()
 
 	version, err := db.ServerVersion(ctx)
 	if err != nil {
-		return "unreachable", errors.New(config.Quote(err.Error()))
+		return "unreachable", errors.New(invisible.Quote(err.Error()))
 	}
 	return describeVersion(version), nil
 }
@@ -83,7 +83,7 @@ func describeDatabase(ctx context.Context, url string) (string, error) {
 // describeVersion renders what a server said about itself for a report a
 // person reads.
 func describeVersion(version string) string {
-	return "PostgreSQL " + config.Quote(shorten(version, maxDescription))
+	return "PostgreSQL " + invisible.Quote(shorten(version, maxDescription))
 }
 
 // shorten cuts s to at most n bytes, on a rune boundary.
