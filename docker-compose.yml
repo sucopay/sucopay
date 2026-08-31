@@ -1,5 +1,5 @@
-# A PostgreSQL for working on suco Pay itself. Started by `make dev`.
-# Nothing in the code reads it yet.
+# A PostgreSQL for working on suco Pay itself. Started by `make dev`, and the
+# database the tests run against.
 services:
   postgres:
     image: postgres:17-alpine

@@ -16,6 +16,21 @@ env:
 jobs:
   go:
     runs-on: ubuntu-latest
+    # The tests run against a real PostgreSQL rather than skipping without one.
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+        env:
+          POSTGRES_USER: sucopay
+          POSTGRES_PASSWORD: sucopay
+          POSTGRES_DB: sucopay
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U sucopay"
+          --health-interval 5s
+          --health-retries 10
+    env:
+      SUCO_TEST_DATABASE_URL: postgres://sucopay:sucopay@127.0.0.1:5432/sucopay
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -38,8 +53,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with: { go-version: '${{ env.GO_VERSION }}', cache: true }
-      - run: go mod verify
-      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+      - run: make vuln
 
   docs:
     runs-on: ubuntu-latest

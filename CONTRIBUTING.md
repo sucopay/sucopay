@@ -12,6 +12,10 @@ make check      # everything CI runs
 
 Requires Go 1.26+. `make dev` needs Docker, and `make check` needs golangci-lint.
 
+The tests need that database. They do not skip without it: a test that skips reports
+success without having run. `SUCO_TEST_DATABASE_URL` names it, and the Makefile sets it to
+what `make dev` starts.
+
 ## Code, tests, commits, comments
 
 Each answers a different question. Put the answer where it belongs.
