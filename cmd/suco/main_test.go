@@ -1,25 +1,43 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/sucopay/sucopay/internal/postgres"
+	"github.com/sucopay/sucopay/internal/postgres/postgrestest"
 )
 
 // A command has no exported surface, so these tests call run directly. Every
 // case goes through it rather than through the individual commands, because
 // dispatch and the exit behaviour are what a user meets first.
 
+// runArgs runs a command under a deadline. serve keeps running once it binds,
+// so a command that got further than its test expected would otherwise hang
+// the run rather than fail it.
 func runArgs(t *testing.T, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
+	// Comfortably longer than anything a command waits for on its own, so a
+	// slow database reports what it is rather than tripping this.
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+	defer cancel()
+
 	var out, errOut bytes.Buffer
-	err = run(t.Context(), args, &out, &errOut)
+	err = run(ctx, args, &out, &errOut)
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("%q was still running after the deadline, so it went further than this test expects", args)
+	}
 	return out.String(), errOut.String(), err
 }
 
@@ -247,21 +265,41 @@ func TestRun_ServeAcceptsWhatInitWrote(t *testing.T) {
 	if _, _, err := runArgs(t, "init"); err != nil {
 		t.Fatalf("init: %v", err)
 	}
+	// init writes the port it defaults to, which something else on this
+	// machine may hold. That says nothing about whether the document is
+	// acceptable, so the port is moved and the rest of it is what is tested.
+	onFreePort(t, path)
 
-	// serve binds the port the document names and blocks, so the run is cut
-	// short by a cancelled context. Reaching that point means the document
-	// resolved and the port was free.
+	// serve binds and then blocks, so the run is cut short by a context that
+	// is already cancelled.
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	var out, errOut bytes.Buffer
 
 	err := run(ctx, []string{"serve"}, &out, &errOut)
 
-	if err != nil && strings.Contains(err.Error(), "listen on") {
-		t.Skipf("the port the document names is held by something else: %v", err)
+	// The cancelled context is the only thing that should have stopped it.
+	// Matching on the wording of a refusal stops matching the first time that
+	// wording changes.
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("serve did not accept the document init wrote: %v", err)
 	}
+}
+
+// onFreePort rewrites the port in a document to one nothing is listening on.
+func onFreePort(t *testing.T, path string) {
+	t.Helper()
+	body, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("serve rejected the document init wrote: %v", err)
+		t.Fatal(err)
+	}
+	replaced := regexp.MustCompile(`(?m)^  port: \d+$`).
+		ReplaceAll(body, fmt.Appendf(nil, "  port: %d", freePort(t)))
+	if bytes.Equal(replaced, body) {
+		t.Fatalf("no port to replace in the document:\n%s", body)
+	}
+	if err := os.WriteFile(path, replaced, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -287,11 +325,15 @@ func TestRun_ServeRefusesASectionNothingActsOn(t *testing.T) {
 	cases := []struct {
 		name string
 		doc  string
-		says string
+		says []string
 	}{
-		{"database", "database:\n  managed: true\n", "database"},
-		{"networks", "networks:\n  local:\n    kind: simulated\n", "networks"},
-		{"both", "database:\n  managed: true\nnetworks:\n  local:\n    kind: simulated\n", "database and networks"},
+		{"a database of its own", "database:\n  managed: true\n", []string{"database.managed"}},
+		{"networks", "networks:\n  local:\n    kind: simulated\n", []string{"networks"}},
+		{
+			"both",
+			"database:\n  managed: true\nnetworks:\n  local:\n    kind: simulated\n",
+			[]string{"database.managed", "networks"},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -302,30 +344,12 @@ func TestRun_ServeRefusesASectionNothingActsOn(t *testing.T) {
 			if err == nil {
 				t.Fatal("want an error, got none")
 			}
-			if !strings.Contains(err.Error(), c.says) {
-				t.Errorf("error does not name the section: %v", err)
+			for _, says := range c.says {
+				if !strings.Contains(err.Error(), says) {
+					t.Errorf("error does not name %s: %v", says, err)
+				}
 			}
 		})
-	}
-}
-
-func TestRun_ServeAcceptsADocumentWithoutThoseSections(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "suco.yaml")
-	t.Setenv("SUCO_CONFIG", path)
-	if _, _, err := runArgs(t, "init"); err != nil {
-		t.Fatalf("init: %v", err)
-	}
-
-	// serve blocks once it binds, so the run is cut short by a context that is
-	// already cancelled.
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	var out, errOut bytes.Buffer
-
-	err := run(ctx, []string{"serve"}, &out, &errOut)
-
-	if err != nil && strings.Contains(err.Error(), "does not act on") {
-		t.Fatalf("the document init writes was refused: %v", err)
 	}
 }
 
@@ -364,9 +388,9 @@ func TestRun_DoctorSaysWhetherASecretIsSetAndNeverItsValue(t *testing.T) {
 		document string
 		value    string
 		source   string
-		// Configuring a database is refused, and the refusal is covered
-		// elsewhere. The report is written before it, and the report is
-		// what this case is about.
+		// This document names a database nothing is listening for, so the
+		// command fails. That is covered elsewhere; the report is written
+		// before it, and the report is what this case is about.
 		refused bool
 	}{
 		{
@@ -385,7 +409,9 @@ func TestRun_DoctorSaysWhetherASecretIsSetAndNeverItsValue(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			document(t, c.document)
-			t.Setenv("SUCO_DATABASE_URL", "postgres://admin:"+password+"@db.internal/sucopay")
+			// Nothing listens on port 1, so the connection fails at once
+			// without a name to look up.
+			t.Setenv("SUCO_DATABASE_URL", "postgres://admin:"+password+"@127.0.0.1:1/sucopay")
 
 			stdout, _, err := runArgs(t, "doctor")
 
@@ -464,4 +490,179 @@ func TestRun_DoctorFailsWhenTheReportCannotBeWritten(t *testing.T) {
 	if !strings.Contains(err.Error(), "no space left on device") {
 		t.Errorf("error does not carry what went wrong: %v", err)
 	}
+}
+
+// namingADatabase is a document pointing at the URL in an environment variable.
+func namingADatabase() string {
+	return "database:\n  managed: false\n  url: ${SUCO_DATABASE_URL}\n"
+}
+
+// freePort returns a port nothing is listening on, so that a test binding one
+// does not depend on which ports this machine has free.
+func freePort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port
+}
+
+func TestRun_ServeOpensTheDatabaseBeforeItServes(t *testing.T) {
+	const name = "suco-serve-test"
+	document(t, fmt.Sprintf("listen:\n  port: %d\n%s", freePort(t), namingADatabase()))
+	t.Setenv("SUCO_DATABASE_URL", postgrestest.WithName(t, postgrestest.URL(t), name))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	reader, writer := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		err := run(ctx, []string{"serve"}, writer, io.Discard)
+		// Closing with the error ends the read below when serve stops early,
+		// instead of leaving it waiting for a line that is never written.
+		writer.CloseWithError(err)
+		done <- err
+	}()
+
+	// serve blocks once it has said it is serving, so the line is where the
+	// server can be asked what serve actually opened.
+	line, readErr := bufio.NewReader(reader).ReadString('\n')
+	open := postgrestest.Backends(t, name)
+	cancel()
+	<-done
+
+	if readErr != nil {
+		t.Fatalf("serve stopped before it began serving: %v", readErr)
+	}
+	if !strings.Contains(line, "is serving") {
+		t.Errorf("serve wrote %q, want it to say it is serving", line)
+	}
+	if open == 0 {
+		t.Error("serve was serving with no connection to the database its document named")
+	}
+}
+
+func TestRun_ServeStopsWhenTheDatabaseIsUnreachable(t *testing.T) {
+	const password = "hunter2"
+	document(t, fmt.Sprintf("listen:\n  port: %d\n%s", freePort(t), namingADatabase()))
+	t.Setenv("SUCO_DATABASE_URL", "postgres://admin:"+password+"@127.0.0.1:1/sucopay")
+
+	stdout, _, err := runArgs(t, "serve")
+
+	if err == nil {
+		t.Fatal("want an error, got none: a server that cannot reach its database has nowhere to keep state")
+	}
+	if !strings.Contains(err.Error(), "failed to connect") {
+		t.Errorf("error does not say the database could not be reached: %v", err)
+	}
+	if strings.Contains(err.Error(), password) {
+		t.Errorf("the error carries the password: %v", err)
+	}
+	// The database is opened before the line announcing the server, so that
+	// an operator is never told it is serving by a process about to stop.
+	if strings.Contains(stdout, "is serving") {
+		t.Errorf("serve said it was serving and then stopped:\n%s", stdout)
+	}
+}
+
+func TestRun_DoctorNamesTheDatabaseItReached(t *testing.T) {
+	document(t, namingADatabase())
+	t.Setenv("SUCO_DATABASE_URL", postgrestest.URL(t))
+
+	// What the server itself answers, so that a report naming a version nobody
+	// asked it for does not pass for having reached one.
+	pool, err := postgres.Open(t.Context(), postgrestest.URL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	version, err := pool.ServerVersion(t.Context())
+	pool.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, _, err := runArgs(t, "doctor")
+
+	if err != nil {
+		t.Fatalf("err = %v, want none", err)
+	}
+	if !strings.Contains(stdout, "PostgreSQL "+version) {
+		t.Errorf("the report does not name the version the server gave (%s):\n%s", version, stdout)
+	}
+}
+
+func TestRun_DoctorFailsWhenTheDatabaseIsUnreachableAndStillPrintsTheReport(t *testing.T) {
+	document(t, namingADatabase())
+	t.Setenv("SUCO_DATABASE_URL", "postgres://admin:hunter2@127.0.0.1:1/sucopay")
+
+	stdout, _, err := runArgs(t, "doctor")
+
+	if err == nil {
+		t.Fatal("want an error, got none")
+	}
+	if !strings.Contains(stdout, "unreachable") {
+		t.Errorf("the report does not say the database was out of reach:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "listen.port") {
+		t.Errorf("the report was withheld, leaving nothing to diagnose:\n%s", stdout)
+	}
+}
+
+// silentListener accepts connections and never speaks, standing in for a
+// database that is reachable but does not answer.
+func silentListener(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l.Close() })
+
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			t.Cleanup(func() { conn.Close() })
+		}
+	}()
+	return l.Addr().String()
+}
+
+func TestRun_DoctorWritesTheReportBeforeItAsksTheDatabaseAnything(t *testing.T) {
+	document(t, namingADatabase())
+	t.Setenv("SUCO_DATABASE_URL", "postgres://u:p@"+silentListener(t)+"/db")
+
+	reader, writer := io.Pipe()
+	go func() {
+		err := run(t.Context(), []string{"doctor"}, writer, io.Discard)
+		writer.CloseWithError(err)
+	}()
+
+	settings := make(chan string, 1)
+	go func() {
+		line, err := bufio.NewReader(reader).ReadString('\n')
+		if err == nil {
+			settings <- line
+		}
+		close(settings)
+	}()
+
+	// Far less than the wait for a database that never answers, so that
+	// holding the report until it does is a failure rather than a slow pass.
+	select {
+	case line, ok := <-settings:
+		if !ok {
+			t.Fatal("doctor wrote nothing before asking the database")
+		}
+		if !strings.Contains(line, "suco.yaml") {
+			t.Errorf("the first thing written was %q, want the report", line)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("doctor held the report until the database answered")
+	}
+	reader.Close()
 }

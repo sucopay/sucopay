@@ -51,31 +51,32 @@ func load() (config.Resolved, string, error) {
 	return resolved, document, err
 }
 
-// unimplemented names the sections a document sets that no part of this build
-// reads. Refusing them in the schema would take the settings out before the
-// code that needs them arrives.
-func unimplemented(r config.Resolved) []string {
-	var out []string
-	for _, path := range []string{"database.managed", "database.url"} {
-		if r.Sources[path].Origin != config.FromDefault {
-			out = append(out, "database")
-			break
-		}
+// unimplementedError refuses a document that configures something no part of
+// this build reads. Refusing these in the schema would take the settings out
+// before the code that needs them arrives.
+//
+// Both commands that read a document call this, so the refusal doctor gives is
+// the one serve will give. A default for database.managed is a document saying
+// nothing about a database, which is not the same as asking for one.
+func unimplementedError(document string, r config.Resolved) error {
+	var refusals []string
+	if r.Config.Database.Managed && r.Sources["database.managed"].Origin != config.FromDefault {
+		refusals = append(refusals,
+			"a database of its own is not implemented. Set database.managed to false and give database.url")
 	}
 	if len(r.Config.Networks) > 0 {
-		out = append(out, "networks")
+		refusals = append(refusals,
+			"nothing reads networks. Remove the section rather than run a server that ignores it")
 	}
-	return out
-}
 
-// unimplementedError is the refusal both commands give, so that the one a
-// reader meets from doctor is the one serve will give them.
-func unimplementedError(document string, missing []string) error {
-	if len(missing) == 0 {
+	switch len(refusals) {
+	case 0:
 		return nil
+	case 1:
+		return fmt.Errorf("%s: %s", document, refusals[0])
+	default:
+		return fmt.Errorf("%s:\n  %s", document, strings.Join(refusals, "\n  "))
 	}
-	return fmt.Errorf("%s configures %s, which this build does not act on. Remove the section rather than run a server that ignores it",
-		document, strings.Join(missing, " and "))
 }
 
 func main() {

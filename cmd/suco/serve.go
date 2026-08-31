@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/sucopay/sucopay/internal/api"
+	"github.com/sucopay/sucopay/internal/postgres"
 )
 
 func serve(ctx context.Context, args []string, stdout io.Writer) error {
@@ -20,11 +21,19 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		return err
 	}
 
-	if err := unimplementedError(document, unimplemented(resolved)); err != nil {
+	if err := unimplementedError(document, resolved); err != nil {
 		return err
 	}
 
 	cfg := resolved.Config
+	if cfg.Database.URL != "" {
+		db, err := postgres.Open(ctx, cfg.Database.URL)
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+	}
+
 	addr := net.JoinHostPort(cfg.Listen.Host, strconv.Itoa(cfg.Listen.Port))
 	server, err := api.Listen(addr, api.Handler())
 	if err != nil {
