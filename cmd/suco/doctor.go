@@ -77,7 +77,21 @@ func describeDatabase(ctx context.Context, url string) (string, error) {
 	if err != nil {
 		return "unreachable", errors.New(invisible.Quote(err.Error()))
 	}
-	return describeVersion(version), nil
+	// What an instance would find there, which is not the same question as
+	// whether it answered.
+	schema, err := db.SchemaVersion(ctx)
+	if err != nil {
+		return "unreachable", errors.New(invisible.Quote(err.Error()))
+	}
+	return describeVersion(version) + ", schema " + describeSchema(schema), nil
+}
+
+// describeSchema names the migration a database has been brought up to.
+func describeSchema(version string) string {
+	if version == "" {
+		return "not applied"
+	}
+	return invisible.Quote(shorten(version, maxDescription))
 }
 
 // describeVersion renders what a server said about itself for a report a

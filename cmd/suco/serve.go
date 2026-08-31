@@ -32,6 +32,18 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 		defer db.Close()
+
+		// Applied at every start rather than by a command an operator has to
+		// know about, which would leave an evaluator with an empty database
+		// and nothing saying why. [postgres.Pool.Migrate] says what makes
+		// that safe to repeat.
+		applied, err := db.Migrate(ctx)
+		if err != nil {
+			return err
+		}
+		if applied > 0 {
+			fmt.Fprintf(stdout, "Applied %d migration(s)\n", applied)
+		}
 	}
 
 	addr := net.JoinHostPort(cfg.Listen.Host, strconv.Itoa(cfg.Listen.Port))

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -509,38 +510,103 @@ func freePort(t *testing.T) int {
 	return l.Addr().(*net.TCPAddr).Port
 }
 
-func TestRun_ServeOpensTheDatabaseBeforeItServes(t *testing.T) {
-	const name = "suco-serve-test"
-	document(t, fmt.Sprintf("listen:\n  port: %d\n%s", freePort(t), namingADatabase()))
-	t.Setenv("SUCO_DATABASE_URL", postgrestest.WithName(t, postgrestest.URL(t), name))
+// serving runs serve until it announces itself, and returns what it wrote and
+// a function that stops it.
+//
+// Everything serve writes is read, not only the line being waited for. serve
+// writes to a pipe, so a line nobody takes blocks it where it stands, and a
+// test that stopped reading early would hang rather than fail.
+func serving(t *testing.T, args ...string) (announced string, stop func()) {
+	t.Helper()
 
 	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
 	reader, writer := io.Pipe()
 	done := make(chan error, 1)
 	go func() {
-		err := run(ctx, []string{"serve"}, writer, io.Discard)
-		// Closing with the error ends the read below when serve stops early,
-		// instead of leaving it waiting for a line that is never written.
+		err := run(ctx, append([]string{"serve"}, args...), writer, io.Discard)
 		writer.CloseWithError(err)
 		done <- err
 	}()
 
-	// serve blocks once it has said it is serving, so the line is where the
-	// server can be asked what serve actually opened.
-	line, readErr := bufio.NewReader(reader).ReadString('\n')
-	open := postgrestest.Backends(t, name)
-	cancel()
-	<-done
+	var mu sync.Mutex
+	var written strings.Builder
+	began := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		scanner := bufio.NewScanner(reader)
+		announced := false
+		for scanner.Scan() {
+			mu.Lock()
+			written.WriteString(scanner.Text() + "\n")
+			mu.Unlock()
+			if !announced && strings.Contains(scanner.Text(), "is serving") {
+				announced = true
+				close(began)
+			}
+		}
+	}()
 
-	if readErr != nil {
-		t.Fatalf("serve stopped before it began serving: %v", readErr)
+	read := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return written.String()
 	}
-	if !strings.Contains(line, "is serving") {
-		t.Errorf("serve wrote %q, want it to say it is serving", line)
+
+	select {
+	case <-began:
+		return read(), func() {
+			cancel()
+			<-done
+			<-finished
+		}
+	case <-finished:
+		cancel()
+		t.Fatalf("serve stopped before it began serving: %v\n%s", <-done, read())
+		return "", func() {}
+	}
+}
+
+func TestRun_ServeOpensTheDatabaseBeforeItServes(t *testing.T) {
+	const name = "suco-serve-test"
+	document(t, fmt.Sprintf("listen:\n  port: %d\n%s", freePort(t), namingADatabase()))
+	t.Setenv("SUCO_DATABASE_URL", postgrestest.WithName(t, postgrestest.Fresh(t), name))
+
+	announced, stop := serving(t)
+	open := postgrestest.Backends(t, name)
+	stop()
+
+	if !strings.Contains(announced, "is serving") {
+		t.Errorf("serve wrote %q, want it to say it is serving", announced)
 	}
 	if open == 0 {
 		t.Error("serve was serving with no connection to the database its document named")
+	}
+}
+
+func TestRun_ServeAppliesTheSchemaToAnEmptyDatabase(t *testing.T) {
+	dsn := postgrestest.Fresh(t)
+	document(t, fmt.Sprintf("listen:\n  port: %d\n%s", freePort(t), namingADatabase()))
+	t.Setenv("SUCO_DATABASE_URL", dsn)
+
+	announced, stop := serving(t)
+	defer stop()
+
+	pool, err := postgres.Open(t.Context(), dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	schema, err := pool.SchemaVersion(t.Context())
+	if err != nil {
+		t.Fatalf("reading the schema version: %v", err)
+	}
+
+	if schema == "" {
+		t.Errorf("serve started against an empty database and left it empty:\n%s", announced)
+	}
+	if !strings.Contains(announced, "migration") {
+		t.Errorf("serve did not say it had applied anything:\n%s", announced)
 	}
 }
 
@@ -568,12 +634,13 @@ func TestRun_ServeStopsWhenTheDatabaseIsUnreachable(t *testing.T) {
 }
 
 func TestRun_DoctorNamesTheDatabaseItReached(t *testing.T) {
+	dsn := postgrestest.Fresh(t)
 	document(t, namingADatabase())
-	t.Setenv("SUCO_DATABASE_URL", postgrestest.URL(t))
+	t.Setenv("SUCO_DATABASE_URL", dsn)
 
 	// What the server itself answers, so that a report naming a version nobody
 	// asked it for does not pass for having reached one.
-	pool, err := postgres.Open(t.Context(), postgrestest.URL(t))
+	pool, err := postgres.Open(t.Context(), dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -665,4 +732,48 @@ func TestRun_DoctorWritesTheReportBeforeItAsksTheDatabaseAnything(t *testing.T) 
 		t.Fatal("doctor held the report until the database answered")
 	}
 	reader.Close()
+}
+
+func TestRun_DoctorNamesTheSchemaTheDatabaseHolds(t *testing.T) {
+	dsn := postgrestest.Fresh(t)
+	document(t, namingADatabase())
+	t.Setenv("SUCO_DATABASE_URL", dsn)
+
+	pool, err := postgres.Open(t.Context(), dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Migrate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	want, err := pool.SchemaVersion(t.Context())
+	pool.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, _, err := runArgs(t, "doctor")
+
+	if err != nil {
+		t.Fatalf("err = %v, want none", err)
+	}
+	if !strings.Contains(stdout, "schema "+want) {
+		t.Errorf("the report does not name the schema the database holds (%s):\n%s", want, stdout)
+	}
+}
+
+func TestRun_DoctorSaysWhenTheSchemaHasNotBeenApplied(t *testing.T) {
+	// A database an instance can reach but has put nothing in is the state an
+	// operator most needs told apart from a working one.
+	document(t, namingADatabase())
+	t.Setenv("SUCO_DATABASE_URL", postgrestest.Fresh(t))
+
+	stdout, _, err := runArgs(t, "doctor")
+
+	if err != nil {
+		t.Fatalf("err = %v, want none", err)
+	}
+	if !strings.Contains(stdout, "not applied") {
+		t.Errorf("the report does not say the schema is missing:\n%s", stdout)
+	}
 }
