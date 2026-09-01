@@ -47,6 +47,7 @@ vuln: ## Check dependencies for known vulnerabilities
 	go mod verify
 	go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
 
+
 .PHONY: fuzz
 fuzz: ## Fuzz each parser for a minute
 	@for t in $(FUZZ); do \

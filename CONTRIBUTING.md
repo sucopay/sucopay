@@ -165,7 +165,8 @@ searches for longer. When a target fails, Go writes the input under `testdata/fu
 ## Commits and PRs
 
 Conventional commits (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`). One logical
-change per PR. Run `make check` before you commit.
+change per PR. Run `make check` before you commit; `make hooks` installs a
+hook that refuses a commit of anything `make check` has not seen.
 
 Write for someone with the repository and nothing else. A message that cites a document they
 cannot open tells them a reason exists and withholds it.
