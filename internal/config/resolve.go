@@ -89,10 +89,11 @@ func shown(path string, v any) any {
 	if Secret(path) {
 		return "(secret)"
 	}
-	if text, isString := v.(string); isString {
-		return invisible.Quote(text)
-	}
-	return v
+	// Rendered first, then quoted. Quoting only the string case left a list or
+	// a mapping to be expanded by %v, which prints the bytes of every string
+	// inside it and puts a document's newlines and escape sequences into a
+	// message that reaches a terminal.
+	return invisible.Quote(fmt.Sprint(v))
 }
 
 // failed reports whether a path already has a problem. Validation skips such a

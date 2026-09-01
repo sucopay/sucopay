@@ -22,9 +22,13 @@ func writeDocument(t *testing.T, body string) string {
 }
 
 func TestDecode_AcceptsAnEmptyDocument(t *testing.T) {
+	t.Parallel()
 	doc, err := config.Decode(nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
+	}
+	if doc == nil {
+		t.Error("an empty document decoded into no document at all")
 	}
 	if len(doc) != 0 {
 		t.Errorf("doc = %v, want empty", doc)
@@ -32,6 +36,7 @@ func TestDecode_AcceptsAnEmptyDocument(t *testing.T) {
 }
 
 func TestDecode_ReportsWhereTheSyntaxErrorIs(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		doc  string
@@ -72,6 +77,7 @@ func errorLine(t *testing.T, err error) int {
 }
 
 func TestLoad_ReadsTheDocumentAndResolvesIt(t *testing.T) {
+	t.Parallel()
 	path := writeDocument(t, "listen:\n  port: 9000\ndatabase:\n  managed: false\n  url: ${SUCO_DATABASE_URL}\n")
 	env := envOf(map[string]string{"SUCO_DATABASE_URL": "postgres://localhost/suco"})
 
@@ -89,6 +95,7 @@ func TestLoad_ReadsTheDocumentAndResolvesIt(t *testing.T) {
 }
 
 func TestLoad_NamesTheDocumentWhenItIsMissing(t *testing.T) {
+	t.Parallel()
 	_, err := config.Load(filepath.Join(t.TempDir(), "absent.yaml"), noEnv)
 
 	if err == nil {
@@ -100,6 +107,7 @@ func TestLoad_NamesTheDocumentWhenItIsMissing(t *testing.T) {
 }
 
 func TestPath_PrefersTheEnvironmentVariable(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		env  config.Lookup
@@ -119,6 +127,7 @@ func TestPath_PrefersTheEnvironmentVariable(t *testing.T) {
 }
 
 func TestLoad_RefusesAnythingThatIsNotARegularFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	_, err := config.Load(dir, noEnv)
@@ -132,6 +141,7 @@ func TestLoad_RefusesAnythingThatIsNotARegularFile(t *testing.T) {
 }
 
 func TestLoad_RefusesAFilePastTheSizeLimit(t *testing.T) {
+	t.Parallel()
 	path := writeDocument(t, "a: "+strings.Repeat("x", config.MaxDocumentBytes))
 
 	_, err := config.Load(path, noEnv)

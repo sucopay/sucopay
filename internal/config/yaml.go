@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"regexp"
 
 	"github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/ast"
@@ -21,12 +22,29 @@ var (
 	ErrDocumentHasAliases = errors.New("configuration document uses anchors or aliases")
 )
 
+// position is the [line:column] the parser reports.
+var position = regexp.MustCompile(`\[\d+:\d+\]`)
+
+// where returns the position of a parse failure and nothing else.
+//
+// Turning the parser's source excerpt off is not enough: it also quotes
+// fragments of the document into the message itself, such as `invalid header
+// option: "{::"`. The document may be any file SUCO_CONFIG names, and an error
+// made from one reaches a terminal and a log. So the parser's words are
+// dropped and only the position is passed on; whoever is reading has the file
+// open in front of them.
+func where(err error) string {
+	if at := position.FindString(yaml.FormatError(err, false, false)); at != "" {
+		return at
+	}
+	return "the document"
+}
+
 // Decode turns a configuration document into the shape [Resolve] reads. An
 // empty document decodes to an empty mapping.
 //
-// Errors carry the line and column and nothing of the source. The parser offers
-// an excerpt of the surrounding lines, which would put whatever a document
-// holds near the mistake into a message that reaches a terminal and a log.
+// A failure to parse one carries the line and column and nothing else: see
+// [where].
 //
 // Anchors and aliases are refused. Expanding an alias inside a mapping copies
 // what it names, and nothing bounds how often: a document of a few hundred
@@ -41,7 +59,13 @@ func Decode(b []byte) (map[string]any, error) {
 	}
 	doc := map[string]any{}
 	if err := yaml.Unmarshal(b, &doc); err != nil {
-		return nil, fmt.Errorf("configuration document: %s", yaml.FormatError(err, false, false))
+		return nil, fmt.Errorf("configuration document: %s is not valid YAML", where(err))
+	}
+	if doc == nil {
+		// An empty document unmarshals into nothing at all. Reading a nil map
+		// is safe, but a caller holding one has to know that; every document
+		// that decodes comes back as a document.
+		doc = map[string]any{}
 	}
 	return doc, nil
 }

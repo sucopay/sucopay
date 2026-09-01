@@ -13,6 +13,7 @@ import (
 // those lines hold whatever the document holds. An unclosed quote below a
 // database URL is an ordinary typing mistake, not an attack.
 func TestDecode_KeepsTheSourceOutOfASyntaxError(t *testing.T) {
+	t.Parallel()
 	const secret = "hunter2-do-not-print"
 	cases := []struct {
 		name string
@@ -49,6 +50,7 @@ func TestDecode_KeepsTheSourceOutOfASyntaxError(t *testing.T) {
 // a mapping allows: each level names a copy of the one below it, and a document
 // of a few hundred bytes exhausts memory before any limit on its size applies.
 func TestDecode_RefusesAnchorsAndAliases(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		doc  string
@@ -69,6 +71,7 @@ func TestDecode_RefusesAnchorsAndAliases(t *testing.T) {
 }
 
 func TestDecode_RefusesADocumentPastTheSizeLimit(t *testing.T) {
+	t.Parallel()
 	doc := []byte("a: " + strings.Repeat("x", config.MaxDocumentBytes))
 
 	_, err := config.Decode(doc)
@@ -79,6 +82,7 @@ func TestDecode_RefusesADocumentPastTheSizeLimit(t *testing.T) {
 }
 
 func TestDecode_AcceptsADocumentAtTheSizeLimit(t *testing.T) {
+	t.Parallel()
 	doc := []byte("a: " + strings.Repeat("x", config.MaxDocumentBytes-3))
 
 	if _, err := config.Decode(doc); err != nil {
