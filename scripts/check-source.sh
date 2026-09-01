@@ -39,6 +39,16 @@ while IFS= read -r -d '' file; do
 # this before it is committed, not after.
 done < <(git ls-files -z --cached --others --exclude-standard)
 
+# A comment left behind by whoever was proving a test could fail. One of these
+# reached a shipped file and nothing else noticed: it is valid Go.
+while IFS= read -r -d '' file; do
+  case "$file" in *.go|*.sh|*.sql) ;; *) continue ;; esac
+  if grep -nE '^[[:space:]]*(//|#|--)[[:space:]]*(probe|MUTATED|scratch|delete me|remove me)[[:space:]]*$' "$file"; then
+    echo "::error::$file holds a note left behind while proving something."
+    fail=1
+  fi
+done < <(git ls-files -z --cached --others --exclude-standard)
+
 if [ "$fail" -eq 0 ]; then
   echo "ok: every character in the source is one a reader can see"
 fi

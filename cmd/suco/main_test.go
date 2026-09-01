@@ -377,6 +377,8 @@ func TestRun_DoctorGivesEverySettingItsValueAndSource(t *testing.T) {
 		{"listen.base_url", "http://localhost:9000", "default"},
 		{"listen.host", "127.0.0.1", "default"},
 		{"listen.port", "9000", "file"},
+		{"log.level", "info", "default"},
+		{"log.format", "text", "default"},
 	} {
 		line := reportLine(t, stdout, want.path)
 		if !strings.Contains(line, want.value) || !strings.Contains(line, want.source) {
@@ -514,13 +516,14 @@ func freePort(t *testing.T) int {
 	return l.Addr().(*net.TCPAddr).Port
 }
 
-// serving runs serve until it announces itself, and returns what it wrote and
-// a function that stops it.
+// serving runs serve until it announces itself. It returns what serve had
+// written by then, and a function that stops it and returns everything it
+// wrote, the lines after the announcement included.
 //
-// Everything serve writes is read, not only the line being waited for. serve
-// writes to a pipe, so a line nobody takes blocks it where it stands, and a
+// What serve writes is its log, so this reads log lines. All of them: serve
+// writes to a pipe, and a line nobody takes blocks it where it stands, so a
 // test that stopped reading early would hang rather than fail.
-func serving(t *testing.T, args ...string) (announced string, stop func()) {
+func serving(t *testing.T, args ...string) (announced string, stop func() string) {
 	t.Helper()
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -544,7 +547,7 @@ func serving(t *testing.T, args ...string) (announced string, stop func()) {
 			mu.Lock()
 			written.WriteString(scanner.Text() + "\n")
 			mu.Unlock()
-			if !announced && strings.Contains(scanner.Text(), "is serving") {
+			if !announced && strings.Contains(scanner.Text(), "msg=serving") {
 				announced = true
 				close(began)
 			}
@@ -559,15 +562,16 @@ func serving(t *testing.T, args ...string) (announced string, stop func()) {
 
 	select {
 	case <-began:
-		return read(), func() {
+		return read(), func() string {
 			cancel()
 			<-done
 			<-finished
+			return read()
 		}
 	case <-finished:
 		cancel()
 		t.Fatalf("serve stopped before it began serving: %v\n%s", <-done, read())
-		return "", func() {}
+		return "", func() string { return "" }
 	}
 }
 
@@ -580,11 +584,23 @@ func TestRun_ServeOpensTheDatabaseBeforeItServes(t *testing.T) {
 	open := postgrestest.Backends(t, name)
 	stop()
 
-	if !strings.Contains(announced, "is serving") {
+	if !strings.Contains(announced, "msg=serving") {
 		t.Errorf("serve wrote %q, want it to say it is serving", announced)
 	}
 	if open == 0 {
 		t.Error("serve was serving with no connection to the database its document named")
+	}
+}
+
+func TestRun_ServeSaysWhenItStops(t *testing.T) {
+	// A restart that leaves nothing behind is one an operator cannot tell
+	// from a crash.
+	document(t, fmt.Sprintf("listen:\n  port: %d\n", freePort(t)))
+
+	_, stop := serving(t)
+
+	if written := stop(); !strings.Contains(written, "msg=stopped") {
+		t.Errorf("serve stopped without saying so:\n%s", written)
 	}
 }
 
@@ -609,8 +625,8 @@ func TestRun_ServeAppliesTheSchemaToAnEmptyDatabase(t *testing.T) {
 	if schema == "" {
 		t.Errorf("serve started against an empty database and left it empty:\n%s", announced)
 	}
-	if !strings.Contains(announced, "migration") {
-		t.Errorf("serve did not say it had applied anything:\n%s", announced)
+	if !strings.Contains(announced, "schema applied") {
+		t.Errorf("serve did not say what it applied:\n%s", announced)
 	}
 }
 
@@ -624,7 +640,9 @@ func TestRun_ServeStopsWhenTheDatabaseIsUnreachable(t *testing.T) {
 	if err == nil {
 		t.Fatal("want an error, got none: a server that cannot reach its database has nowhere to keep state")
 	}
-	if !strings.Contains(err.Error(), "failed to connect") {
+	// The refusal for an unimplemented section names database.managed, so
+	// matching "database" alone would pass for the wrong reason.
+	if !strings.HasPrefix(err.Error(), "database: ") {
 		t.Errorf("error does not say the database could not be reached: %v", err)
 	}
 	if strings.Contains(err.Error(), password) {
@@ -632,7 +650,7 @@ func TestRun_ServeStopsWhenTheDatabaseIsUnreachable(t *testing.T) {
 	}
 	// The database is opened before the line announcing the server, so that
 	// an operator is never told it is serving by a process about to stop.
-	if strings.Contains(stdout, "is serving") {
+	if strings.Contains(stdout, "msg=serving") {
 		t.Errorf("serve said it was serving and then stopped:\n%s", stdout)
 	}
 }

@@ -159,6 +159,12 @@ generated inputs are refused and being refused is not a failure.
 whether `Quote` did its job routes both through one decision, so a character
 dropped from that decision is missed by both at once, however long it runs.
 
+The same trap has a second shape: `slog`'s text handler escapes anything it
+thinks unprintable, so a test reading text output passes whether or not the
+value was quoted first. Its JSON handler escapes only what JSON requires and
+passes a zero-width space or a bidi override through as given, which is the
+format a deployment writes. Check quoting against JSON.
+
 `go test` runs each target's seed corpus, so a case found once stays checked. `make fuzz`
 searches for longer. When a target fails, Go writes the input under `testdata/fuzz/`: commit it.
 

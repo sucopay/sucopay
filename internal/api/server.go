@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"time"
@@ -41,7 +42,17 @@ type Server struct {
 // Listen binds addr and returns a Server that is not yet serving. Binding
 // happens here rather than in [Server.Run] so that a port already in use is
 // reported before the caller reports that the instance started.
-func Listen(addr string, h http.Handler) (*Server, error) {
+//
+// What net/http itself reports goes to log as well. Left alone it writes to
+// the standard logger, which is a second way out of this process: a panic in a
+// handler would print a stack trace that never passed the rules the rest of
+// what this writes goes through.
+//
+// What it writes is still net/http's own words rather than this package's:
+// nothing bounds or quotes them. slog escapes a newline inside a message, so
+// one of them stays one line, but a handler that panics on what a request
+// carried would put that in front of an operator unfiltered.
+func Listen(addr string, h http.Handler, log *slog.Logger) (*Server, error) {
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("listen on %s: %w", addr, err)
@@ -49,6 +60,7 @@ func Listen(addr string, h http.Handler) (*Server, error) {
 	return &Server{
 		http: &http.Server{
 			Handler:           h,
+			ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelError),
 			ReadHeaderTimeout: readHeaderTimeout,
 			ReadTimeout:       readTimeout,
 			WriteTimeout:      writeTimeout,

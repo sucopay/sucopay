@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"text/tabwriter"
-	"unicode/utf8"
 
 	"github.com/sucopay/sucopay/internal/invisible"
 	"github.com/sucopay/sucopay/internal/postgres"
@@ -91,23 +90,11 @@ func describeSchema(version string) string {
 	if version == "" {
 		return "not applied"
 	}
-	return invisible.Quote(shorten(version, maxDescription))
+	return invisible.Shown(version, maxDescription)
 }
 
 // describeVersion renders what a server said about itself for a report a
 // person reads.
 func describeVersion(version string) string {
-	return "PostgreSQL " + invisible.Quote(shorten(version, maxDescription))
-}
-
-// shorten cuts s to at most n bytes, on a rune boundary.
-func shorten(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	cut := n
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut] + "..."
+	return "PostgreSQL " + invisible.Shown(version, maxDescription)
 }

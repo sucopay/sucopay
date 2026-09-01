@@ -24,7 +24,7 @@ const (
 // test ends.
 func serving(t *testing.T, h http.Handler) *api.Server {
 	t.Helper()
-	s, err := api.Listen("127.0.0.1:0", h)
+	s, err := api.Listen("127.0.0.1:0", h, quiet())
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestListen_ReportsAPortThatIsAlreadyTaken(t *testing.T) {
 	}
 	defer held.Close()
 
-	_, err = api.Listen(held.Addr().String(), api.Handler())
+	_, err = api.Listen(held.Addr().String(), api.Handler(quiet(), nil), quiet())
 
 	if err == nil {
 		t.Fatal("want an error, got none")
@@ -92,7 +92,7 @@ func TestServer_ServesTheHandlerItWasGiven(t *testing.T) {
 
 func TestListen_AddrCarriesTheChosenPort(t *testing.T) {
 	t.Parallel()
-	s, err := api.Listen("127.0.0.1:0", api.Handler())
+	s, err := api.Listen("127.0.0.1:0", api.Handler(quiet(), nil), quiet())
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestListen_AddrCarriesTheChosenPort(t *testing.T) {
 
 func TestServer_StopsWhenItsContextIsCancelled(t *testing.T) {
 	t.Parallel()
-	s, err := api.Listen("127.0.0.1:0", api.Handler())
+	s, err := api.Listen("127.0.0.1:0", api.Handler(quiet(), nil), quiet())
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestServer_LetsAnInFlightRequestFinishAfterCancellation(t *testing.T) {
 		time.Sleep(busy)
 		w.WriteHeader(http.StatusTeapot)
 	})
-	s, err := api.Listen("127.0.0.1:0", slow)
+	s, err := api.Listen("127.0.0.1:0", slow, quiet())
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestServer_LetsAnInFlightRequestFinishAfterCancellation(t *testing.T) {
 
 func TestClose_ReleasesThePort(t *testing.T) {
 	t.Parallel()
-	s, err := api.Listen("127.0.0.1:0", api.Handler())
+	s, err := api.Listen("127.0.0.1:0", api.Handler(quiet(), nil), quiet())
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestClose_ReleasesThePort(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 
-	again, err := api.Listen(addr, api.Handler())
+	again, err := api.Listen(addr, api.Handler(quiet(), nil), quiet())
 	if err != nil {
 		t.Fatalf("the port is still held after Close: %v", err)
 	}

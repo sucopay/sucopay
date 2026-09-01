@@ -35,12 +35,15 @@ func Resolve(doc map[string]any, env Lookup) (Resolved, error) {
 	host := r.text("listen.host", DefaultHost)
 	port := r.integer("listen.port", DefaultPort)
 	baseURL := r.text("listen.base_url", defaultBaseURL(port))
+	logLevel := r.text("log.level", DefaultLogLevel)
+	logFormat := r.text("log.format", DefaultLogFormat)
 	managed := r.boolean("database.managed", true)
 	dbURL := r.text("database.url", "")
 	networks := r.networks()
 
 	cfg := Config{
 		Listen:   Listen{Host: host, Port: port, BaseURL: baseURL},
+		Log:      Log{Level: logLevel, Format: logFormat},
 		Database: Database{Managed: managed, URL: dbURL},
 		Networks: networks,
 	}
@@ -257,6 +260,7 @@ func (r *reader) validate(cfg Config) {
 	if !r.failed("database.managed") && !r.failed("database.url") {
 		r.validateDatabase(cfg.Database)
 	}
+	r.validateLog(cfg.Log)
 	for name, n := range cfg.Networks {
 		path := "networks." + name + ".kind"
 		if !r.failed(path) && !slices.Contains(knownNetworkKinds, n.Kind) {
@@ -314,6 +318,17 @@ func (r *reader) validateBaseURL(raw string) {
 		r.fail(path, "needs an http or https scheme: %v", shown(path, raw))
 	case u.Host == "":
 		r.fail(path, "has no host: %v", shown(path, raw))
+	}
+}
+
+func (r *reader) validateLog(l Log) {
+	if !r.failed("log.level") && !slices.Contains(LogLevels, l.Level) {
+		r.fail("log.level", "want one of %s, got %v",
+			strings.Join(LogLevels, ", "), invisible.Quote(l.Level))
+	}
+	if !r.failed("log.format") && !slices.Contains(LogFormats, l.Format) {
+		r.fail("log.format", "want one of %s, got %v",
+			strings.Join(LogFormats, ", "), invisible.Quote(l.Format))
 	}
 }
 

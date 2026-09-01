@@ -18,6 +18,8 @@ func TestHandler_AnswersOnlyTheRoutesItServes(t *testing.T) {
 		want   int
 	}{
 		{"health", http.MethodGet, "/healthz", http.StatusOK},
+		{"readiness", http.MethodGet, "/readyz", http.StatusOK},
+		{"the wrong method on readiness", http.MethodPost, "/readyz", http.StatusMethodNotAllowed},
 		{"an unknown path", http.MethodGet, "/nothing-here", http.StatusNotFound},
 		{"the wrong method on a known path", http.MethodPost, "/healthz", http.StatusMethodNotAllowed},
 	}
@@ -25,7 +27,7 @@ func TestHandler_AnswersOnlyTheRoutesItServes(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
 
-			api.Handler().ServeHTTP(rec, httptest.NewRequest(c.method, c.path, nil))
+			api.Handler(quiet(), nil).ServeHTTP(rec, httptest.NewRequest(c.method, c.path, nil))
 
 			if rec.Code != c.want {
 				t.Errorf("status = %d, want %d", rec.Code, c.want)
@@ -38,7 +40,7 @@ func TestHandler_HealthzReportsOKAsJSON(t *testing.T) {
 	t.Parallel()
 	rec := httptest.NewRecorder()
 
-	api.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	api.Handler(quiet(), nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
 	if got := rec.Header().Get("Content-Type"); got != "application/json" {
 		t.Errorf("content-type = %q, want application/json", got)
@@ -59,7 +61,7 @@ func TestHandler_TellsBrowsersNotToSniffTheContentType(t *testing.T) {
 	t.Parallel()
 	rec := httptest.NewRecorder()
 
-	api.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	api.Handler(quiet(), nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
 	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)

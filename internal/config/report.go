@@ -35,6 +35,8 @@ func (r Resolved) Report() []ReportLine {
 		"listen.host":      r.Config.Listen.Host,
 		"listen.port":      strconv.Itoa(r.Config.Listen.Port),
 		"listen.base_url":  r.Config.Listen.BaseURL,
+		"log.level":        r.Config.Log.Level,
+		"log.format":       r.Config.Log.Format,
 		"database.managed": strconv.FormatBool(r.Config.Database.Managed),
 		"database.url":     r.Config.Database.URL,
 	}

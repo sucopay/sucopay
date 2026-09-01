@@ -1,19 +1,69 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
+
+	"github.com/sucopay/sucopay/internal/invisible"
 )
 
+// maxErrorBytes bounds what something else's failure can put in a line.
+const maxErrorBytes = 512
+
+// Ready reports whether something the instance depends on can be reached. A
+// nil Ready is an instance running without that dependency, which is a state
+// to report rather than a failure.
+type Ready func(context.Context) error
+
 // Handler returns the routes an instance serves.
-func Handler() http.Handler {
+//
+// database may be nil, which is what an instance configured without one
+// passes. A function rather than an interface, so that "no database" is a nil
+// nobody can get wrong: a nil pointer in a non-nil interface would read as
+// configured and panic when asked.
+func Handler(log *slog.Logger, database Ready) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", health)
-	return mux
+	mux.HandleFunc("GET /healthz", alive)
+	mux.HandleFunc("GET /readyz", ready(log, database))
+	return record(log, mux)
 }
 
-func health(w http.ResponseWriter, _ *http.Request) {
+// alive answers as long as the process is running.
+//
+// Nothing is consulted on purpose. A liveness probe that failed because a
+// database was unreachable would have an orchestrator restart an instance that
+// is working, which does not bring the database back. Whether this instance
+// can do its job is [ready].
+func alive(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// ready answers whether the instance can serve, which is what a load balancer
+// decides on.
+func ready(log *slog.Logger, database Ready) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if database == nil {
+			writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "database": "none configured"})
+			return
+		}
+		if err := database(r.Context()); err != nil {
+			// The reason goes to the log, where an operator reads it. What
+			// comes back over HTTP names the dependency and nothing else: a
+			// readiness probe is read by whoever can reach the port.
+			// Quoted, because a database writes this and slog's JSON handler
+			// passes a zero-width space or a right-to-left override through
+			// as it was given.
+			logger(r.Context(), log).ErrorContext(r.Context(), "not ready",
+				slog.String("dependency", "database"),
+				slog.String("error", invisible.Shown(err.Error(), maxErrorBytes)))
+			writeJSON(w, http.StatusServiceUnavailable,
+				map[string]string{"status": "unavailable", "database": "unreachable"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "database": "reachable"})
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

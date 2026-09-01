@@ -44,7 +44,8 @@ go build -o suco ./cmd/suco
 
 `suco init` writes a `suco.yaml` you can read and commit. `suco doctor` prints the settings it
 resolved and where each value came from, saying of a secret only whether it is set. `suco serve`
-listens on `http://localhost:7826`, where `/healthz` answers.
+listens on `http://localhost:7826`, where `/healthz` says the process is up and `/readyz` says
+whether it can reach what it needs. It writes what it is doing to stdout.
 
 An install script and released binaries arrive with the first release. Everything in the list
 above is still to come.

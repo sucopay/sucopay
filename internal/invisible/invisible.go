@@ -14,6 +14,7 @@ package invisible
 import (
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // Has reports whether s holds a character that does not show up. An ordinary
@@ -31,6 +32,24 @@ func Quote(s string) string {
 		return s
 	}
 	return strconv.Quote(s)
+}
+
+// Shown renders text from somewhere else so that it can be put in front of a
+// person: cut to at most max bytes on a rune boundary, then quoted.
+//
+// Both halves are needed. Nothing bounds what a request path or a server's
+// reply can be, and slog's JSON handler passes a zero-width space or a
+// right-to-left override through as the bytes it was given: only its text
+// handler escapes them, and JSON is what a deployment writes.
+func Shown(s string, max int) string {
+	if len(s) > max {
+		cut := max
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		s = s[:cut] + "..."
+	}
+	return Quote(s)
 }
 
 // is reports whether r is a character a reader cannot see. Written as escapes
@@ -63,5 +82,3 @@ func is(r rune) bool {
 	}
 	return false
 }
-// probe
-// probe

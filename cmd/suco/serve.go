@@ -4,13 +4,18 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"strconv"
 
 	"github.com/sucopay/sucopay/internal/api"
+	"github.com/sucopay/sucopay/internal/invisible"
 	"github.com/sucopay/sucopay/internal/postgres"
 )
 
+// serve writes to the log rather than to stdout. It is the one command that
+// keeps running, and what a running process says about itself is its log;
+// init and doctor answer a person and keep printing.
 func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) > 0 {
 		return fmt.Errorf("serve takes no arguments, got %q", args[0])
@@ -26,12 +31,19 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 
 	cfg := resolved.Config
+	log, err := newLogger(cfg.Log, stdout)
+	if err != nil {
+		return err
+	}
+
+	var ready api.Ready
 	if cfg.Database.URL != "" {
 		db, err := postgres.Open(ctx, cfg.Database.URL)
 		if err != nil {
 			return err
 		}
 		defer db.Close()
+		ready = db.Ping
 
 		// Applied at every start rather than by a command an operator has to
 		// know about, which would leave an evaluator with an empty database
@@ -41,17 +53,23 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		if applied > 0 {
-			fmt.Fprintf(stdout, "Applied %d migration(s)\n", applied)
+		version, err := db.SchemaVersion(ctx)
+		if err != nil {
+			return err
 		}
+		log.InfoContext(ctx, "schema applied",
+			slog.Int("migrations", applied),
+			slog.String("version", invisible.Shown(version, maxDescription)))
 	}
 
 	addr := net.JoinHostPort(cfg.Listen.Host, strconv.Itoa(cfg.Listen.Port))
-	server, err := api.Listen(addr, api.Handler())
+	server, err := api.Listen(addr, api.Handler(log, ready), log)
 	if err != nil {
 		return err
 	}
 
-	fmt.Fprintf(stdout, "suco Pay is serving %s\n", cfg.Listen.BaseURL)
-	return server.Run(ctx)
+	log.InfoContext(ctx, "serving", slog.String("base_url", cfg.Listen.BaseURL))
+	err = server.Run(ctx)
+	log.InfoContext(context.WithoutCancel(ctx), "stopped")
+	return err
 }

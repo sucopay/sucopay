@@ -714,3 +714,38 @@ func TestResolve_RefusesAReferenceToSomethingThatIsNotAVariableName(t *testing.T
 		})
 	}
 }
+
+func TestResolve_RefusesALogLevelOrFormatNothingDefines(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name string
+		doc  map[string]any
+		path string
+	}{
+		{"a level", map[string]any{"log": map[string]any{"level": "loud"}}, "log.level"},
+		{"a format", map[string]any{"log": map[string]any{"format": "yaml"}}, "log.format"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := config.Resolve(c.doc, noEnv)
+
+			p := wantProblemAt(t, err, c.path)
+			if !strings.Contains(p.Message, "want one of") {
+				t.Errorf("message = %q, want it to name what it accepts", p.Message)
+			}
+		})
+	}
+}
+
+func TestResolve_DefaultsToInfoAndText(t *testing.T) {
+	t.Parallel()
+	// The first thing anyone does is run this in a terminal.
+	got, err := config.Resolve(map[string]any{}, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got.Config.Log.Level != "info" || got.Config.Log.Format != "text" {
+		t.Errorf("log = %+v, want info and text", got.Config.Log)
+	}
+}

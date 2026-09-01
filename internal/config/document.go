@@ -17,5 +17,11 @@ listen:
   port: %d
   # How others reach this instance, which differs from host behind a proxy.
   base_url: %s
-`, DefaultHost, DefaultPort, defaultBaseURL(DefaultPort))
+
+log:
+  # debug, info, warn or error.
+  level: %s
+  # text to read in a terminal, json for whatever collects it.
+  format: %s
+`, DefaultHost, DefaultPort, defaultBaseURL(DefaultPort), DefaultLogLevel, DefaultLogFormat)
 }

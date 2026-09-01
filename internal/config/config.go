@@ -67,6 +67,34 @@ func (s Source) String() string {
 	return s.Origin.String()
 }
 
+// Log is how an instance writes what it is doing. Level is the least severe
+// it will report; Format is "json" for a collector to read or "text" for a
+// person.
+//
+// This is a setting rather than an environment variable, which is where most
+// of Go's logging advice puts it: here the environment supplies secrets and
+// the document declares settings, and one mechanism is enough.
+type Log struct {
+	Level  string
+	Format string
+}
+
+var (
+	// LogLevels are the levels a document may ask for.
+	LogLevels = []string{"debug", "info", "warn", "error"}
+	// LogFormats are the formats a document may ask for.
+	LogFormats = []string{"json", "text"}
+)
+
+const (
+	// DefaultLogLevel is what an instance reports when the document says
+	// nothing.
+	DefaultLogLevel = "info"
+	// DefaultLogFormat is text, because the first thing anyone does is run
+	// this in a terminal. A deployment writes json into its document.
+	DefaultLogFormat = "text"
+)
+
 // Listen is where the instance serves. Host is the interface to bind; BaseURL
 // is how others reach the instance, which differs from Host behind a proxy or
 // inside a container.
@@ -95,6 +123,7 @@ type Network struct {
 // checked.
 type Config struct {
 	Listen   Listen
+	Log      Log
 	Database Database
 	Networks map[string]Network
 }

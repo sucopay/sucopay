@@ -55,7 +55,7 @@ func Open(ctx context.Context, url string) (*Pool, error) {
 	defer cancel()
 	if err := pool.Ping(ping); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("database: %w", err)
+		return nil, fmt.Errorf("database: %w", cause(err))
 	}
 	return &Pool{pool: pool}, nil
 }
@@ -91,6 +91,15 @@ func cause(err error) error {
 		}
 		return errors.New("the url is not a connection string")
 	}
+	// A failure to connect names the address, the user and the database it
+	// tried, and not the password: the driver keeps that out and a test here
+	// holds it to that. Those three stay.
+	//
+	// The rule that a secret setting never renders is about a report, where
+	// the whole url would print and nothing needs it to. A failure nobody can
+	// tell apart from any other failure is not a report at all: which host
+	// refused, and which user it refused, is the whole of what an operator
+	// reads.
 	return err
 }
 
@@ -142,6 +151,19 @@ func onThisMachine(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// Ping reports whether the database still answers. [Open] asks once so that a
+// start fails rather than the first request; this is for asking again while
+// the instance runs.
+func (p *Pool) Ping(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+
+	if err := p.pool.Ping(ctx); err != nil {
+		return fmt.Errorf("database: %w", cause(err))
+	}
+	return nil
 }
 
 // Close releases every connection.
