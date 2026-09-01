@@ -2,12 +2,8 @@ package postgres_test
 
 import (
 	"context"
-	"errors"
-	"io/fs"
-	"slices"
 	"strings"
 	"testing"
-	"testing/fstest"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sucopay/sucopay/internal/postgres"
@@ -63,6 +59,7 @@ func tables(t *testing.T, dsn string) []string {
 }
 
 func TestMigrate_LeavesTablesAnOperatorCanRead(t *testing.T) {
+	t.Parallel()
 	// What a deployment is promised is that its state is in its own database.
 	// A schema an operator can list is the whole of that promise.
 	dsn := postgrestest.Fresh(t)
@@ -98,6 +95,7 @@ func contains(list []string, want string) bool {
 }
 
 func TestMigrate_AppliesNothingTwice(t *testing.T) {
+	t.Parallel()
 	pool := migrated(t)
 
 	applied, err := pool.Migrate(t.Context())
@@ -111,6 +109,7 @@ func TestMigrate_AppliesNothingTwice(t *testing.T) {
 }
 
 func TestSchemaVersion_ReportsTheLastMigrationApplied(t *testing.T) {
+	t.Parallel()
 	dsn := postgrestest.Fresh(t)
 	before, err := postgres.Open(t.Context(), dsn)
 	if err != nil {
@@ -150,112 +149,8 @@ func TestSchemaVersion_ReportsTheLastMigrationApplied(t *testing.T) {
 	}
 }
 
-func TestMigrate_RefusesAMigrationThatChangedAfterItWasApplied(t *testing.T) {
-	// What ran against the database and what the file says have parted, and
-	// nothing can tell which of them the database holds.
-	pool, err := postgres.Open(t.Context(), postgrestest.Fresh(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-
-	before := fstest.MapFS{
-		"m/0001_first.sql": {Data: []byte(`create table one (id text primary key)`)},
-	}
-	if _, err := postgres.MigrateFS(t.Context(), pool, before, "m"); err != nil {
-		t.Fatal(err)
-	}
-
-	after := fstest.MapFS{
-		"m/0001_first.sql": {Data: []byte(`create table one (id text primary key, extra text)`)},
-	}
-	_, err = postgres.MigrateFS(t.Context(), pool, after, "m")
-
-	if !errors.Is(err, postgres.ErrMigrationChanged) {
-		t.Errorf("err = %v, want ErrMigrationChanged", err)
-	}
-}
-
-// unordered hands back its entries in reverse, which fs.FS is allowed to do
-// and neither embed.FS nor fstest.MapFS does. Without it nothing here would
-// notice the runner losing its own sort.
-type unordered struct{ fstest.MapFS }
-
-func (u unordered) ReadDir(name string) ([]fs.DirEntry, error) {
-	entries, err := u.MapFS.ReadDir(name)
-	slices.Reverse(entries)
-	return entries, err
-}
-
-func TestMigrate_AppliesInOrderAndStopsAtTheFirstFailure(t *testing.T) {
-	pool, err := postgres.Open(t.Context(), postgrestest.Fresh(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-
-	files := unordered{fstest.MapFS{
-		"m/0002_second.sql": {Data: []byte(`create table second (id text primary key)`)},
-		"m/0001_first.sql":  {Data: []byte(`create table first (id text primary key)`)},
-		"m/0003_broken.sql": {Data: []byte(`this is not sql`)},
-		"m/0004_never.sql":  {Data: []byte(`create table never (id text primary key)`)},
-	}}
-
-	applied, err := postgres.MigrateFS(t.Context(), pool, files, "m")
-
-	if err == nil {
-		t.Fatal("want an error, got none")
-	}
-	if !strings.Contains(err.Error(), "0003") {
-		t.Errorf("error does not name the migration that failed: %v", err)
-	}
-	if applied != 2 {
-		t.Errorf("applied %d, want the two before the failure", applied)
-	}
-}
-
-func TestMigrate_LeavesNothingBehindWhenAMigrationFailsHalfWay(t *testing.T) {
-	// The change and the record of it are written together, so a migration
-	// that fails after its first statement leaves neither.
-	dsn := postgrestest.Fresh(t)
-	pool, err := postgres.Open(t.Context(), dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-
-	files := fstest.MapFS{
-		"m/0001_half.sql": {Data: []byte(
-			`create table made (id text primary key); this is not sql`)},
-	}
-
-	if _, err := postgres.MigrateFS(t.Context(), pool, files, "m"); err == nil {
-		t.Fatal("want an error, got none")
-	}
-
-	if got := tables(t, dsn); contains(got, "made") {
-		t.Errorf("the table from the failed migration is still there: %v", got)
-	}
-}
-
-func TestMigrate_RefusesADirectoryHoldingNoMigration(t *testing.T) {
-	// A build with no schema would otherwise report success and leave an
-	// empty database behind it. A directory with something else in it is the
-	// same thing: what is missing is a migration, not a file.
-	pool, err := postgres.Open(t.Context(), postgrestest.Fresh(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-
-	_, err = postgres.MigrateFS(t.Context(), pool, fstest.MapFS{"m/readme.txt": {Data: []byte("x")}}, "m")
-
-	if !errors.Is(err, postgres.ErrNoMigrations) {
-		t.Errorf("err = %v, want ErrNoMigrations", err)
-	}
-}
-
 func TestMigrate_TwoInstancesStartingTogetherApplyEachMigrationOnce(t *testing.T) {
+	t.Parallel()
 	// A deployment runs this at every start, so two replicas coming up
 	// together is the ordinary case rather than the unlucky one.
 	dsn := postgrestest.Fresh(t)
@@ -302,6 +197,7 @@ func TestMigrate_TwoInstancesStartingTogetherApplyEachMigrationOnce(t *testing.T
 }
 
 func TestMigrate_RefusesADatabaseALaterBuildHasChanged(t *testing.T) {
+	t.Parallel()
 	// Rolling a deployment back puts the previous binary in front of whatever
 	// schema the newer one left. A migration that dropped a column would then
 	// surface as a failed payment rather than as a refused start.

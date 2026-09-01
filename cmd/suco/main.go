@@ -60,7 +60,8 @@ func load() (config.Resolved, string, error) {
 // nothing about a database, which is not the same as asking for one.
 func unimplementedError(document string, r config.Resolved) error {
 	var refusals []string
-	if r.Config.Database.Managed && r.Sources["database.managed"].Origin != config.FromDefault {
+	if source, ok := r.SourceOf("database.managed"); r.Config.Database.Managed &&
+		ok && source.Origin != config.FromDefault {
 		refusals = append(refusals,
 			"a database of its own is not implemented. Set database.managed to false and give database.url")
 	}

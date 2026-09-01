@@ -12,6 +12,7 @@ import (
 // has no fast answer to that.
 
 func TestRequireVerifiedTLS_AcceptsOnlyTheModesThatCheckWhoAnswered(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		mode   string
 		accept bool
@@ -49,6 +50,7 @@ func TestRequireVerifiedTLS_AcceptsOnlyTheModesThatCheckWhoAnswered(t *testing.T
 }
 
 func TestRequireVerifiedTLS_LeavesADatabaseOnThisMachineAlone(t *testing.T) {
+	t.Parallel()
 	for _, host := range []string{"127.0.0.1", "localhost", "[::1]"} {
 		t.Run(host, func(t *testing.T) {
 			cfg, err := pgxpool.ParseConfig("postgres://u:p@" + host + ":5432/x")
@@ -64,6 +66,7 @@ func TestRequireVerifiedTLS_LeavesADatabaseOnThisMachineAlone(t *testing.T) {
 }
 
 func TestOnThisMachine_AcceptsASocketAndALoopbackAddressAndNothingElse(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		host string
 		want bool
@@ -87,6 +90,7 @@ func TestOnThisMachine_AcceptsASocketAndALoopbackAddressAndNothingElse(t *testin
 }
 
 func TestConfigure_BoundsEveryConnectionAndNotOnlyTheFirst(t *testing.T) {
+	t.Parallel()
 	cfg, err := configure("postgres://u:p@127.0.0.1:5432/x")
 	if err != nil {
 		t.Fatal(err)

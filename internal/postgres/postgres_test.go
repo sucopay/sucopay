@@ -10,6 +10,7 @@ import (
 )
 
 func TestOpen_UsesTheDatabaseTheURLNames(t *testing.T) {
+	t.Parallel()
 	dsn := postgrestest.URL(t)
 	u, err := url.Parse(dsn)
 	if err != nil {
@@ -48,6 +49,7 @@ func TestOpen_UsesTheDatabaseTheURLNames(t *testing.T) {
 }
 
 func TestOpen_ReportsAFailureWithoutThePasswordFromTheURL(t *testing.T) {
+	t.Parallel()
 	const password = "hunter2"
 
 	wrongPassword, err := url.Parse(postgrestest.URL(t))
@@ -88,6 +90,7 @@ func TestOpen_ReportsAFailureWithoutThePasswordFromTheURL(t *testing.T) {
 }
 
 func TestOpen_RefusesAConnectionToAnotherMachineThatNothingAuthenticates(t *testing.T) {
+	t.Parallel()
 	// The check runs before any connection, so none of these reach a network.
 	pool, err := postgres.Open(t.Context(), "postgres://admin:pw@db.example.com:5432/db")
 
@@ -104,6 +107,7 @@ func TestOpen_RefusesAConnectionToAnotherMachineThatNothingAuthenticates(t *test
 }
 
 func TestOpen_AcceptsADatabaseOnThisMachineWithoutTLS(t *testing.T) {
+	t.Parallel()
 	// make dev and CI both connect this way, and nothing on a wire can stand
 	// between the two ends.
 	pool, err := postgres.Open(t.Context(), postgrestest.URL(t))
@@ -114,6 +118,7 @@ func TestOpen_AcceptsADatabaseOnThisMachineWithoutTLS(t *testing.T) {
 }
 
 func TestOpen_RefusesAnEmptyURL(t *testing.T) {
+	t.Parallel()
 	// The driver would read this as "use the defaults" and reach a local
 	// socket, so the refusal has to be ours and has to say so.
 	pool, err := postgres.Open(t.Context(), "")
@@ -128,6 +133,7 @@ func TestOpen_RefusesAnEmptyURL(t *testing.T) {
 }
 
 func TestClose_ReleasesTheConnections(t *testing.T) {
+	t.Parallel()
 	const name = "suco-close-test"
 	dsn := postgrestest.WithName(t, postgrestest.URL(t), name)
 

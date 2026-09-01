@@ -28,7 +28,7 @@ const ddlTimeout = 30 * time.Second
 const Var = "SUCO_TEST_DATABASE_URL"
 
 // URL is the database to run against.
-func URL(t *testing.T) string {
+func URL(t testing.TB) string {
 	t.Helper()
 	dsn := os.Getenv(Var)
 	if dsn == "" {
@@ -40,7 +40,7 @@ func URL(t *testing.T) string {
 // WithName returns the URL with an application name attached, which is how a
 // test tells its own connections apart from every other connection to the
 // server.
-func WithName(t *testing.T, dsn, name string) string {
+func WithName(t testing.TB, dsn, name string) string {
 	t.Helper()
 	u, err := url.Parse(dsn)
 	if err != nil {
@@ -55,7 +55,7 @@ func WithName(t *testing.T, dsn, name string) string {
 // Backends counts the server's connections carrying an application name. It
 // asks over a connection of its own, so what it counts is what the server sees
 // rather than what the code under test believes.
-func Backends(t *testing.T, name string) int {
+func Backends(t testing.TB, name string) int {
 	t.Helper()
 	conn := connect(t, URL(t))
 	defer closing(t, conn)
@@ -73,7 +73,7 @@ func Backends(t *testing.T, name string) int {
 // test ends. Migrations and rows are what these tests are about, so sharing
 // one database between them would make the order they ran in part of the
 // result.
-func Fresh(t *testing.T) string {
+func Fresh(t testing.TB) string {
 	t.Helper()
 
 	var suffix [8]byte
@@ -110,7 +110,7 @@ func Fresh(t *testing.T) string {
 	return u.String()
 }
 
-func connect(t *testing.T, dsn string) *pgx.Conn {
+func connect(t testing.TB, dsn string) *pgx.Conn {
 	t.Helper()
 	conn, err := pgx.Connect(context.WithoutCancel(t.Context()), dsn)
 	if err != nil {
@@ -119,7 +119,7 @@ func connect(t *testing.T, dsn string) *pgx.Conn {
 	return conn
 }
 
-func closing(t *testing.T, conn *pgx.Conn) {
+func closing(t testing.TB, conn *pgx.Conn) {
 	t.Helper()
 	if err := conn.Close(context.WithoutCancel(t.Context())); err != nil {
 		t.Errorf("closing a connection: %v", err)

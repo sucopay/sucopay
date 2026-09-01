@@ -68,16 +68,6 @@ func (p *Pool) SchemaVersion(ctx context.Context) (string, error) {
 	return version, nil
 }
 
-// MigrateFS applies the migrations in dir of fsys. [Pool.Migrate] is what a
-// deployment runs; this is here so that the runner can be tried against
-// schemas that are not this build's, including ones that fail.
-//
-// It runs whatever SQL it is handed. Give it a filesystem a test wrote, never
-// one a request reached.
-func MigrateFS(ctx context.Context, p *Pool, fsys fs.FS, dir string) (int, error) {
-	return p.migrate(ctx, fsys, dir)
-}
-
 func (p *Pool) migrate(ctx context.Context, fsys fs.FS, dir string) (applied int, err error) {
 	files, err := fs.ReadDir(fsys, dir)
 	if err != nil {

@@ -12,6 +12,7 @@ import (
 // socket. Nothing of suco Pay may travel back through it, or the dependency
 // rule is inverted and a domain type ends up shaped by what a driver returns.
 func TestImports_ReachesNothingElseInThisProject(t *testing.T) {
+	t.Parallel()
 	const module = "github.com/sucopay/sucopay/"
 
 	names, err := filepath.Glob("*.go")
