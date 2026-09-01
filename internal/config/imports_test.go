@@ -24,9 +24,13 @@ var resolutionImports = []string{
 	// invisible decides which characters a report may carry. It reads
 	// nothing and reaches nothing; it is a list of runes.
 	"github.com/sucopay/sucopay/internal/invisible",
+	// problem renders a list of them for a reader. It reads nothing and
+	// reaches nothing; it is a way of laying out strings.
+	"github.com/sucopay/sucopay/internal/problem",
 }
 
 func TestImports_ResolutionReachesNothingOutsideItself(t *testing.T) {
+	t.Parallel()
 	seen := 0
 	for _, name := range resolutionFiles {
 		if _, err := os.Stat(name); err != nil {

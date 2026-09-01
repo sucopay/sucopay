@@ -11,6 +11,22 @@ import (
 
 var now = time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 
+// stored is a row that loads, so that a test changing a single field is
+// testing that field.
+func stored(t *testing.T, id payment.ID, status payment.Status, createdAt, expiresAt time.Time) payment.Stored {
+	t.Helper()
+	r := request(t)
+	return payment.Stored{
+		ID:          id,
+		Amount:      r.Amount,
+		Destination: r.Destination,
+		Metadata:    r.Metadata,
+		Status:      status,
+		CreatedAt:   createdAt,
+		ExpiresAt:   expiresAt,
+	}
+}
+
 // request is one that opens, so that a test changing a single field is testing
 // that field.
 func request(t *testing.T) payment.Request {
@@ -73,6 +89,7 @@ func mustFail(t *testing.T, r payment.Request) error {
 }
 
 func TestNew_OpensAPaymentNobodyHasPaidYet(t *testing.T) {
+	t.Parallel()
 	r := request(t)
 
 	p, err := payment.New(r, now)
@@ -101,6 +118,7 @@ func TestNew_OpensAPaymentNobodyHasPaidYet(t *testing.T) {
 }
 
 func TestNew_TakesTheNetworkFromTheAssetSoThereIsOneAnswer(t *testing.T) {
+	t.Parallel()
 	// A payment settles on the chain its asset lives on. Held as two fields it
 	// could hold two answers, and nothing would make them agree.
 	r := request(t)
@@ -124,6 +142,7 @@ func TestNew_TakesTheNetworkFromTheAssetSoThereIsOneAnswer(t *testing.T) {
 }
 
 func TestNew_MintsAnIdentifierRatherThanTakingOne(t *testing.T) {
+	t.Parallel()
 	// The identifier becomes the nonce a transfer is authorised under, so one
 	// an outsider could choose is one they could collide or front-run.
 	first, second := open(t), open(t)
@@ -134,6 +153,7 @@ func TestNew_MintsAnIdentifierRatherThanTakingOne(t *testing.T) {
 }
 
 func TestNew_ReportsEveryProblemAtOnce(t *testing.T) {
+	t.Parallel()
 	// One round trip should tell a caller everything wrong with what they
 	// sent, rather than one thing per attempt.
 	_, err := payment.New(payment.Request{}, now)
@@ -150,6 +170,7 @@ func TestNew_ReportsEveryProblemAtOnce(t *testing.T) {
 }
 
 func TestNew_RefusesWhatIsNotAPayment(t *testing.T) {
+	t.Parallel()
 	zero, err := payment.ParseMoney(jpyc(t), "0")
 	if err != nil {
 		t.Fatal(err)
@@ -185,6 +206,7 @@ func TestNew_RefusesWhatIsNotAPayment(t *testing.T) {
 }
 
 func TestNew_RefusesMetadataBeyondWhatItWillStore(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name     string
 		metadata map[string]string
@@ -210,6 +232,7 @@ func TestNew_RefusesMetadataBeyondWhatItWillStore(t *testing.T) {
 }
 
 func TestNew_RefusesMetadataHoldingAnythingThatMovesACursor(t *testing.T) {
+	t.Parallel()
 	// It is stored, shown in a console, sent in a webhook and read back by
 	// whoever supplied it. Refusing it once is the only place that covers all
 	// four.
@@ -240,6 +263,7 @@ func TestNew_RefusesMetadataHoldingAnythingThatMovesACursor(t *testing.T) {
 }
 
 func TestNew_ReportsEveryBadMetadataEntryInAFixedOrder(t *testing.T) {
+	t.Parallel()
 	// Ranging over a map reports a different one of them each run, which is a
 	// caller fixing one problem at a time and a test that flakes.
 	r := request(t)
@@ -267,6 +291,7 @@ func TestNew_ReportsEveryBadMetadataEntryInAFixedOrder(t *testing.T) {
 }
 
 func TestNew_AcceptsMetadataHoldingAnOrdinarySpace(t *testing.T) {
+	t.Parallel()
 	r := request(t)
 	r.Metadata = map[string]string{"customer name": "Ada Lovelace"}
 
@@ -276,6 +301,7 @@ func TestNew_AcceptsMetadataHoldingAnOrdinarySpace(t *testing.T) {
 }
 
 func TestNew_CopiesMetadataSoACallerCannotChangeIt(t *testing.T) {
+	t.Parallel()
 	r := request(t)
 	p, err := payment.New(r, now)
 	if err != nil {
@@ -290,6 +316,7 @@ func TestNew_CopiesMetadataSoACallerCannotChangeIt(t *testing.T) {
 }
 
 func TestPayment_MetadataReturnsACopy(t *testing.T) {
+	t.Parallel()
 	p := open(t)
 
 	p.Metadata()["order"] = "changed"
@@ -300,6 +327,7 @@ func TestPayment_MetadataReturnsACopy(t *testing.T) {
 }
 
 func TestPayment_MovesFromOpenedToPaid(t *testing.T) {
+	t.Parallel()
 	p := open(t)
 
 	if err := p.Await(); err != nil {
@@ -317,6 +345,7 @@ func TestPayment_MovesFromOpenedToPaid(t *testing.T) {
 }
 
 func TestPayment_APayableOneCanEndInFailureAsWellAsSuccess(t *testing.T) {
+	t.Parallel()
 	// Both are reachable from the one state, and a walk down the happy path
 	// alone would not tell Fail from Succeed.
 	for _, c := range []struct {
@@ -341,6 +370,7 @@ func TestPayment_APayableOneCanEndInFailureAsWellAsSuccess(t *testing.T) {
 }
 
 func TestPayment_RefusesAMoveTheLifecycleDoesNotAllow(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name  string
 		setUp func(*testing.T) *payment.Payment
@@ -365,6 +395,7 @@ func TestPayment_RefusesAMoveTheLifecycleDoesNotAllow(t *testing.T) {
 }
 
 func TestPayment_RefusesToMoveOnFromAFinalStatus(t *testing.T) {
+	t.Parallel()
 	p := payable(t)
 	if err := p.Succeed(); err != nil {
 		t.Fatal(err)
@@ -381,6 +412,7 @@ func TestPayment_RefusesToMoveOnFromAFinalStatus(t *testing.T) {
 }
 
 func TestExpire_RefusesWhileThePaymentIsStillPayable(t *testing.T) {
+	t.Parallel()
 	p := payable(t)
 
 	if err := p.Expire(now); err == nil {
@@ -399,6 +431,7 @@ func TestExpire_RefusesWhileThePaymentIsStillPayable(t *testing.T) {
 }
 
 func TestRestore_RebuildsAPaymentThatHasAlreadyExpired(t *testing.T) {
+	t.Parallel()
 	// A row whose deadline has passed still has to load, or nothing could read
 	// back what happened.
 	created, expires := now.Add(-48*time.Hour), now.Add(-47*time.Hour)
@@ -407,7 +440,7 @@ func TestRestore_RebuildsAPaymentThatHasAlreadyExpired(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	back, err := payment.Restore(id, request(t), payment.Expired, created, expires)
+	back, err := payment.Restore(stored(t, id, payment.Expired, created, expires))
 
 	if err != nil {
 		t.Fatalf("a stored payment would not load: %v", err)
@@ -427,6 +460,7 @@ func TestRestore_RebuildsAPaymentThatHasAlreadyExpired(t *testing.T) {
 }
 
 func TestRestore_RefusesARowThatIsNoLongerAPayment(t *testing.T) {
+	t.Parallel()
 	id, err := payment.NewID()
 	if err != nil {
 		t.Fatal(err)
@@ -437,23 +471,28 @@ func TestRestore_RefusesARowThatIsNoLongerAPayment(t *testing.T) {
 		name   string
 		id     payment.ID
 		status payment.Status
-		change func(*payment.Request)
+		change func(*payment.Stored)
 	}{
 		{name: "a status nothing defines", id: id, status: "paid"},
 		{name: "a status that was removed", id: id, status: "confirming"},
 		{name: "an identifier of another shape", id: "1", status: payment.Created},
 		{
 			name: "no destination", id: id, status: payment.Created,
-			change: func(r *payment.Request) { r.Destination = "" },
+			change: func(s *payment.Stored) { s.Destination = "" },
+		},
+		{
+			name: "a deadline before it was created", id: id, status: payment.Created,
+			change: func(s *payment.Stored) { s.ExpiresAt = s.CreatedAt.Add(-time.Hour) },
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			r := request(t)
+			t.Parallel()
+			row := stored(t, c.id, c.status, created, now)
 			if c.change != nil {
-				c.change(&r)
+				c.change(&row)
 			}
 
-			if _, err := payment.Restore(c.id, r, c.status, created, now); err == nil {
+			if _, err := payment.Restore(row); err == nil {
 				t.Fatal("want an error, got none")
 			}
 		})

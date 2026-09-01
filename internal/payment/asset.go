@@ -26,6 +26,9 @@ func (n Network) String() string { return string(n) }
 // yen-pegged coin would not be JPYC however it spelled itself. Comparing
 // amounts by symbol accepts the wrong token.
 //
+// The zero Asset is no token at all: it names no network and nothing the
+// network could identify, and the methods report that rather than guessing.
+//
 // Reference is opaque here. What identifies a token on a chain is the chain's
 // business: an address on one, a mint on another, an issuer and a currency on
 // a third. [ADR 0002] keeps chain-shaped values behind the adapter, so this

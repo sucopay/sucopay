@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sucopay/sucopay/internal/invisible"
+	"github.com/sucopay/sucopay/internal/problem"
 )
 
 // Metadata is bounded because a merchant supplies it and an instance stores
@@ -36,10 +37,7 @@ type Problem struct {
 }
 
 func (p Problem) String() string {
-	if p.Field == "" {
-		return p.Message
-	}
-	return invisible.Quote(p.Field) + ": " + p.Message
+	return problem.Line(p.Field, p.Message)
 }
 
 // Problems is every problem found in one request. They are reported together
@@ -50,15 +48,11 @@ type Problems []Problem
 
 // Error lists every problem, one per line.
 func (ps Problems) Error() string {
-	if len(ps) == 1 {
-		return "payment: " + ps[0].String()
-	}
-	lines := make([]string, 0, len(ps)+1)
-	lines = append(lines, fmt.Sprintf("payment: %d problems", len(ps)))
+	lines := make([]string, 0, len(ps))
 	for _, p := range ps {
-		lines = append(lines, "  "+p.String())
+		lines = append(lines, p.String())
 	}
-	return strings.Join(lines, "\n")
+	return problem.List("payment", lines)
 }
 
 // ID identifies one payment. It is 32 hexadecimal characters: an opaque 128
@@ -125,9 +119,10 @@ func (a Address) String() string { return string(a) }
 
 // Payment records that an amount is being accepted for a piece of business.
 //
-// Its fields are unexported so that the only Payment a caller can hold is one
-// whose invariants held when it was made and have held through every move
-// since. [New] is the way to make one.
+// Its fields are unexported so that a Payment made by [New] or [Restore] is
+// one whose invariants held when it was made and have held through every move
+// since. The zero Payment is not a payment: it has no identifier and no
+// status, and the methods report that rather than guessing.
 //
 // One writer at a time. A payment is loaded, moved and saved inside one
 // database transaction, which is what decides between two moves racing for the
@@ -146,9 +141,9 @@ type Payment struct {
 // Request is what a caller supplies to open a payment.
 //
 // It carries no identifier: [New] mints one, so that nothing reaching an
-// instance from outside can choose what a payment is called. The identifier
-// becomes the nonce the transfer is authorised under, and one an outsider
-// picked is one they can front-run or collide.
+// instance from outside can choose what a payment is called. An identifier
+// somebody else chose is one they can guess, enumerate, or collide with
+// another payment's.
 //
 // It carries no network either. The amount names its asset and the asset names
 // its network, so a payment cannot hold two answers to which chain it settles
@@ -170,19 +165,35 @@ func New(r Request, now time.Time) (*Payment, error) {
 	return build(id, r, Created, now, now)
 }
 
-// Restore rebuilds a payment that was stored, under the identifier it already
-// has and with the deadline it was stored with. Any ExpiresAt on r is ignored.
+// Stored is a payment as it was written down. Every field is one the row
+// holds, so nothing a caller passes is quietly dropped.
+type Stored struct {
+	ID          ID
+	Amount      Money
+	Destination Address
+	Metadata    map[string]string
+	Status      Status
+	CreatedAt   time.Time
+	ExpiresAt   time.Time
+}
+
+// Restore rebuilds a payment that was stored, under the identifier and the
+// deadline it already has.
 //
 // It holds the same invariants as [New]: a row that no longer satisfies them
 // is a row this process refuses to act on rather than one it carries forward.
-// The deadline is checked against createdAt rather than the present, because a
+// The deadline is checked against CreatedAt rather than the present, because a
 // payment that has since expired still has to load.
-func Restore(id ID, r Request, status Status, createdAt, expiresAt time.Time) (*Payment, error) {
-	if !status.Valid() {
-		return nil, Problems{{Field: "status", Message: fmt.Sprintf("%q is not a status", status)}}
+func Restore(s Stored) (*Payment, error) {
+	if !s.Status.Valid() {
+		return nil, Problems{{Field: "status", Message: fmt.Sprintf("%q is not a status", s.Status)}}
 	}
-	r.ExpiresAt = expiresAt
-	return build(id, r, status, createdAt, createdAt)
+	return build(s.ID, Request{
+		Amount:      s.Amount,
+		Destination: s.Destination,
+		Metadata:    s.Metadata,
+		ExpiresAt:   s.ExpiresAt,
+	}, s.Status, s.CreatedAt, s.CreatedAt)
 }
 
 func build(id ID, r Request, status Status, createdAt, deadlineAfter time.Time) (*Payment, error) {

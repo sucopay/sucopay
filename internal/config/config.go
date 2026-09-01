@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sucopay/sucopay/internal/invisible"
+	"github.com/sucopay/sucopay/internal/problem"
 )
 
 const (
@@ -41,9 +41,9 @@ func (o Origin) String() string {
 	return fmt.Sprintf("Origin(%d)", int(o))
 }
 
-// Source records where one resolved value came from. The zero value reads as a
-// default with no variable behind it, so look a path up in [Resolved.Sources]
-// only after [Resolve] has recorded it.
+// Source records where one resolved value came from. Its zero value reads as a
+// default with no variable behind it, which is also what a map returns for a
+// path nobody recorded: use [Resolved.SourceOf] to tell the two apart.
 type Source struct {
 	// Origin says whether the value came from the document, an environment
 	// variable the document named, or a built-in default.
@@ -102,8 +102,19 @@ type Config struct {
 // Resolved is a Config together with where each of its values came from.
 type Resolved struct {
 	Config Config
-	// Sources is keyed by dotted path, such as "listen.port".
+	// Sources is keyed by dotted path, such as "listen.port". Read it through
+	// [Resolved.SourceOf] rather than directly: a path nobody recorded gives
+	// back the same zero Source a defaulted one does.
 	Sources map[string]Source
+}
+
+// SourceOf returns where the value at a dotted path came from, and whether the
+// path is one [Resolve] read at all. A misspelt path is a mistake in the
+// caller rather than a setting that took its default, and the two are
+// otherwise the same answer.
+func (r Resolved) SourceOf(path string) (Source, bool) {
+	source, ok := r.Sources[path]
+	return source, ok
 }
 
 // Problem is one thing wrong with a configuration document. Path is the dotted
@@ -121,10 +132,7 @@ type Problem struct {
 // carry a newline and forge a line of its own in a report, or an escape
 // sequence a terminal would act on. [invisible.Quote] holds that list.
 func (p Problem) String() string {
-	if p.Path == "" {
-		return p.Message
-	}
-	return invisible.Quote(p.Path) + ": " + p.Message
+	return problem.Line(p.Path, p.Message)
 }
 
 // Problems is every problem found in one document. [Resolve] reports all of
@@ -134,15 +142,11 @@ type Problems []Problem
 
 // Error lists every problem, one per line.
 func (ps Problems) Error() string {
-	if len(ps) == 1 {
-		return "configuration: " + ps[0].String()
-	}
-	lines := make([]string, 0, len(ps)+1)
-	lines = append(lines, fmt.Sprintf("configuration: %d problems", len(ps)))
+	lines := make([]string, 0, len(ps))
 	for _, p := range ps {
-		lines = append(lines, "  "+p.String())
+		lines = append(lines, p.String())
 	}
-	return strings.Join(lines, "\n")
+	return problem.List("configuration", lines)
 }
 
 // secretPaths are the dotted paths whose values never appear in a report. A
