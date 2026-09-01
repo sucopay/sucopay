@@ -8,6 +8,7 @@ import (
 )
 
 func TestNewID_MakesSomethingParseIDAccepts(t *testing.T) {
+	t.Parallel()
 	id, err := payment.NewID()
 	if err != nil {
 		t.Fatal(err)
@@ -19,6 +20,7 @@ func TestNewID_MakesSomethingParseIDAccepts(t *testing.T) {
 }
 
 func TestNewID_DoesNotRepeatItself(t *testing.T) {
+	t.Parallel()
 	// An identifier that collided would attach one payment's money to
 	// another's business.
 	seen := make(map[payment.ID]bool, 1000)
@@ -35,6 +37,7 @@ func TestNewID_DoesNotRepeatItself(t *testing.T) {
 }
 
 func TestParseID_RefusesAnythingThatIsNotOne(t *testing.T) {
+	t.Parallel()
 	valid := strings.Repeat("ab", 16)
 
 	for _, c := range []struct{ name, id string }{
@@ -53,6 +56,7 @@ func TestParseID_RefusesAnythingThatIsNotOne(t *testing.T) {
 }
 
 func TestParseAddress_KeepsTheAccountAsTheNetworkWroteIt(t *testing.T) {
+	t.Parallel()
 	// Chains write an account differently, and which spellings mean one
 	// account is the chain's business. Changing the case here would break a
 	// network whose addresses are case-sensitive, which base58 chains are.
@@ -74,6 +78,7 @@ func TestParseAddress_KeepsTheAccountAsTheNetworkWroteIt(t *testing.T) {
 }
 
 func TestParseAddress_RefusesWhatCouldNotBeAnAccount(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct{ name, address string }{
 		{"empty", ""},
 		{"longer than any account", strings.Repeat("a", payment.MaxAddressBytes+1)},

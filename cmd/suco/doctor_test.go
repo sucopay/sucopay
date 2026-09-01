@@ -6,6 +6,7 @@ import (
 )
 
 func TestDescribeVersion_BoundsAndQuotesWhatTheServerSent(t *testing.T) {
+	t.Parallel()
 	// The report is laid out in columns and reaches a terminal. What arrives
 	// in this field was chosen at the other end of a network, by whoever is
 	// answering, which is not always the database the operator meant.
@@ -33,6 +34,7 @@ func TestDescribeVersion_BoundsAndQuotesWhatTheServerSent(t *testing.T) {
 }
 
 func TestDescribeVersion_LeavesAnOrdinaryVersionAlone(t *testing.T) {
+	t.Parallel()
 	if got := describeVersion("17.11"); got != "PostgreSQL 17.11" {
 		t.Errorf("describeVersion(17.11) = %q, want it unchanged", got)
 	}

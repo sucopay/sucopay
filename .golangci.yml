@@ -5,6 +5,9 @@ linters:
   enable:
     - revive
     - nolintlint
+    # The rule about t.Parallel is in CONTRIBUTING; this is what keeps it from
+    # depending on a reviewer noticing.
+    - paralleltest
 
   settings:
     revive:
@@ -14,6 +17,12 @@ linters:
         - name: error-strings
         - name: indent-error-flow
         - name: unreachable-code
+
+    paralleltest:
+      # Subtests are left to judgement. Some share a connection or a fixture
+      # with the case beside them, and running those together would be a race
+      # rather than a speedup.
+      ignore-missing-subtests: true
 
     nolintlint:
       # A silencing comment has to say what it is silencing and why, or it
@@ -42,6 +51,12 @@ linters:
 
   exclusions:
     rules:
+      - path: cmd/suco/main_test.go
+        linters:
+          # The CLI reads the real environment, so its tests set one, and Go
+          # refuses to run a test that does both.
+          - paralleltest
+
       - path: _test\.go$
         linters:
           # Tests report failures through t.Fatal, so a deferred Close has

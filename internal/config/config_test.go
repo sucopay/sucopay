@@ -8,6 +8,7 @@ import (
 )
 
 func TestProblems_ErrorListsEveryProblemOnePerLine(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		in   config.Problems
@@ -49,6 +50,7 @@ func TestProblems_ErrorListsEveryProblemOnePerLine(t *testing.T) {
 }
 
 func TestProblem_StringCarriesThePathWhenThereIsOne(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		in   config.Problem
@@ -67,6 +69,7 @@ func TestProblem_StringCarriesThePathWhenThereIsOne(t *testing.T) {
 }
 
 func TestOrigin_StringNamesTheOriginAndAdmitsAnUnknownOne(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in   config.Origin
 		want string
@@ -86,6 +89,7 @@ func TestOrigin_StringNamesTheOriginAndAdmitsAnUnknownOne(t *testing.T) {
 }
 
 func TestSecret_MatchesTheSecretPathsAndNothingElse(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		path string
 		want bool
@@ -113,6 +117,7 @@ func TestSecret_MatchesTheSecretPathsAndNothingElse(t *testing.T) {
 // a line of a report. A document names its own keys, and a newline inside one
 // would otherwise print as a problem of its own.
 func TestProblem_QuotesAPathThatCarriesControlCharacters(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		path  string
@@ -139,6 +144,7 @@ func TestProblem_QuotesAPathThatCarriesControlCharacters(t *testing.T) {
 }
 
 func TestSource_StringNamesTheOriginAndTheVariableBehindIt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		source config.Source
@@ -153,5 +159,22 @@ func TestSource_StringNamesTheOriginAndTheVariableBehindIt(t *testing.T) {
 				t.Errorf("String() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestSourceOf_TellsAPathNobodyReadFromOneThatTookItsDefault(t *testing.T) {
+	t.Parallel()
+	// Both answer with the zero Source, so a misspelt path would otherwise
+	// read as a setting that was simply left alone.
+	got, err := config.Resolve(map[string]any{}, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if source, ok := got.SourceOf("listen.port"); !ok || source.Origin != config.FromDefault {
+		t.Errorf("listen.port: source %v, read %v; want a recorded default", source, ok)
+	}
+	if _, ok := got.SourceOf("listen.prot"); ok {
+		t.Error("a path nobody read came back as one that was")
 	}
 }

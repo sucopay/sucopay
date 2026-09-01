@@ -54,6 +54,7 @@ func mustResolve(t *testing.T, doc map[string]any, env config.Lookup) config.Res
 }
 
 func TestResolve_UsesDefaultsWhenTheDocumentIsEmpty(t *testing.T) {
+	t.Parallel()
 	got := mustResolve(t, map[string]any{}, noEnv).Config
 
 	if got.Listen.Host != config.DefaultHost {
@@ -74,6 +75,7 @@ func TestResolve_UsesDefaultsWhenTheDocumentIsEmpty(t *testing.T) {
 }
 
 func TestResolve_BaseURLFollowsThePortWhenOnlyThePortIsSet(t *testing.T) {
+	t.Parallel()
 	doc := map[string]any{"listen": map[string]any{"port": uint64(9999)}}
 
 	got := mustResolve(t, doc, noEnv).Config
@@ -84,6 +86,7 @@ func TestResolve_BaseURLFollowsThePortWhenOnlyThePortIsSet(t *testing.T) {
 }
 
 func TestResolve_AReferenceThatDoesNotResolveIsAProblem(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		env  config.Lookup
@@ -113,6 +116,7 @@ func TestResolve_AReferenceThatDoesNotResolveIsAProblem(t *testing.T) {
 }
 
 func TestResolve_RejectsAReferenceMixedWithLiteralText(t *testing.T) {
+	t.Parallel()
 	doc := map[string]any{"listen": map[string]any{"base_url": "https://${SUCO_HOST}/pay"}}
 
 	_, err := config.Resolve(doc, envOf(map[string]string{"SUCO_HOST": "example.com"}))
@@ -121,6 +125,7 @@ func TestResolve_RejectsAReferenceMixedWithLiteralText(t *testing.T) {
 }
 
 func TestResolve_ReportsEveryProblemAtOnce(t *testing.T) {
+	t.Parallel()
 	doc := map[string]any{
 		"listen":   map[string]any{"port": uint64(70000), "base_url": "not a url"},
 		"database": map[string]any{"managed": true, "url": "postgres://x/y"},
@@ -140,6 +145,7 @@ func TestResolve_ReportsEveryProblemAtOnce(t *testing.T) {
 }
 
 func TestResolve_NamesTheVariableWhenItsValueHasTheWrongType(t *testing.T) {
+	t.Parallel()
 	doc := map[string]any{"listen": map[string]any{"port": "${SUCO_LISTEN_PORT}"}}
 	env := envOf(map[string]string{"SUCO_LISTEN_PORT": "not-a-number"})
 
@@ -152,6 +158,7 @@ func TestResolve_NamesTheVariableWhenItsValueHasTheWrongType(t *testing.T) {
 }
 
 func TestResolve_RecordsWhereEachValueCameFrom(t *testing.T) {
+	t.Parallel()
 	doc := map[string]any{
 		"listen":   map[string]any{"port": uint64(9000)},
 		"database": map[string]any{"managed": false, "url": "${SUCO_DATABASE_URL}"},
@@ -185,6 +192,7 @@ func TestResolve_RecordsWhereEachValueCameFrom(t *testing.T) {
 }
 
 func TestResolve_RejectsAPortOutsideTheValidRange(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		port uint64
@@ -204,6 +212,7 @@ func TestResolve_RejectsAPortOutsideTheValidRange(t *testing.T) {
 }
 
 func TestResolve_RejectsABaseURLThatIsNotReachableOverHTTP(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		url  string
@@ -229,6 +238,7 @@ func TestResolve_RejectsABaseURLThatIsNotReachableOverHTTP(t *testing.T) {
 }
 
 func TestResolve_RejectsADatabaseThatIsBothManagedAndGivenAURL(t *testing.T) {
+	t.Parallel()
 	doc := map[string]any{"database": map[string]any{
 		"managed": true,
 		"url":     "postgres://localhost/suco",
@@ -240,6 +250,7 @@ func TestResolve_RejectsADatabaseThatIsBothManagedAndGivenAURL(t *testing.T) {
 }
 
 func TestResolve_RequiresAURLWhenTheDatabaseIsNotManaged(t *testing.T) {
+	t.Parallel()
 	doc := map[string]any{"database": map[string]any{"managed": false}}
 
 	_, err := config.Resolve(doc, noEnv)
@@ -248,6 +259,7 @@ func TestResolve_RequiresAURLWhenTheDatabaseIsNotManaged(t *testing.T) {
 }
 
 func TestResolve_RejectsAnUnknownNetworkKind(t *testing.T) {
+	t.Parallel()
 	doc := map[string]any{"networks": map[string]any{
 		"local": map[string]any{"kind": "evm"},
 	}}
@@ -261,6 +273,7 @@ func TestResolve_RejectsAnUnknownNetworkKind(t *testing.T) {
 }
 
 func TestResolve_AcceptsASimulatedNetwork(t *testing.T) {
+	t.Parallel()
 	doc := map[string]any{"networks": map[string]any{
 		"local": map[string]any{"kind": "simulated"},
 	}}
@@ -273,6 +286,7 @@ func TestResolve_AcceptsASimulatedNetwork(t *testing.T) {
 }
 
 func TestResolve_RejectsAnEmptyHost(t *testing.T) {
+	t.Parallel()
 	doc := map[string]any{"listen": map[string]any{"host": ""}}
 
 	_, err := config.Resolve(doc, noEnv)
@@ -281,6 +295,7 @@ func TestResolve_RejectsAnEmptyHost(t *testing.T) {
 }
 
 func TestResolve_KeepsTheHostFromTheDocument(t *testing.T) {
+	t.Parallel()
 	doc := map[string]any{"listen": map[string]any{"host": "0.0.0.0"}}
 
 	got := mustResolve(t, doc, noEnv).Config
@@ -294,6 +309,7 @@ func TestResolve_KeepsTheHostFromTheDocument(t *testing.T) {
 }
 
 func TestResolve_ReportsTheCauseNotItsConsequence(t *testing.T) {
+	t.Parallel()
 	doc := map[string]any{"database": map[string]any{
 		"managed": false,
 		"url":     "${SUCO_DATABASE_URL}",
@@ -314,6 +330,7 @@ func TestResolve_ReportsTheCauseNotItsConsequence(t *testing.T) {
 }
 
 func TestResolve_NamesAKeyNothingReads(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		doc  map[string]any
@@ -347,6 +364,7 @@ func TestResolve_NamesAKeyNothingReads(t *testing.T) {
 }
 
 func TestResolve_AcceptsADocumentWhereEveryKeyIsRead(t *testing.T) {
+	t.Parallel()
 	doc := map[string]any{
 		"listen":   map[string]any{"host": "0.0.0.0", "port": uint64(9000), "base_url": "https://pay.example"},
 		"database": map[string]any{"managed": true},
@@ -367,6 +385,7 @@ func TestResolve_AcceptsADocumentWhereEveryKeyIsRead(t *testing.T) {
 }
 
 func TestResolve_RejectsANetworkNameWithADot(t *testing.T) {
+	t.Parallel()
 	doc := map[string]any{"networks": map[string]any{
 		"eth.mainnet": map[string]any{"kind": "simulated"},
 	}}
@@ -380,6 +399,7 @@ func TestResolve_RejectsANetworkNameWithADot(t *testing.T) {
 }
 
 func TestResolve_DoesNotCallTheKeysOfARejectedNetworkUnknown(t *testing.T) {
+	t.Parallel()
 	doc := map[string]any{"networks": map[string]any{
 		"eth.mainnet": map[string]any{"kind": "simulated", "rpc": "x"},
 	}}
@@ -399,6 +419,7 @@ func TestResolve_DoesNotCallTheKeysOfARejectedNetworkUnknown(t *testing.T) {
 // every failure that embeds a value. A problem reaches a terminal and a log, so
 // one carrying a DSN password or an RPC key is a disclosure.
 func TestResolve_NeverPutsASecretInAProblem(t *testing.T) {
+	t.Parallel()
 	const secret = "hunter2-do-not-print"
 
 	cases := []struct {
@@ -458,6 +479,7 @@ func TestResolve_NeverPutsASecretInAProblem(t *testing.T) {
 }
 
 func TestResolve_StillShowsTheValueAtAPathThatIsNotSecret(t *testing.T) {
+	t.Parallel()
 	doc := map[string]any{"listen": map[string]any{"base_url": "gopher://localhost"}}
 
 	_, err := config.Resolve(doc, noEnv)
@@ -469,6 +491,7 @@ func TestResolve_StillShowsTheValueAtAPathThatIsNotSecret(t *testing.T) {
 }
 
 func TestResolve_AcceptsThePortsAtTheEdgesOfTheRange(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		port uint64
@@ -490,6 +513,7 @@ func TestResolve_AcceptsThePortsAtTheEdgesOfTheRange(t *testing.T) {
 }
 
 func TestResolve_RejectsAValueOfTheWrongShape(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		doc  map[string]any
@@ -531,6 +555,7 @@ func TestResolve_RejectsAValueOfTheWrongShape(t *testing.T) {
 }
 
 func TestResolve_ReadsTrueAndFalseWrittenAsText(t *testing.T) {
+	t.Parallel()
 	doc := map[string]any{"database": map[string]any{
 		"managed": "false",
 		"url":     "postgres://localhost/suco",
@@ -544,6 +569,7 @@ func TestResolve_ReadsTrueAndFalseWrittenAsText(t *testing.T) {
 }
 
 func TestResolve_KeepsOneNetworksProblemOutOfAnother(t *testing.T) {
+	t.Parallel()
 	doc := map[string]any{"networks": map[string]any{
 		"good": map[string]any{"kind": "simulated"},
 		"bad":  map[string]any{"kind": "carrier-pigeon"},
@@ -561,6 +587,7 @@ func TestResolve_KeepsOneNetworksProblemOutOfAnother(t *testing.T) {
 }
 
 func TestResolve_ResolvesEveryNetworkInTheDocument(t *testing.T) {
+	t.Parallel()
 	doc := map[string]any{"networks": map[string]any{
 		"one": map[string]any{"kind": "simulated"},
 		"two": map[string]any{"kind": "simulated"},
@@ -579,6 +606,7 @@ func TestResolve_ResolvesEveryNetworkInTheDocument(t *testing.T) {
 }
 
 func TestResolve_RejectsABaseURLCarryingCredentials(t *testing.T) {
+	t.Parallel()
 	doc := map[string]any{"listen": map[string]any{
 		"base_url": "http://admin:PASSWORD@pay.example.com",
 	}}
@@ -595,6 +623,7 @@ func TestResolve_RejectsABaseURLCarryingCredentials(t *testing.T) {
 // unreadable keys from turning into a report nobody can read and a string
 // nobody asked to hold in memory.
 func TestResolve_StopsListingProblemsPastTheLimit(t *testing.T) {
+	t.Parallel()
 	keys := map[string]any{}
 	for i := range 500 {
 		keys[fmt.Sprintf("k%d", i)] = 1
@@ -612,6 +641,7 @@ func TestResolve_StopsListingProblemsPastTheLimit(t *testing.T) {
 }
 
 func TestResolve_RefusesCredentialsAtASettingThatIsNotSecret(t *testing.T) {
+	t.Parallel()
 	// A document names any variable at any key, and a report prints in full
 	// whatever reaches a key that is not secret. Refusing the value is what
 	// keeps a password out of the report.
@@ -643,6 +673,7 @@ func TestResolve_RefusesCredentialsAtASettingThatIsNotSecret(t *testing.T) {
 }
 
 func TestResolve_AcceptsCredentialsAtASecretSetting(t *testing.T) {
+	t.Parallel()
 	const dsn = "postgres://admin:hunter2@db.internal/sucopay"
 
 	got, err := config.Resolve(map[string]any{
@@ -658,6 +689,7 @@ func TestResolve_AcceptsCredentialsAtASecretSetting(t *testing.T) {
 }
 
 func TestResolve_RefusesAReferenceToSomethingThatIsNotAVariableName(t *testing.T) {
+	t.Parallel()
 	// The name is printed back in the report and in the message naming an
 	// unset variable, so it may hold only what a variable name holds.
 	for _, name := range []string{

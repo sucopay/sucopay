@@ -10,6 +10,7 @@ import (
 )
 
 func TestHandler_AnswersOnlyTheRoutesItServes(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		method string
@@ -34,6 +35,7 @@ func TestHandler_AnswersOnlyTheRoutesItServes(t *testing.T) {
 }
 
 func TestHandler_HealthzReportsOKAsJSON(t *testing.T) {
+	t.Parallel()
 	rec := httptest.NewRecorder()
 
 	api.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
@@ -54,6 +56,7 @@ func TestHandler_HealthzReportsOKAsJSON(t *testing.T) {
 // being interpreted as something else by a browser that disagrees with the
 // header.
 func TestHandler_TellsBrowsersNotToSniffTheContentType(t *testing.T) {
+	t.Parallel()
 	rec := httptest.NewRecorder()
 
 	api.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))

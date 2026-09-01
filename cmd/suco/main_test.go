@@ -68,6 +68,7 @@ func reportLine(t *testing.T, report, path string) string {
 }
 
 func TestRun_WithoutArgumentsWritesUsageAndFails(t *testing.T) {
+	t.Parallel()
 	stdout, stderr, err := runArgs(t)
 
 	if !errors.Is(err, errUsage) {
@@ -85,6 +86,7 @@ func TestRun_WithoutArgumentsWritesUsageAndFails(t *testing.T) {
 }
 
 func TestRun_UnknownCommandNamesIt(t *testing.T) {
+	t.Parallel()
 	_, stderr, err := runArgs(t, "nope")
 
 	if err == nil {
@@ -99,6 +101,7 @@ func TestRun_UnknownCommandNamesIt(t *testing.T) {
 }
 
 func TestRun_HelpWritesUsageToStdoutAndSucceeds(t *testing.T) {
+	t.Parallel()
 	for _, arg := range []string{"help", "-h", "--help"} {
 		t.Run(arg, func(t *testing.T) {
 			stdout, stderr, err := runArgs(t, arg)
@@ -169,6 +172,7 @@ func TestRun_ServeReportsAConfigurationProblem(t *testing.T) {
 }
 
 func TestUsage_NamesEveryCommandThatExistsAndNoOther(t *testing.T) {
+	t.Parallel()
 	var out bytes.Buffer
 
 	usage(&out)

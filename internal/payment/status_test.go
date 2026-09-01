@@ -14,6 +14,7 @@ var every = []payment.Status{
 }
 
 func TestStatus_AllowsTheLifecycleAndNothingElse(t *testing.T) {
+	t.Parallel()
 	// The whole state machine, written out rather than derived, so that this
 	// disagrees with the code when the code changes.
 	allowed := map[payment.Status][]payment.Status{
@@ -37,6 +38,7 @@ func TestStatus_AllowsTheLifecycleAndNothingElse(t *testing.T) {
 }
 
 func TestStatus_FinalIsTheThreeThatEndAndNoOthers(t *testing.T) {
+	t.Parallel()
 	ends := map[payment.Status]bool{
 		payment.Succeeded: true, payment.Failed: true, payment.Expired: true,
 	}
@@ -56,6 +58,7 @@ func TestStatus_FinalIsTheThreeThatEndAndNoOthers(t *testing.T) {
 }
 
 func TestStatus_ValidAcceptsWhatThisPackageDefinesAndNothingElse(t *testing.T) {
+	t.Parallel()
 	for _, s := range every {
 		if !s.Valid() {
 			t.Errorf("%s is defined here but reads as invalid", s)

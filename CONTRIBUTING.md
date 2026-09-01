@@ -56,14 +56,15 @@ internal/payment/
   exported service, never through another context's repository.
 
 Check the direction with a test that reads a package's imports and fails on anything the
-inner files are not allowed. `internal/config` has one.
+inner files are not allowed. `internal/config`, `internal/payment` and `internal/postgres`
+each have one.
 
 ## Domain model
 
 | DDD | suco Pay |
 |---|---|
 | Aggregate root | `Payment` (owns its attempts), `Refund` |
-| Entity | `Payment`, `Refund`, `Transaction` |
+| Entity | `Payment`, `Refund`, `Transaction`, `Attempt` (one transfer against a payment, with its own identity) |
 | Value object | `Money`, `Address`, `Network`, `Status`, `Nonce`, `ConfirmationPolicy` |
 | Repository | one per aggregate root |
 | Domain service | finality evaluation |
@@ -138,6 +139,28 @@ func TestObserver_SameTransactionObservedTwiceCreatesOneRow(t *testing.T)
 - Every state transition needs a test for its failure path.
 - Anything scoped by account needs a test with two accounts asserting isolation.
 - Test behaviour through the package's exported surface, not through unexported state.
+- `t.Parallel()` in every test that does not set an environment variable, so that a test
+  depending on another one's leftovers fails rather than passes quietly.
+- A test needing a database gets one of its own from `postgrestest.Fresh`, and does not skip
+  when there is none: a skipped test reports success without having run.
+
+### Fuzzing
+
+Anything that reads what somebody else wrote gets a fuzz target: a configuration document, an
+amount, an address, metadata. Write the invariant rather than the expected output, because most
+generated inputs are refused and being refused is not a failure.
+
+```go
+// Never panics, and an error never repeats what it was given.
+// Nothing that reaches a terminal holds a character a terminal would act on.
+```
+
+**Write the check without going through the function under test.** Asking `Has`
+whether `Quote` did its job routes both through one decision, so a character
+dropped from that decision is missed by both at once, however long it runs.
+
+`go test` runs each target's seed corpus, so a case found once stays checked. `make fuzz`
+searches for longer. When a target fails, Go writes the input under `testdata/fuzz/`: commit it.
 
 ## Commits and PRs
 
@@ -164,7 +187,7 @@ window is unbounded when the process dies between the two writes.
 
 - Open an issue first for anything that changes the API, the payment state machine, or adds a
   dependency to the core.
-- Run `make lint test`.
+- Run `make check`.
 
 ## Documentation
 

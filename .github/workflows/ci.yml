@@ -55,6 +55,16 @@ jobs:
         with: { go-version: '${{ env.GO_VERSION }}', cache: true }
       - run: make vuln
 
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: { go-version: '${{ env.GO_VERSION }}', cache: true }
+      # Short, because this runs on every change. The seed corpus runs with the
+      # ordinary tests; this is the search for what is not in it yet.
+      - run: make fuzz FUZZTIME=30s
+
   repo:
     runs-on: ubuntu-latest
     steps:

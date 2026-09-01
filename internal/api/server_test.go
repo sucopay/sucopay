@@ -57,6 +57,7 @@ func get(t *testing.T, url string) *http.Response {
 }
 
 func TestListen_ReportsAPortThatIsAlreadyTaken(t *testing.T) {
+	t.Parallel()
 	held, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -74,6 +75,7 @@ func TestListen_ReportsAPortThatIsAlreadyTaken(t *testing.T) {
 }
 
 func TestServer_ServesTheHandlerItWasGiven(t *testing.T) {
+	t.Parallel()
 	// A handler the package does not build, so a server answering out of its
 	// own routes rather than the one it was handed would fail here.
 	own := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -89,6 +91,7 @@ func TestServer_ServesTheHandlerItWasGiven(t *testing.T) {
 }
 
 func TestListen_AddrCarriesTheChosenPort(t *testing.T) {
+	t.Parallel()
 	s, err := api.Listen("127.0.0.1:0", api.Handler())
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -106,6 +109,7 @@ func TestListen_AddrCarriesTheChosenPort(t *testing.T) {
 }
 
 func TestServer_StopsWhenItsContextIsCancelled(t *testing.T) {
+	t.Parallel()
 	s, err := api.Listen("127.0.0.1:0", api.Handler())
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -131,6 +135,7 @@ func TestServer_StopsWhenItsContextIsCancelled(t *testing.T) {
 // still answering, and a payment request cut off mid-response leaves the caller
 // unable to tell what happened.
 func TestServer_LetsAnInFlightRequestFinishAfterCancellation(t *testing.T) {
+	t.Parallel()
 	// The handler stays busy for well past the moment the shutdown begins, so
 	// that a server which closed connections instead of draining them would
 	// cut this response off rather than win a race with it.
@@ -191,6 +196,7 @@ func TestServer_LetsAnInFlightRequestFinishAfterCancellation(t *testing.T) {
 }
 
 func TestClose_ReleasesThePort(t *testing.T) {
+	t.Parallel()
 	s, err := api.Listen("127.0.0.1:0", api.Handler())
 	if err != nil {
 		t.Fatalf("listen: %v", err)

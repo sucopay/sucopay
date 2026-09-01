@@ -10,6 +10,7 @@ import (
 // to `suco serve`. An instance that refuses to start without a document is only
 // usable if the document it is handed is one it accepts.
 func TestDocument_ResolvesWithoutAProblem(t *testing.T) {
+	t.Parallel()
 	doc, err := config.Decode(config.Document())
 	if err != nil {
 		t.Fatalf("decode: %v", err)
@@ -32,6 +33,7 @@ func TestDocument_ResolvesWithoutAProblem(t *testing.T) {
 // left to a default would put the decision back inside the binary where nobody
 // running the instance can see it.
 func TestDocument_CarriesEveryValueItNames(t *testing.T) {
+	t.Parallel()
 	doc, err := config.Decode(config.Document())
 	if err != nil {
 		t.Fatalf("decode: %v", err)
@@ -69,6 +71,7 @@ func leafPaths(t *testing.T, doc map[string]any, prefix string) []string {
 // TestDocument_NamesNoSubsystemThatDoesNotExist stops the document from
 // describing a server that ignores what it was told.
 func TestDocument_NamesNoSubsystemThatDoesNotExist(t *testing.T) {
+	t.Parallel()
 	doc, err := config.Decode(config.Document())
 	if err != nil {
 		t.Fatalf("decode: %v", err)

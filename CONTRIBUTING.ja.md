@@ -56,7 +56,8 @@ internal/payment/
   呼ばないでください。
 
 向きはテストで確かめます。パッケージ内のファイルの import を読み、内側のファイルに許して
-いないものがあれば失敗するテストです。`internal/config` にあります。
+いないものがあれば失敗するテストです。`internal/config`、`internal/payment`、
+`internal/postgres` にそれぞれあります。
 
 ## ドメインモデル
 
@@ -65,7 +66,7 @@ internal/payment/
 | DDD | suco Pay |
 |---|---|
 | 集約ルート | `Payment`（attempt を保持）、`Refund` |
-| エンティティ | `Payment`、`Refund`、`Transaction` |
+| エンティティ | `Payment`、`Refund`、`Transaction`、`Attempt`（payment に対する 1 回の送金。固有の identity を持つ） |
 | 値オブジェクト | `Money`、`Address`、`Network`、`Status`、`Nonce`、`ConfirmationPolicy` |
 | リポジトリ | 集約ルートごとに 1 つ |
 | ドメインサービス | 確定判定 |
@@ -141,6 +142,29 @@ func TestObserver_SameTransactionObservedTwiceCreatesOneRow(t *testing.T)
 - account でスコープされるものは、2 つの account を作って分離を検証してください。
 - パッケージが公開している面を通してふるまいを検証してください。エクスポートしていない状態に
   触れないでください。
+- 環境変数を設定しないテストには `t.Parallel()` を入れてください。他のテストが残したものに
+  依存しているテストが、黙って通らずに落ちるようになります。
+- データベースが要るテストは `postgrestest.Fresh` で自分専用のものを取ってください。無いときに
+  スキップはしません。スキップしたテストは、走っていないのに成功として数えられます。
+
+### ファジング
+
+他人が書いたものを読む箇所には fuzz target を置いてください。設定文書、金額、アドレス、
+metadata が該当します。期待する出力ではなく、成り立つべき性質を書きます。生成される入力は
+ほとんど拒否されるもので、拒否は失敗ではないためです。
+
+```go
+// panic しない。エラーが受け取った内容を書き戻さない。
+// 端末に届くものが、端末の動作を変える文字を含まない。
+```
+
+**判定は、検証対象の関数を通さずに書いてください。** `Quote` の出力を `Has` で調べると、
+両方が同じ内部判定を呼ぶので、その判定から文字が 1 つ抜けても両側が同時に見落とします。
+何百万回走らせても見つかりません。
+
+`go test` は各 target の seed corpus を実行するので、一度見つかった入力はそのまま検査され
+続けます。長く探すのは `make fuzz` です。失敗すると Go が入力を `testdata/fuzz/` に書き出す
+ので、それを commit してください。
 
 ## コミットと PR
 
@@ -165,8 +189,8 @@ window is unbounded when the process dies between the two writes.
 
 ## PR の事前確認
 
-- API、Payment の状態機械、Core の依存を変更する場合は、先に issue を立ててください。
-- `make lint test` を実行してください。
+- API、Payment の状態機械、Core に依存を追加する場合は、先に issue を立ててください。
+- `make check` を実行してください。
 
 ## ドキュメント
 

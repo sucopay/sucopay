@@ -15,6 +15,7 @@ import (
 // status added here without a migration fails, and so does one dropped from
 // the schema while the domain still has it.
 func TestSchema_AcceptsEveryStatusTheDomainDefinesAndNoOther(t *testing.T) {
+	t.Parallel()
 	dsn := postgrestest.Fresh(t)
 	pool, err := postgres.Open(t.Context(), dsn)
 	if err != nil {

@@ -14,6 +14,7 @@ import (
 const one = "1000000000000000000"
 
 func TestNewMoney_HoldsAnAmountLargerThanInt64(t *testing.T) {
+	t.Parallel()
 	thousand, ok := new(big.Int).SetString("1000"+strings.Repeat("0", 18), 10)
 	if !ok {
 		t.Fatal("the test's own number did not parse")
@@ -33,6 +34,7 @@ func TestNewMoney_HoldsAnAmountLargerThanInt64(t *testing.T) {
 }
 
 func TestNewMoney_RefusesWhatIsNotAnAmount(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name   string
 		asset  payment.Asset
@@ -54,6 +56,7 @@ func TestNewMoney_RefusesWhatIsNotAnAmount(t *testing.T) {
 }
 
 func TestNewMoney_CopiesTheAmountSoACallerCannotChangeIt(t *testing.T) {
+	t.Parallel()
 	amount := big.NewInt(100)
 	m, err := payment.NewMoney(jpyc(t), amount)
 	if err != nil {
@@ -68,6 +71,7 @@ func TestNewMoney_CopiesTheAmountSoACallerCannotChangeIt(t *testing.T) {
 }
 
 func TestMoney_AmountReturnsACopy(t *testing.T) {
+	t.Parallel()
 	m, err := payment.ParseMoney(jpyc(t), one)
 	if err != nil {
 		t.Fatal(err)
@@ -81,6 +85,7 @@ func TestMoney_AmountReturnsACopy(t *testing.T) {
 }
 
 func TestParseMoney_RefusesWhatIsNotAWholeNumber(t *testing.T) {
+	t.Parallel()
 	for _, amount := range []string{"", "1.5", "1e18", "abc", " 1", "1 "} {
 		t.Run(amount, func(t *testing.T) {
 			if _, err := payment.ParseMoney(jpyc(t), amount); err == nil {
@@ -91,6 +96,7 @@ func TestParseMoney_RefusesWhatIsNotAWholeNumber(t *testing.T) {
 }
 
 func TestParseMoney_RefusesAnAmountLongerThanAnyAmountCouldBe(t *testing.T) {
+	t.Parallel()
 	// Reading base ten costs more than linearly in the length of the input,
 	// and the string comes from whoever is asking for a payment.
 	long := strings.Repeat("9", payment.MaxAmountDigits+1)
@@ -104,6 +110,7 @@ func TestParseMoney_RefusesAnAmountLongerThanAnyAmountCouldBe(t *testing.T) {
 }
 
 func TestMoney_RefusesArithmeticAcrossTwoTokensThatShareASymbol(t *testing.T) {
+	t.Parallel()
 	// The reason assets are not symbols. Adding these would be adding two
 	// different tokens because they spell themselves the same.
 	native, err := payment.ParseMoney(usdc(t), "1000000")
@@ -124,6 +131,7 @@ func TestMoney_RefusesArithmeticAcrossTwoTokensThatShareASymbol(t *testing.T) {
 }
 
 func TestMoney_RefusesArithmeticAcrossTwoAssets(t *testing.T) {
+	t.Parallel()
 	yen, err := payment.ParseMoney(jpyc(t), "100")
 	if err != nil {
 		t.Fatal(err)
@@ -142,6 +150,7 @@ func TestMoney_RefusesArithmeticAcrossTwoAssets(t *testing.T) {
 }
 
 func TestMoney_RefusesArithmeticWhenOneTokenIsDescribedTwoWays(t *testing.T) {
+	t.Parallel()
 	// One reference, two decimal counts. The sum would mean two things at
 	// once, so neither description is picked over the other.
 	eighteen, err := payment.ParseMoney(asset(t, "polygon", "jpyc-contract", "JPYC", 18), one)
@@ -159,6 +168,7 @@ func TestMoney_RefusesArithmeticWhenOneTokenIsDescribedTwoWays(t *testing.T) {
 }
 
 func TestMoney_AddsAndComparesWithinOneToken(t *testing.T) {
+	t.Parallel()
 	single, err := payment.ParseMoney(jpyc(t), one)
 	if err != nil {
 		t.Fatal(err)
@@ -181,6 +191,7 @@ func TestMoney_AddsAndComparesWithinOneToken(t *testing.T) {
 }
 
 func TestMoney_StringPutsTheDecimalPointBack(t *testing.T) {
+	t.Parallel()
 	// The same digits mean different amounts under different assets, which is
 	// why the smallest unit is not what a person is shown.
 	for _, c := range []struct {
@@ -216,6 +227,7 @@ func TestMoney_StringPutsTheDecimalPointBack(t *testing.T) {
 }
 
 func TestMoney_TheZeroValueIsNotAnAmountOfAnything(t *testing.T) {
+	t.Parallel()
 	var m payment.Money
 
 	if m.IsSet() {

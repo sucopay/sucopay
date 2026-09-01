@@ -19,6 +19,7 @@ func lineAt(t *testing.T, lines []config.ReportLine, path string) config.ReportL
 }
 
 func TestReport_ReducesASecretToWhetherItIsSet(t *testing.T) {
+	t.Parallel()
 	const dsn = "postgres://user:hunter2@db.internal/suco"
 	cases := []struct {
 		name string
@@ -60,6 +61,7 @@ func TestReport_ReducesASecretToWhetherItIsSet(t *testing.T) {
 }
 
 func TestReport_KeepsTheVariableNameOfASecretVisible(t *testing.T) {
+	t.Parallel()
 	doc := map[string]any{"database": map[string]any{"managed": false, "url": "${SUCO_DATABASE_URL}"}}
 	env := envOf(map[string]string{"SUCO_DATABASE_URL": "postgres://localhost/suco"})
 
@@ -71,6 +73,7 @@ func TestReport_KeepsTheVariableNameOfASecretVisible(t *testing.T) {
 }
 
 func TestReport_ShowsTheValueAndSourceForEverythingElse(t *testing.T) {
+	t.Parallel()
 	doc := map[string]any{"listen": map[string]any{"port": "${SUCO_LISTEN_PORT}"}}
 	env := envOf(map[string]string{"SUCO_LISTEN_PORT": "9000"})
 
@@ -94,6 +97,7 @@ func TestReport_ShowsTheValueAndSourceForEverythingElse(t *testing.T) {
 }
 
 func TestReport_IsSortedByPath(t *testing.T) {
+	t.Parallel()
 	lines := mustResolve(t, map[string]any{}, noEnv).Report()
 
 	for i := 1; i < len(lines); i++ {
@@ -104,6 +108,7 @@ func TestReport_IsSortedByPath(t *testing.T) {
 }
 
 func TestReport_QuotesWhatWouldOtherwiseForgeALine(t *testing.T) {
+	t.Parallel()
 	// A report is laid out in columns. A value or a name holding a newline and
 	// a tab writes a row of its own, which reads as a setting nobody set.
 	got, err := config.Resolve(map[string]any{

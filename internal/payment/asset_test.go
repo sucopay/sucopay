@@ -35,6 +35,7 @@ func asset(t *testing.T, network payment.Network, reference, symbol string, deci
 }
 
 func TestAsset_IsTheTokenNotTheSymbol(t *testing.T) {
+	t.Parallel()
 	// Two tokens on one network presenting one symbol is the situation USDC
 	// is actually in. Deciding by symbol accepts the wrong one.
 	native, bridged := usdc(t), bridgedUSDC(t)
@@ -51,6 +52,7 @@ func TestAsset_IsTheTokenNotTheSymbol(t *testing.T) {
 }
 
 func TestAsset_SameIgnoresWhatOnlyDescribesTheToken(t *testing.T) {
+	t.Parallel()
 	// A registry that spelled the symbol differently, or got the decimals
 	// wrong, still names one token. Which of the two descriptions is right is
 	// a question for the registry, not for whether this is the same asset.
@@ -63,6 +65,7 @@ func TestAsset_SameIgnoresWhatOnlyDescribesTheToken(t *testing.T) {
 }
 
 func TestAsset_TheSameTokenOnAnotherNetworkIsAnotherAsset(t *testing.T) {
+	t.Parallel()
 	here := asset(t, "polygon", "jpyc-contract", "JPYC", 18)
 	there := asset(t, "ethereum", "jpyc-contract", "JPYC", 18)
 
@@ -72,6 +75,7 @@ func TestAsset_TheSameTokenOnAnotherNetworkIsAnotherAsset(t *testing.T) {
 }
 
 func TestNewAsset_RefusesWhatWouldNotIdentifyAToken(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name      string
 		network   payment.Network
@@ -104,6 +108,7 @@ func TestNewAsset_RefusesWhatWouldNotIdentifyAToken(t *testing.T) {
 }
 
 func TestAsset_TheZeroValueIsNoToken(t *testing.T) {
+	t.Parallel()
 	var a payment.Asset
 
 	if a.IsSet() {
@@ -118,6 +123,7 @@ func TestAsset_TheZeroValueIsNoToken(t *testing.T) {
 }
 
 func TestAsset_StringNamesTheTokenAndTheNetwork(t *testing.T) {
+	t.Parallel()
 	// A symbol alone does not say which token, and this is what a person
 	// reads in a report.
 	got := usdc(t).String()

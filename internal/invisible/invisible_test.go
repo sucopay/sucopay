@@ -11,6 +11,7 @@ import (
 )
 
 func TestHas_FindsWhatARenderWouldNotShow(t *testing.T) {
+	t.Parallel()
 	// Written as escapes because none of them can be read in a source file,
 	// which is the property that put them on the list.
 	for _, c := range []struct{ name, text string }{
@@ -42,6 +43,7 @@ func TestHas_FindsWhatARenderWouldNotShow(t *testing.T) {
 }
 
 func TestHas_LeavesOrdinaryTextAlone(t *testing.T) {
+	t.Parallel()
 	for _, text := range []string{
 		"", "listen.port", "Ada Lovelace", "order A-1",
 		"\u65e5\u672c\u5186", "0x0000000000000000000000000000000000000000",
@@ -61,6 +63,7 @@ func TestHas_LeavesOrdinaryTextAlone(t *testing.T) {
 // checks the two agree rather than leaving them to drift the way the three
 // copies of this list did before it existed.
 func TestScript_RefusesNothingThisPackageAllows(t *testing.T) {
+	t.Parallel()
 	script, err := os.ReadFile("../../scripts/check-source.sh")
 	if err != nil {
 		t.Fatal(err)
