@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sucopay/sucopay/internal/payment"
 	"github.com/sucopay/sucopay/internal/postgres"
 	"github.com/sucopay/sucopay/internal/postgres/postgrestest"
@@ -20,7 +21,9 @@ const (
 	other = payment.AccountID("00000000-0000-0000-0000-000000000002")
 )
 
-func store(t *testing.T) *payment.Postgres {
+// store returns a repository over a fresh database, and the pool behind it for
+// the tests that have to look at a row this package would not hand back.
+func store(t *testing.T) (*payment.Postgres, *pgxpool.Pool) {
 	t.Helper()
 	pool, err := postgres.Open(t.Context(), postgrestest.Fresh(t))
 	if err != nil {
@@ -34,7 +37,7 @@ func store(t *testing.T) *payment.Postgres {
 		`insert into accounts (id, name) values ($1, 'second')`, other); err != nil {
 		t.Fatal(err)
 	}
-	return payment.NewPostgres(pool.Conns())
+	return payment.NewPostgres(pool.Conns()), pool.Conns()
 }
 
 // kept stores a payment and hands back what a caller would hold after doing so.
@@ -49,7 +52,7 @@ func kept(t *testing.T, s *payment.Postgres, account payment.AccountID) *payment
 
 func TestRepository_ReadsBackEverythingItWasGiven(t *testing.T) {
 	t.Parallel()
-	s := store(t)
+	s, _ := store(t)
 	p := kept(t, s, first)
 
 	back, _, err := s.Find(t.Context(), first, p.ID())
@@ -88,7 +91,7 @@ func TestRepository_DoesNotFindAPaymentAnotherAccountStored(t *testing.T) {
 	// Every row is scoped to an account and every query has to filter on it.
 	// Two accounts, one payment, and the one that does not own it must not
 	// reach it by knowing its identifier.
-	s := store(t)
+	s, _ := store(t)
 	p := kept(t, s, first)
 
 	_, _, err := s.Find(t.Context(), other, p.ID())
@@ -102,7 +105,7 @@ func TestRepository_DoesNotSaveOverAPaymentAnotherAccountStored(t *testing.T) {
 	t.Parallel()
 	// Reading is scoped, and so is writing. A save that filtered on the
 	// identifier alone would move somebody else's payment.
-	s := store(t)
+	s, _ := store(t)
 	p := kept(t, s, first)
 	_, at, err := s.Find(t.Context(), first, p.ID())
 	if err != nil {
@@ -127,7 +130,7 @@ func TestRepository_DoesNotSaveOverAPaymentAnotherAccountStored(t *testing.T) {
 
 func TestRepository_ReportsNotFoundForAPaymentNobodyStored(t *testing.T) {
 	t.Parallel()
-	s := store(t)
+	s, _ := store(t)
 	id, err := payment.NewID()
 	if err != nil {
 		t.Fatal(err)
@@ -142,7 +145,7 @@ func TestRepository_ReportsNotFoundForAPaymentNobodyStored(t *testing.T) {
 
 func TestRepository_SavesAMove(t *testing.T) {
 	t.Parallel()
-	s := store(t)
+	s, _ := store(t)
 	p := kept(t, s, first)
 	loaded, at, err := s.Find(t.Context(), first, p.ID())
 	if err != nil {
@@ -177,7 +180,7 @@ func TestRepository_RefusesASaveThatLostTheRace(t *testing.T) {
 	// Two readers, one write each. The second holds a revision the first has
 	// already moved past, and laying its move over the winner's would lose
 	// whatever the winner decided.
-	s := store(t)
+	s, _ := store(t)
 	p := kept(t, s, first)
 	winner, atWinner, err := s.Find(t.Context(), first, p.ID())
 	if err != nil {
@@ -209,7 +212,7 @@ func TestRepository_RefusesARevisionReadForAnotherPayment(t *testing.T) {
 	// Every payment starts at the same version, so a revision from one payment
 	// matches another's row by coincidence. Carrying the identifier is what
 	// stops a caller holding several payments from crossing them.
-	s := store(t)
+	s, _ := store(t)
 	mine := kept(t, s, first)
 	theirs := kept(t, s, first)
 	_, atTheirs, err := s.Find(t.Context(), first, theirs.ID())
@@ -243,7 +246,7 @@ func TestRepository_ReadsBackATimeCarryingMorePrecisionThanTheColumnKeeps(t *tes
 	// A timestamptz keeps microseconds. Held to the nanosecond in memory, a
 	// payment would stop being equal to itself the moment it was stored, so it
 	// is not held that way.
-	s := store(t)
+	s, _ := store(t)
 	r := request(t)
 	r.ExpiresAt = now.Add(time.Hour).Add(987654321 * time.Nanosecond)
 	p, err := payment.New(r, now.Add(123456789*time.Nanosecond))

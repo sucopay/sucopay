@@ -29,7 +29,7 @@ func NewPostgres(pool *pgxpool.Pool) *Postgres { return &Postgres{pool: pool} }
 func digits(m Money) string { return m.Amount().String() }
 
 // Create stores a payment nothing has stored before.
-func (s *Postgres) Create(ctx context.Context, account AccountID, p *Payment) error {
+func (s *Postgres) Create(ctx context.Context, account AccountID, p *Payment) (err error) {
 	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
 	defer cancel()
 
@@ -37,8 +37,24 @@ func (s *Postgres) Create(ctx context.Context, account AccountID, p *Payment) er
 	if err != nil {
 		return fmt.Errorf("payment %s: metadata: %w", p.ID(), err)
 	}
+	// One transaction, for the reason Save has one: the outbox row for
+	// payment.created belongs in it, and the audit row that records the payment
+	// exists. Neither table is written yet.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("payment %s: %w", p.ID(), err)
+	}
+	defer func() {
+		unwind, stop := context.WithTimeout(context.WithoutCancel(ctx), storeTimeout)
+		defer stop()
+		rollback := tx.Rollback(unwind)
+		if rollback != nil && !errors.Is(rollback, pgx.ErrTxClosed) && err == nil {
+			err = fmt.Errorf("payment %s: %w", p.ID(), rollback)
+		}
+	}()
+
 	asset := p.Asset()
-	_, err = s.pool.Exec(ctx, `
+	_, err = tx.Exec(ctx, `
 		insert into payments (
 			id, account_id, asset_network, asset_reference, asset_symbol,
 			asset_decimals, amount, destination, status, metadata,
@@ -48,6 +64,9 @@ func (s *Postgres) Create(ctx context.Context, account AccountID, p *Payment) er
 		asset.Decimals(), digits(p.Amount()), p.Destination(), p.Status(), metadata,
 		p.CreatedAt(), p.ExpiresAt())
 	if err != nil {
+		return fmt.Errorf("payment %s: %w", p.ID(), err)
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("payment %s: %w", p.ID(), err)
 	}
 	return nil

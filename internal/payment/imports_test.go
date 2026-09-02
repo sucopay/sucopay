@@ -15,7 +15,9 @@ import (
 // postgres.go holds a driver and http.go holds a server, and neither belongs on
 // the list below. repository.go does: a driver type reaching the interface is
 // how the shape of a database gets into everything that stores a payment.
-var domainFiles = []string{"asset.go", "money.go", "payment.go", "repository.go", "status.go"}
+var domainFiles = []string{
+	"asset.go", "money.go", "payment.go", "repository.go", "service.go", "status.go",
+}
 
 // allowed is everything those files may import. An allow list rather than a
 // block list, because the import worth catching is the one nobody thought to
