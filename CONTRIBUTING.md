@@ -61,6 +61,8 @@ each have one.
 
 ## Domain model
 
+Domain-Driven Design (DDD) concepts map onto suco Pay as follows.
+
 | DDD | suco Pay |
 |---|---|
 | Aggregate root | `Payment` (owns its attempts), `Refund` |
@@ -183,7 +185,7 @@ rejected, and the trade-off you accepted.
 ```
 fix: hold the outbox write inside the payment transaction
 
-Delivery could report payment.succeeded for a payment whose update later
+The webhook could report payment.succeeded for a payment whose update later
 rolled back, so a merchant saw a payment we did not have.
 
 Considered publishing after commit and reconciling the gap. Rejected: the
@@ -204,7 +206,7 @@ They apply to the English docs as well.
 ## License
 
 Contributions are licensed under [Apache-2.0](LICENSE), the same as the project. There is no
-CLA.
+Contributor License Agreement (CLA).
 
 ## Security
 

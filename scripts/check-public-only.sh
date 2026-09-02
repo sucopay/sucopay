@@ -22,6 +22,16 @@ while IFS= read -r f; do
   note "$f is marked as internal but is committed here."
 done < <(grep -rl --exclude-dir=.git --exclude=check-public-only.sh -e "$marker" -e "DO NOT ${pub}" . 2>/dev/null || true)
 
+# References to documents that live only in the private repository. They read
+# as a citation and resolve to nothing for anyone outside it, so whatever the
+# reference was carrying has to be said here instead.
+while IFS= read -r -d '' f; do
+  [ "$f" = "scripts/check-public-only.sh" ] && continue
+  if grep -nE '\[?ADR [0-9]|decisions/adr/' "$f" >/dev/null 2>&1; then
+    note "$f cites a document only the private repository has."
+  fi
+done < <(git ls-files -z --cached --others --exclude-standard)
+
 if [ "$fail" -eq 0 ]; then
   echo "ok: no internal material found"
 fi

@@ -14,8 +14,6 @@ import (
 
 func TestListen_SendsWhatNetHTTPReportsToTheLog(t *testing.T) {
 	t.Parallel()
-	// Left alone net/http writes to the standard logger, which is a second
-	// way out of the process that none of this package's rules reach.
 	var lines bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&lines, nil))
 

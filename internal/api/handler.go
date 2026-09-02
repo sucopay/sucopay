@@ -52,9 +52,9 @@ func ready(log *slog.Logger, database Ready) http.HandlerFunc {
 			// The reason goes to the log, where an operator reads it. What
 			// comes back over HTTP names the dependency and nothing else: a
 			// readiness probe is read by whoever can reach the port.
-			// Quoted, because a database writes this and slog's JSON handler
-			// passes a zero-width space or a right-to-left override through
-			// as it was given.
+			//
+			// Quoted, because a database writes this and nothing here vouches
+			// for what characters it used.
 			logger(r.Context(), log).ErrorContext(r.Context(), "not ready",
 				slog.String("dependency", "database"),
 				slog.String("error", invisible.Shown(err.Error(), maxErrorBytes)))

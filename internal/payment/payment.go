@@ -89,12 +89,10 @@ func (id ID) String() string { return string(id) }
 
 // Address is where funds are sent, as the network writes an account.
 //
-// It is opaque here. Chains write an account differently, and [ADR 0002] keeps
-// chain-shaped values behind the adapter that knows the chain; a domain that
-// checked for 0x and forty hexadecimal digits would be an EVM domain. What is
-// checked here is what holds whatever the chain says.
-//
-// [ADR 0002]: chain-specific code stays behind an adapter.
+// It is opaque here. Chains write an account differently, and chain-shaped
+// values stay behind the adapter that knows the chain: a domain that checked
+// for 0x and forty hexadecimal digits would be an EVM domain. What is checked
+// here is what holds whatever the chain says.
 type Address string
 
 // ParseAddress reads an account as the network writes it.

@@ -45,10 +45,8 @@ func (r *recorder) logger() *slog.Logger {
 }
 
 // jsonLogger writes the format a deployment writes. It matters which: the text
-// handler escapes anything it thinks unprintable, so a check made against it
-// passes whether or not the value was quoted first. The JSON handler escapes
-// only what JSON requires, and passes a zero-width space or a right-to-left
-// override through as the bytes it was given.
+// handler would escape a quoting bug out of sight, passing the check whether
+// or not the value was quoted first.
 func (r *recorder) jsonLogger() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(r, &slog.HandlerOptions{Level: slog.LevelDebug}))
 }

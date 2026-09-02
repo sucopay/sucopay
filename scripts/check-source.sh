@@ -39,8 +39,10 @@ while IFS= read -r -d '' file; do
 # this before it is committed, not after.
 done < <(git ls-files -z --cached --others --exclude-standard)
 
-# A comment left behind by whoever was proving a test could fail. One of these
-# reached a shipped file and nothing else noticed: it is valid Go.
+# Each name marks a line changed on purpose and meant to be reverted: code
+# mutated to check that a test catches it, or a placeholder dropped mid-edit.
+# All of it is valid Go, so nothing but a check for the words themselves
+# catches one left in.
 while IFS= read -r -d '' file; do
   case "$file" in *.go|*.sh|*.sql) ;; *) continue ;; esac
   if grep -nE '^[[:space:]]*(//|#|--)[[:space:]]*(probe|MUTATED|scratch|delete me|remove me)[[:space:]]*$' "$file"; then

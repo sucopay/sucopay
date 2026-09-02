@@ -187,7 +187,7 @@ Conventional Commits に従います（`feat:` `fix:` `docs:` `refactor:` `test:
 ```
 fix: hold the outbox write inside the payment transaction
 
-Delivery could report payment.succeeded for a payment whose update later
+The webhook could report payment.succeeded for a payment whose update later
 rolled back, so a merchant saw a payment we did not have.
 
 Considered publishing after commit and reconciling the gap. Rejected: the

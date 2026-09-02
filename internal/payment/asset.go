@@ -31,10 +31,8 @@ func (n Network) String() string { return string(n) }
 //
 // Reference is opaque here. What identifies a token on a chain is the chain's
 // business: an address on one, a mint on another, an issuer and a currency on
-// a third. [ADR 0002] keeps chain-shaped values behind the adapter, so this
-// package holds the string and the adapter decides whether it means anything.
-//
-// [ADR 0002]: chain-specific code stays behind an adapter.
+// a third. Chain-shaped values stay behind the adapter, so this package holds
+// the string and the adapter decides whether it means anything.
 type Asset struct {
 	network   Network
 	reference string

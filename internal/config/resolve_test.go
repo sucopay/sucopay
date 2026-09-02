@@ -739,7 +739,6 @@ func TestResolve_RefusesALogLevelOrFormatNothingDefines(t *testing.T) {
 
 func TestResolve_DefaultsToInfoAndText(t *testing.T) {
 	t.Parallel()
-	// The first thing anyone does is run this in a terminal.
 	got, err := config.Resolve(map[string]any{}, noEnv)
 	if err != nil {
 		t.Fatal(err)
