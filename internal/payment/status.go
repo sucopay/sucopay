@@ -4,9 +4,8 @@ package payment
 //
 // These are the payment's own states, not a transfer's. Whether a transfer has
 // been seen, and how many confirmations it has, belongs to the attempt that
-// carries it: one payment can be attempted more than once, an attempt that
-// fails leaves the payment payable until its deadline, and an underpayment is
-// answered by a second transfer rather than by a new payment. A payment-level
+// carries it: one payment can be attempted more than once, and an attempt that
+// fails leaves the payment payable until its deadline. A payment-level
 // "confirming" would have to move back and forth as transfers arrived, and
 // would say nothing a merchant asked.
 type Status string

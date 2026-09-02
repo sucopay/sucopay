@@ -143,8 +143,8 @@ func TestNew_TakesTheNetworkFromTheAssetSoThereIsOneAnswer(t *testing.T) {
 
 func TestNew_MintsAnIdentifierRatherThanTakingOne(t *testing.T) {
 	t.Parallel()
-	// The identifier becomes the nonce a transfer is authorised under, so one
-	// an outsider could choose is one they could collide or front-run.
+	// An identifier somebody else chose is one they can guess, enumerate, or
+	// collide with another payment's.
 	first, second := open(t), open(t)
 
 	if first.ID() == second.ID() {
