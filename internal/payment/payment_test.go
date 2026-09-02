@@ -16,9 +16,14 @@ var now = time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 func stored(t *testing.T, id payment.ID, status payment.Status, createdAt, expiresAt time.Time) payment.Stored {
 	t.Helper()
 	r := request(t)
+	received := payment.Money{}
+	if status == payment.Succeeded {
+		received = r.Amount
+	}
 	return payment.Stored{
 		ID:          id,
 		Amount:      r.Amount,
+		Received:    received,
 		Destination: r.Destination,
 		Metadata:    r.Metadata,
 		Status:      status,
@@ -65,6 +70,26 @@ func payable(t *testing.T) *payment.Payment {
 		t.Fatal(err)
 	}
 	return p
+}
+
+// settling returns a payment that is no longer payable, which is where expiry
+// and a late arrival are decided.
+func settling(t *testing.T) *payment.Payment {
+	t.Helper()
+	p := payable(t)
+	if err := p.Settle(p.ExpiresAt()); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// arrived records the exact billed amount turning up, which is the ordinary
+// path and a precondition of succeeding.
+func arrived(t *testing.T, p *payment.Payment) {
+	t.Helper()
+	if err := p.Receive(p.Amount()); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func wantProblems(t *testing.T, err error) payment.Problems {
@@ -336,6 +361,7 @@ func TestPayment_MovesFromOpenedToPaid(t *testing.T) {
 	if p.Status() != payment.AwaitingPayment {
 		t.Fatalf("status = %s, want %s", p.Status(), payment.AwaitingPayment)
 	}
+	arrived(t, p)
 	if err := p.Succeed(); err != nil {
 		t.Fatalf("settling: %v", err)
 	}
@@ -350,16 +376,16 @@ func TestPayment_APayableOneCanEndInFailureAsWellAsSuccess(t *testing.T) {
 	// alone would not tell Fail from Succeed.
 	for _, c := range []struct {
 		name string
-		move func(*payment.Payment) error
+		move func(*testing.T, *payment.Payment) error
 		want payment.Status
 	}{
-		{"paid", (*payment.Payment).Succeed, payment.Succeeded},
-		{"will not settle", (*payment.Payment).Fail, payment.Failed},
+		{"paid", func(t *testing.T, p *payment.Payment) error { arrived(t, p); return p.Succeed() }, payment.Succeeded},
+		{"will not settle", func(_ *testing.T, p *payment.Payment) error { return p.Fail() }, payment.Failed},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			p := payable(t)
 
-			if err := c.move(p); err != nil {
+			if err := c.move(t, p); err != nil {
 				t.Fatalf("err = %v, want none", err)
 			}
 			if p.Status() != c.want {
@@ -397,6 +423,7 @@ func TestPayment_RefusesAMoveTheLifecycleDoesNotAllow(t *testing.T) {
 func TestPayment_RefusesToMoveOnFromAFinalStatus(t *testing.T) {
 	t.Parallel()
 	p := payable(t)
+	arrived(t, p)
 	if err := p.Succeed(); err != nil {
 		t.Fatal(err)
 	}
@@ -411,22 +438,299 @@ func TestPayment_RefusesToMoveOnFromAFinalStatus(t *testing.T) {
 	}
 }
 
-func TestExpire_RefusesWhileThePaymentIsStillPayable(t *testing.T) {
+func TestSettle_RefusesToStopAcceptingPaymentEarly(t *testing.T) {
 	t.Parallel()
 	p := payable(t)
 
-	if err := p.Expire(now); err == nil {
-		t.Fatal("expired a payment a customer was still entitled to pay")
+	if err := p.Settle(now); err == nil {
+		t.Fatal("stopped accepting payment while a customer was still entitled to pay")
 	}
 	if p.Status() != payment.AwaitingPayment {
 		t.Errorf("status = %s, want it unchanged", p.Status())
 	}
 
-	if err := p.Expire(p.ExpiresAt()); err != nil {
-		t.Fatalf("refused to expire at the deadline: %v", err)
+	if err := p.Settle(p.ExpiresAt()); err != nil {
+		t.Fatalf("refused to stop accepting payment at the deadline: %v", err)
 	}
-	if p.Status() != payment.Expired {
-		t.Errorf("status = %s, want %s", p.Status(), payment.Expired)
+	if p.Status() != payment.Settling {
+		t.Errorf("status = %s, want %s", p.Status(), payment.Settling)
+	}
+}
+
+func TestExpire_OnlyOnceThePaymentStoppedBeingPayable(t *testing.T) {
+	t.Parallel()
+	p := payable(t)
+
+	if err := p.Expire(); err == nil {
+		t.Fatal("expired a payment a customer could still pay")
+	}
+	if p.Status() != payment.AwaitingPayment {
+		t.Errorf("status = %s, want it unchanged", p.Status())
+	}
+
+	closed := settling(t)
+	if err := closed.Expire(); err != nil {
+		t.Fatalf("refused to expire a payment nobody could pay any more: %v", err)
+	}
+	if closed.Status() != payment.Expired {
+		t.Errorf("status = %s, want %s", closed.Status(), payment.Expired)
+	}
+}
+
+func TestSucceed_AcceptsATransferThatLandedAfterTheDeadline(t *testing.T) {
+	t.Parallel()
+	p := settling(t)
+	arrived(t, p)
+
+	if err := p.Succeed(); err != nil {
+		t.Fatalf("a transfer landed after the deadline and had nowhere to go: %v", err)
+	}
+	if p.Status() != payment.Succeeded {
+		t.Errorf("status = %s, want %s", p.Status(), payment.Succeeded)
+	}
+}
+
+func TestReceive_KeepsWhatArrivedApartFromWhatWasBilled(t *testing.T) {
+	t.Parallel()
+	// An underpayment that overwrote the billed amount would read as a payment
+	// for less, and nothing downstream could tell the two apart.
+	p := payable(t)
+	short, err := payment.ParseMoney(p.Asset(), "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := p.Receive(short); err != nil {
+		t.Fatal(err)
+	}
+
+	if cmp, err := p.Amount().Cmp(short); err != nil || cmp <= 0 {
+		t.Errorf("amount = %s, want it still the billed amount (cmp %d, err %v)", p.Amount(), cmp, err)
+	}
+	if cmp, err := p.Received().Cmp(short); err != nil || cmp != 0 {
+		t.Errorf("received = %s, want %s (err %v)", p.Received(), short, err)
+	}
+}
+
+func TestReceive_RefusesWhatThisPaymentCannotBeIn(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name  string
+		money func(*testing.T, *payment.Payment) payment.Money
+	}{
+		{"nothing at all", func(*testing.T, *payment.Payment) payment.Money { return payment.Money{} }},
+		{"another asset", func(t *testing.T, _ *payment.Payment) payment.Money {
+			m, err := payment.ParseMoney(asset(t, "ethereum", "usdc-contract", "USDC", 6), one)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return m
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := payable(t)
+
+			if err := p.Receive(c.money(t, p)); err == nil {
+				t.Fatal("want an error, got none")
+			}
+			if p.Received().IsSet() {
+				t.Errorf("received = %s, want nothing recorded", p.Received())
+			}
+		})
+	}
+}
+
+func TestSucceed_ReportsTheMoveBeforeTheMoney(t *testing.T) {
+	t.Parallel()
+	// Both are wrong for a payment nobody could pay yet. Reporting it as short
+	// would send a reader looking for money that was never due.
+	p := open(t)
+
+	problems := wantProblems(t, p.Succeed())
+
+	for _, problem := range problems {
+		if problem.Field == "status" {
+			return
+		}
+	}
+	t.Errorf("nothing was reported about the status: %v", problems)
+}
+
+func TestExpire_StillExpiresAnUnderpaymentNobodyToppedUp(t *testing.T) {
+	t.Parallel()
+	// Underpayment is recorded, not handled: the shortfall stays visible and
+	// the payment still ends. A coverage check here, added by analogy with
+	// Succeed, would leave short payments open forever.
+	p := settling(t)
+	short, err := payment.ParseMoney(p.Asset(), "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Receive(short); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := p.Expire(); err != nil {
+		t.Fatalf("an underpaid payment could not be expired: %v", err)
+	}
+	if cmp, err := p.Received().Cmp(short); err != nil || cmp != 0 {
+		t.Errorf("received = %s, want the shortfall still visible at %s (err %v)", p.Received(), short, err)
+	}
+}
+
+func TestReceive_RefusesOnAPaymentNothingCanArriveFor(t *testing.T) {
+	t.Parallel()
+	// What a finished payment says about itself does not change afterwards,
+	// and nothing has been opened for payment yet before it is payable.
+	for _, c := range []struct {
+		name  string
+		setUp func(*testing.T) *payment.Payment
+	}{
+		{"not payable yet", open},
+		{"already paid", func(t *testing.T) *payment.Payment {
+			p := payable(t)
+			arrived(t, p)
+			if err := p.Succeed(); err != nil {
+				t.Fatal(err)
+			}
+			return p
+		}},
+		{"already expired", func(t *testing.T) *payment.Payment {
+			p := settling(t)
+			if err := p.Expire(); err != nil {
+				t.Fatal(err)
+			}
+			return p
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := c.setUp(t)
+			before := p.Received()
+
+			if err := p.Receive(p.Amount()); err == nil {
+				t.Fatal("want an error, got none")
+			}
+			if p.Received().IsSet() != before.IsSet() {
+				t.Errorf("received changed to %s", p.Received())
+			}
+		})
+	}
+}
+
+func TestRestore_RebuildsAPaymentStillSettlingOnAnUnderpayment(t *testing.T) {
+	t.Parallel()
+	// A row can hold less than it billed for as long as it is not succeeded,
+	// which is where a recorded underpayment lives until somebody decides.
+	id, err := payment.NewID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := stored(t, id, payment.Settling, now, now.Add(time.Hour))
+	short, err := payment.ParseMoney(row.Amount.Asset(), "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row.Received = short
+
+	back, err := payment.Restore(row)
+
+	if err != nil {
+		t.Fatalf("a settling payment holding an underpayment would not load: %v", err)
+	}
+	if cmp, err := back.Received().Cmp(short); err != nil || cmp != 0 {
+		t.Errorf("received = %s, want %s (err %v)", back.Received(), short, err)
+	}
+}
+
+func TestRestore_RefusesARowWhereMoneyArrivedBeforeAnyoneCouldPay(t *testing.T) {
+	t.Parallel()
+	id, err := payment.NewID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := stored(t, id, payment.Created, now, now.Add(time.Hour))
+	row.Received = row.Amount
+
+	if _, err := payment.Restore(row); err == nil {
+		t.Fatal("loaded a payment that was paid before it was payable")
+	}
+}
+
+func TestReceive_RefusesASecondArrival(t *testing.T) {
+	t.Parallel()
+	p := payable(t)
+	arrived(t, p)
+
+	err := p.Receive(p.Amount())
+
+	if err == nil {
+		t.Fatal("recorded a second arrival on one payment")
+	}
+	if cmp, cmpErr := p.Received().Cmp(p.Amount()); cmpErr != nil || cmp != 0 {
+		t.Errorf("received = %s, want it unchanged (cmp %d, err %v)", p.Received(), cmp, cmpErr)
+	}
+}
+
+func TestSucceed_RefusesUntilEnoughHasArrived(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name    string
+		arrival func(*testing.T, *payment.Payment)
+	}{
+		{"nothing arrived", func(*testing.T, *payment.Payment) {}},
+		{"less than billed", func(t *testing.T, p *payment.Payment) {
+			short, err := payment.ParseMoney(p.Asset(), "1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := p.Receive(short); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := payable(t)
+			c.arrival(t, p)
+
+			if err := p.Succeed(); err == nil {
+				t.Fatal("a merchant was told to fulfil an order nobody paid for")
+			}
+			if p.Status() == payment.Succeeded {
+				t.Error("status = succeeded")
+			}
+		})
+	}
+}
+
+func TestSucceed_AcceptsMoreThanWasBilled(t *testing.T) {
+	t.Parallel()
+	// Overpayment settles the order. What to do about the excess is the
+	// merchant's, and refusing it would leave them paid and the payment open.
+	p := payable(t)
+	over, err := payment.ParseMoney(p.Asset(), one+"0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Receive(over); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := p.Succeed(); err != nil {
+		t.Fatalf("refused an overpayment: %v", err)
+	}
+}
+
+func TestRestore_RefusesARowThatSaysPaidWithoutTheMoney(t *testing.T) {
+	t.Parallel()
+	id, err := payment.NewID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := stored(t, id, payment.Succeeded, now, now.Add(time.Hour))
+	row.Received = payment.Money{}
+
+	if _, err := payment.Restore(row); err == nil {
+		t.Fatal("loaded a succeeded payment with nothing recorded as arrived")
 	}
 }
 

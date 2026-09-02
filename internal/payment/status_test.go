@@ -9,7 +9,7 @@ import (
 // every status this package defines, so that one added without a rule for it
 // shows up here rather than in a deployment.
 var every = []payment.Status{
-	payment.Created, payment.AwaitingPayment,
+	payment.Created, payment.AwaitingPayment, payment.Settling,
 	payment.Succeeded, payment.Failed, payment.Expired,
 }
 
@@ -19,7 +19,8 @@ func TestStatus_AllowsTheLifecycleAndNothingElse(t *testing.T) {
 	// disagrees with the code when the code changes.
 	allowed := map[payment.Status][]payment.Status{
 		payment.Created:         {payment.AwaitingPayment},
-		payment.AwaitingPayment: {payment.Succeeded, payment.Failed, payment.Expired},
+		payment.AwaitingPayment: {payment.Succeeded, payment.Failed, payment.Settling},
+		payment.Settling:        {payment.Succeeded, payment.Expired},
 	}
 
 	for _, from := range every {

@@ -190,9 +190,25 @@ func TestMigrate_TwoInstancesStartingTogetherApplyEachMigrationOnce(t *testing.T
 		}
 	}
 
-	if total != 1 {
-		t.Errorf("%d instances applied %d migrations between them, want each applied once",
-			instances, total)
+	// Counted rather than written down, so that adding a migration does not
+	// turn this into a number somebody bumps without reading what it claims.
+	conn, err := pgx.Connect(t.Context(), dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := conn.Close(context.WithoutCancel(t.Context())); err != nil {
+			t.Errorf("closing: %v", err)
+		}
+	}()
+	var recorded int
+	if err := conn.QueryRow(t.Context(), `select count(*) from schema_migrations`).Scan(&recorded); err != nil {
+		t.Fatal(err)
+	}
+
+	if total != recorded {
+		t.Errorf("%d instances applied %d migrations between them, but %d are recorded: "+
+			"one was applied more than once", instances, total, recorded)
 	}
 }
 

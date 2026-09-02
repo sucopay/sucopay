@@ -127,10 +127,14 @@ func (a Address) String() string { return string(a) }
 // One writer at a time. A payment is loaded, moved and saved inside one
 // database transaction, which is what decides between two moves racing for the
 // same payment; nothing here does, and two goroutines moving one Payment is a
-// data race.
+// data race. Settling lengthens the time in which that matters: a late transfer
+// confirming and a sweep giving up on the same payment are two writers, and the
+// one that loses has to load again and decide again rather than reapply what it
+// was going to do.
 type Payment struct {
 	id          ID
 	amount      Money
+	received    Money
 	destination Address
 	status      Status
 	metadata    map[string]string
@@ -170,6 +174,7 @@ func New(r Request, now time.Time) (*Payment, error) {
 type Stored struct {
 	ID          ID
 	Amount      Money
+	Received    Money
 	Destination Address
 	Metadata    map[string]string
 	Status      Status
@@ -188,12 +193,33 @@ func Restore(s Stored) (*Payment, error) {
 	if !s.Status.Valid() {
 		return nil, Problems{{Field: "status", Message: fmt.Sprintf("%q is not a status", s.Status)}}
 	}
-	return build(s.ID, Request{
+	p, err := build(s.ID, Request{
 		Amount:      s.Amount,
 		Destination: s.Destination,
 		Metadata:    s.Metadata,
 		ExpiresAt:   s.ExpiresAt,
 	}, s.Status, s.CreatedAt, s.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if s.Received.IsSet() {
+		if err := p.record(s.Received); err != nil {
+			return nil, err
+		}
+		// Nothing can arrive for a payment nobody could pay yet.
+		if s.Status == Created {
+			return nil, Problems{{Field: "received", Message: fmt.Sprintf(
+				"%s arrived, but the payment is still %s", s.Received, s.Status)}}
+		}
+	}
+	// A succeeded row that is not covered by what arrived is one this build
+	// refuses rather than one it reports as paid.
+	if s.Status == Succeeded {
+		if err := p.covered(); err != nil {
+			return nil, err
+		}
+	}
+	return p, nil
 }
 
 func build(id ID, r Request, status Status, createdAt, deadlineAfter time.Time) (*Payment, error) {
@@ -278,8 +304,16 @@ func metadataProblems(metadata map[string]string) Problems {
 // ID returns the payment's identifier.
 func (p *Payment) ID() ID { return p.id }
 
-// Amount returns what is being accepted.
+// Amount returns what is being asked for.
 func (p *Payment) Amount() Money { return p.amount }
+
+// Received returns what arrived. It is not set until something has.
+//
+// It is kept apart from [Payment.Amount] rather than replacing it, so that a
+// payment that came up short leaves the shortfall visible instead of losing it
+// into one field. A failed or expired payment can hold one: money arriving and
+// the payment not settling is exactly the case this field is for.
+func (p *Payment) Received() Money { return p.received }
 
 // Asset returns which token is being accepted.
 func (p *Payment) Asset() Asset { return p.amount.Asset() }
@@ -306,24 +340,98 @@ func (p *Payment) Metadata() map[string]string { return maps.Clone(p.metadata) }
 // Await marks the payment as one a customer can now pay.
 func (p *Payment) Await() error { return p.moveTo(AwaitingPayment) }
 
-// Succeed records that the payment has been settled: enough has arrived, and
-// it is final by the network's confirmation policy.
-func (p *Payment) Succeed() error { return p.moveTo(Succeeded) }
+// Receive records what arrived for this payment.
+//
+// It is not a running total. Making up a shortfall with a second transfer is
+// not something this package does, so a second arrival is a payment matched
+// twice rather than a payment being topped up.
+//
+// Money can only land while the payment is payable or while it is settling.
+// Recording an arrival on one that has finished would make what a final payment
+// says about itself change afterwards, which is the thing the lifecycle exists
+// to prevent.
+func (p *Payment) Receive(m Money) error {
+	if p.status != AwaitingPayment && p.status != Settling {
+		return Problems{{Field: "received", Message: fmt.Sprintf(
+			"payment is %s, which nothing can arrive for", p.status)}}
+	}
+	return p.record(m)
+}
+
+// record is Receive without the status check, for [Restore], which has to
+// rebuild a row whatever status it was stored in.
+func (p *Payment) record(m Money) error {
+	switch {
+	case !m.IsSet():
+		return Problems{{Field: "received", Message: "none given"}}
+	case p.received.IsSet():
+		return Problems{{Field: "received", Message: fmt.Sprintf(
+			"%s already arrived for this payment", p.received)}}
+	}
+	// Compared rather than only matched by asset, so that two descriptions of
+	// one token disagreeing about its decimals are refused here instead of
+	// leaving a payment nothing can ever judge covered.
+	if _, err := m.Cmp(p.amount); err != nil {
+		return Problems{{Field: "received", Message: err.Error()}}
+	}
+	p.received = m
+	return nil
+}
+
+// Succeed records that the payment is paid: enough has arrived, and it is final
+// by the network's confirmation policy.
+func (p *Payment) Succeed() error {
+	// The move is checked before the money, so that a payment nobody could have
+	// paid yet reads as being in the wrong state rather than as being short.
+	if !p.status.CanBecome(Succeeded) {
+		return errTransition(p.status, Succeeded)
+	}
+	if err := p.covered(); err != nil {
+		return err
+	}
+	return p.moveTo(Succeeded)
+}
+
+// covered reports whether what arrived is at least what was asked for.
+func (p *Payment) covered() error {
+	if !p.received.IsSet() {
+		return Problems{{Field: "received", Message: "nothing has arrived"}}
+	}
+	cmp, err := p.received.Cmp(p.amount)
+	if err != nil {
+		return Problems{{Field: "received", Message: err.Error()}}
+	}
+	if cmp < 0 {
+		return Problems{{Field: "received", Message: fmt.Sprintf(
+			"%s arrived, short of %s", p.received, p.amount)}}
+	}
+	return nil
+}
+
+// Settle records that the payment is no longer payable and is waiting to learn
+// whether anything arrives.
+//
+// It refuses to do so early: a payment made unpayable before its own deadline is
+// one a customer was still entitled to pay.
+func (p *Payment) Settle(now time.Time) error {
+	if now.Before(p.expiresAt) {
+		return Problems{{Field: "expires_at", Message: fmt.Sprintf("%s is after %s",
+			p.expiresAt.Format(time.RFC3339), now.UTC().Format(time.RFC3339))}}
+	}
+	return p.moveTo(Settling)
+}
 
 // Fail records that the payment will not settle and that waiting longer will
 // not change it.
 func (p *Payment) Fail() error { return p.moveTo(Failed) }
 
-// Expire records that the payment stopped being payable before anyone paid
-// it. It refuses to do so early: a payment that expires before its own
-// deadline is one a customer was still entitled to pay.
-func (p *Payment) Expire(now time.Time) error {
-	if now.Before(p.expiresAt) {
-		return Problems{{Field: "expires_at", Message: fmt.Sprintf("%s is after %s",
-			p.expiresAt.Format(time.RFC3339), now.UTC().Format(time.RFC3339))}}
-	}
-	return p.moveTo(Expired)
-}
+// Expire records that nothing arrived before the payment stopped being payable.
+//
+// It takes no deadline. Reaching it means passing through settling, which is
+// where the deadline is checked, so by now the authorization is dead and the
+// question is only whether anything was still in flight. How long to wait for
+// that is the network's confirmation policy, which this package does not know.
+func (p *Payment) Expire() error { return p.moveTo(Expired) }
 
 func (p *Payment) moveTo(want Status) error {
 	if !p.status.CanBecome(want) {
