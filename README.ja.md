@@ -27,10 +27,10 @@ suco Pay は自社のインフラで動作します。資金は顧客のウォ�
 - [ ] Payment: ライフサイクル、期限、過払いと不足、冪等性
 - [ ] Finality: ネットワークごとに設定する確定判定
 - [ ] 支払い画面: ホスト型と埋め込み型
-- [ ] Webhook: 署名、リトライ、配送履歴
+- [ ] Webhook: 署名、リトライ、送信履歴
 - [ ] Refund: 記録と送金指示の作成
 - [ ] 照合: 内部状態とチェーンの定期突合
-- [ ] Console: Payment と Transaction の照会、返金、Webhook 配送履歴
+- [ ] Console: Payment と Transaction の照会、返金、Webhook 送信履歴
 - [x] CLI: `init` `serve` `doctor`
 
 ## インストール

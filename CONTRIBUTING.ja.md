@@ -70,7 +70,7 @@ internal/payment/
 | 値オブジェクト | `Money`、`Address`、`Network`、`Status`、`Nonce`、`ConfirmationPolicy` |
 | リポジトリ | 集約ルートごとに 1 つ |
 | ドメインサービス | 確定判定 |
-| アプリケーションサービス | Payment の作成、Transaction の観測、Webhook の配送 |
+| アプリケーションサービス | Payment の作成、Transaction の観測、Webhook の送信 |
 | ドメインイベント | `payment.succeeded` を同一トランザクションで outbox へ書き込み |
 
 - 不変条件は集約に持たせてください。コンストラクタが不正な状態の `Payment` を返せてはいけません。
