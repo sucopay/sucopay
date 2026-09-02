@@ -153,6 +153,12 @@ func onThisMachine(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// Conns hands out the driver's pool, for the one package that runs queries
+// against it. This type owns connecting, confirming and closing; it does not
+// own what anybody asks the database, and a wrapper method per query would
+// make this package a copy of every repository that exists.
+func (p *Pool) Conns() *pgxpool.Pool { return p.pool }
+
 // Ping reports whether the database still answers. [Open] asks once so that a
 // start fails rather than the first request; this is for asking again while
 // the instance runs.

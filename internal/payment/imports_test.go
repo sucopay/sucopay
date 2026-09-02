@@ -10,17 +10,19 @@ import (
 	"testing"
 )
 
-// domainFiles hold the part of this package that a Payment is made of. The
-// files around them reach outward on purpose: postgres.go holds a driver and
-// http.go holds a server, and neither belongs on the list below.
-var domainFiles = []string{"asset.go", "money.go", "payment.go", "status.go"}
+// domainFiles hold the part of this package that a Payment is made of, and the
+// contract for storing one. The files around them reach outward on purpose:
+// postgres.go holds a driver and http.go holds a server, and neither belongs on
+// the list below. repository.go does: a driver type reaching the interface is
+// how the shape of a database gets into everything that stores a payment.
+var domainFiles = []string{"asset.go", "money.go", "payment.go", "repository.go", "status.go"}
 
 // allowed is everything those files may import. An allow list rather than a
 // block list, because the import worth catching is the one nobody thought to
 // forbid: a driver, an HTTP handler, or whatever the next dependency is
 // called. A Payment shaped by what a database returns is no longer a Payment.
 var allowed = []string{
-	"crypto/rand", "encoding/hex", "errors", "fmt", "maps",
+	"context", "crypto/rand", "encoding/hex", "errors", "fmt", "maps",
 	"math/big", "slices", "strings", "time",
 	// invisible decides which characters metadata may carry. It reads
 	// nothing and reaches nothing; it is a list of runes.

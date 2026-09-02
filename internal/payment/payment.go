@@ -256,8 +256,11 @@ func build(id ID, r Request, status Status, createdAt, deadlineAfter time.Time) 
 		destination: r.Destination,
 		status:      status,
 		metadata:    maps.Clone(r.Metadata),
-		createdAt:   createdAt.UTC(),
-		expiresAt:   r.ExpiresAt.UTC(),
+		// Truncated to what a timestamptz column keeps. Held to the nanosecond
+		// here, a payment would stop being equal to itself the moment it was
+		// stored and read back.
+		createdAt: createdAt.UTC().Truncate(time.Microsecond),
+		expiresAt: r.ExpiresAt.UTC().Truncate(time.Microsecond),
 	}, nil
 }
 
