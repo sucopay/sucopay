@@ -43,8 +43,6 @@ func TestService_OpensAPaymentNothingCanPayYet(t *testing.T) {
 
 func TestService_ReadsTheClockItWasGiven(t *testing.T) {
 	t.Parallel()
-	// A payment's deadline is decided against a moment. Read from the package
-	// instead of passed in, no test could choose that moment.
 	at := now.Add(72 * time.Hour)
 	s, _ := store(t)
 	svc := payment.NewService(s, func() time.Time { return at })
@@ -141,9 +139,8 @@ func (staleOnSave) Save(context.Context, payment.AccountID, *payment.Payment, pa
 
 func TestService_PassesOnAPaymentThatMovedUnderneathIt(t *testing.T) {
 	t.Parallel()
-	// Whoever should try again is not the same answer everywhere: a worker
-	// reads it once more, a request tells its caller. So this reports what
-	// happened rather than deciding, and reports it in a form errors.Is reads.
+	// Reported in a form errors.Is reads, so that a caller can tell this from a
+	// move the aggregate refused and from a payment that was never there.
 	s, _ := store(t)
 	svc := payment.NewService(s, func() time.Time { return now })
 	opened, err := svc.Open(t.Context(), first, request(t))

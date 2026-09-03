@@ -16,10 +16,9 @@ type Service struct {
 
 // NewService returns a service over payments, reading the time from now.
 //
-// The clock is passed in rather than read from the package, for the reason the
-// aggregate takes a time rather than calling time.Now: a payment's deadline is
-// decided against a moment, and a test that cannot choose that moment has to
-// wait for it.
+// The clock comes in rather than being read from the package. A payment's
+// deadline is decided against a moment, and whoever cannot choose that moment
+// has to wait for it to arrive.
 func NewService(payments Repository, now func() time.Time) *Service {
 	return &Service{payments: payments, now: now}
 }

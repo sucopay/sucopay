@@ -16,6 +16,13 @@ import (
 const storeTimeout = 10 * time.Second
 
 // Postgres stores payments in PostgreSQL.
+//
+// Create and Save each own a transaction. Whatever has to be written with a
+// payment goes inside it rather than being left to whoever called: the outbox
+// row for the event the change produced, and the audit row recording that it
+// changed. Neither table exists yet. Owning the transaction is the part that
+// cannot be added afterwards, because a caller holding its own could always
+// commit half of what has to be whole.
 type Postgres struct {
 	pool *pgxpool.Pool
 }
@@ -37,9 +44,6 @@ func (s *Postgres) Create(ctx context.Context, account AccountID, p *Payment) (e
 	if err != nil {
 		return fmt.Errorf("payment %s: metadata: %w", p.ID(), err)
 	}
-	// One transaction, for the reason Save has one: the outbox row for
-	// payment.created belongs in it, and the audit row that records the payment
-	// exists. Neither table is written yet.
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("payment %s: %w", p.ID(), err)
@@ -133,8 +137,8 @@ func (s *Postgres) Find(ctx context.Context, account AccountID, id ID) (*Payment
 // Save writes back a payment that was read.
 //
 // Status and received are the only columns it writes, because they are the only
-// fields any move changes. TestRepository_EveryFieldOfAPaymentIsAccountedFor
-// fails if that stops being true.
+// fields any move changes. A test holds the two lists together, so a field added
+// to the aggregate and not to this fails rather than being dropped.
 func (s *Postgres) Save(ctx context.Context, account AccountID, p *Payment, at Revision) (err error) {
 	if p == nil {
 		return errors.New("payment: nothing to save")
@@ -148,24 +152,22 @@ func (s *Postgres) Save(ctx context.Context, account AccountID, p *Payment, at R
 	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
 	defer cancel()
 
-	// One transaction, so that what has to be written with a payment is written
-	// here rather than by whoever called. Neither the outbox nor the audit
-	// table exists yet, and owning the transaction is not the whole of what
-	// they need: an outbox row carries the name of the event, and nothing in
-	// this signature says which move produced this state. That parameter is
-	// still to come.
+	// Owning the transaction is not the whole of what the outbox needs: its row
+	// carries the name of an event, and nothing in this signature says which
+	// move produced this state. That parameter is still to come.
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("payment %s: %w", p.ID(), err)
 	}
 	defer func() {
-		// After a commit this says the transaction is already closed, which is
+		// After a commit this reports the transaction already closed, which is
 		// the ordinary path rather than a failure. Anything else leaves one
 		// open, holding a row lock until the pool reaps the connection, and
-		// returning nothing would hide that from the only caller who could act.
-		// Detached from ctx, so a deadline that caused the failure does not also
-		// defeat the rollback, but given one of its own: a rollback that hangs
-		// holds the row lock it was meant to release.
+		// saying nothing would hide that from the only caller who could act.
+		//
+		// Detached from ctx so that a deadline which caused the failure does not
+		// also defeat the rollback, and given one of its own because a rollback
+		// that hangs holds the lock it was meant to release.
 		unwind, stop := context.WithTimeout(context.WithoutCancel(ctx), storeTimeout)
 		defer stop()
 		rollback := tx.Rollback(unwind)
