@@ -7,6 +7,7 @@ export SUCO_TEST_DATABASE_URL ?= postgres://sucopay:sucopay@127.0.0.1:5432/sucop
 # The parsers that read something somebody else wrote. Fuzzing runs their seed
 # corpus as ordinary tests; `make fuzz` is the longer search.
 FUZZ = ./internal/config:FuzzDecode ./internal/config:FuzzResolve \
+       ./internal/credential:FuzzParseKey \
        ./internal/invisible:FuzzQuote \
        ./internal/payment:FuzzParseMoney ./internal/payment:FuzzMetadata \
        ./internal/payment:FuzzParseAddress
