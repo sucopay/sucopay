@@ -1,12 +1,9 @@
 package postgres_test
 
 import (
-	"context"
-	"errors"
 	"net/url"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sucopay/sucopay/internal/postgres"
 	"github.com/sucopay/sucopay/internal/postgres/postgrestest"
@@ -156,76 +153,4 @@ func TestClose_ReleasesTheConnections(t *testing.T) {
 	if open := postgrestest.Backends(t, name); open != 0 {
 		t.Errorf("the server still has %d connection(s) after Close", open)
 	}
-}
-
-func TestAcquire_RefusesAConnectionTheCallerHasNoTimeLeftFor(t *testing.T) {
-	t.Parallel()
-	pool := oneConnection(t)
-	held, err := pool.Acquire(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer held.Release()
-
-	brief, stop := context.WithTimeout(t.Context(), 50*time.Millisecond)
-	defer stop()
-	_, err = pool.Acquire(brief)
-
-	if err == nil {
-		t.Fatal("a second connection came out of a pool holding one")
-	}
-	// Whoever has to answer before doing work tells this apart from a database
-	// that refused, and answers differently. Nothing else says which happened.
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("err = %v, want one carrying context.DeadlineExceeded", err)
-	}
-}
-
-func TestAcquire_RefusesWhenTheCallerIsAlreadyOutOfTime(t *testing.T) {
-	t.Parallel()
-	pool := oneConnection(t)
-	spent, stop := context.WithCancel(t.Context())
-	stop()
-
-	_, err := pool.Acquire(spent)
-
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("err = %v, want one carrying context.Canceled", err)
-	}
-}
-
-func TestAcquire_HandsOutAConnectionAnotherCallerReleased(t *testing.T) {
-	t.Parallel()
-	pool := oneConnection(t)
-	first, err := pool.Acquire(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	first.Release()
-
-	second, err := pool.Acquire(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	second.Release()
-}
-
-// oneConnection opens a pool the database will lend exactly one connection
-// from, so that a second caller waits on something a test controls.
-func oneConnection(t *testing.T) *postgres.Pool {
-	t.Helper()
-	u, err := url.Parse(postgrestest.Fresh(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	q := u.Query()
-	q.Set("pool_max_conns", "1")
-	u.RawQuery = q.Encode()
-
-	pool, err := postgres.Open(t.Context(), u.String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
 }

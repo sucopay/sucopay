@@ -20,17 +20,6 @@ const (
 	queryTimeout   = 10 * time.Second
 )
 
-// acquireTimeout bounds waiting for a connection when a caller brings no
-// bound of its own.
-//
-// Three seconds is a tenth of the write timeout in internal/api, which puts
-// this wait inside answering a request rather than beside it.
-//
-// TODO(hiroki): measure this against a real pool under load. The number is
-// placed, not derived, and is a value to replace rather than one to reason
-// from.
-const acquireTimeout = 3 * time.Second
-
 // Pool is a set of connections to one PostgreSQL.
 type Pool struct {
 	pool *pgxpool.Pool
@@ -169,33 +158,6 @@ func onThisMachine(host string) bool {
 // own what anybody asks the database, and a wrapper method per query would
 // make this package a copy of every repository that exists.
 func (p *Pool) Conns() *pgxpool.Pool { return p.pool }
-
-// budget bounds waiting for a connection.
-//
-// Derived from the caller rather than started as a clock of its own: a caller
-// in more of a hurry stays the one that decides, and the worst case is one
-// wait rather than two of them added together.
-func budget(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(ctx, acquireTimeout)
-}
-
-// Acquire hands out a connection, waiting no longer than [budget] allows.
-//
-// For whoever has to answer before doing any work. A caller that cannot get a
-// connection has nothing to read the database for, and learning that costs a
-// bounded wait rather than however long the pool takes to free one.
-//
-// The connection is the caller's to release.
-func (p *Pool) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
-	ctx, cancel := budget(ctx)
-	defer cancel()
-
-	conn, err := p.pool.Acquire(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("database: %w", cause(err))
-	}
-	return conn, nil
-}
 
 // Ping reports whether the database still answers. [Open] asks once so that a
 // start fails rather than the first request; this is for asking again while

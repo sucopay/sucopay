@@ -25,9 +25,14 @@ done < <(grep -rl --exclude-dir=.git --exclude=check-public-only.sh -e "$marker"
 # References to documents that live only in the private repository. They read
 # as a citation and resolve to nothing for anyone outside it, so whatever the
 # reference was carrying has to be said here instead.
+#
+# Case-insensitive, and repo rather than repository, because a citation written
+# in prose does not have to match the spelling of a link. Loose enough to catch
+# a sentence merely holding the words rather than a link; a false positive here
+# costs a rewording, and a false negative ships the citation.
 while IFS= read -r -d '' f; do
   [ "$f" = "scripts/check-public-only.sh" ] && continue
-  if grep -nE '\[?ADR [0-9]|decisions/adr/|sucopay-strategy|open-questions|strategy repository|private repository' "$f" >/dev/null 2>&1; then
+  if grep -inE '\[?ADR [0-9]|decisions/adr/|sucopay-strategy|open.?questions|strategy repo|private repo' "$f" >/dev/null 2>&1; then
     note "$f cites a document only the private repository has."
   fi
 done < <(git ls-files -z --cached --others --exclude-standard)
