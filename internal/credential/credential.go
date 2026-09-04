@@ -9,7 +9,93 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"time"
 )
+
+// Credential is a stored credential as it is read back: what handling a
+// request needs to know about the one presented with it, and none of the
+// token. A row holds the token's hash, and nothing reads that back either.
+//
+// Whose it is is Scope, and never whether Account is empty. Account is empty
+// for a credential of the deployment, and a reader going by that would take
+// a row whose account was left out for the wider grant.
+type Credential struct {
+	ID         ID
+	Scope      Scope
+	Account    AccountID
+	Capability Capability
+	// KeyID names the key the row was made under. What [Postgres.FindByToken]
+	// returns was made under its own, so this is for [Postgres.List], where a
+	// row made under another key is the answer to why every request fails.
+	KeyID string
+	// LastUsedAt is when a request last presented this credential, and zero
+	// when none has.
+	LastUsedAt time.Time
+}
+
+// ID identifies one credential. It is what revoke takes and list shows, so it
+// is typed into shells and stays in their histories, and it is derived from
+// nothing: not the token and not the hash. Knowing an ID is knowing nothing
+// else.
+//
+// A UUID, because the column is one, and lowercase, because that is how
+// PostgreSQL writes one back and an ID is compared as text.
+type ID string
+
+// NewID mints an identifier: 16 bytes from crypto/rand, with the version and
+// variant bits of a random UUID set so that a tool reading the column sees
+// the kind it is. Nothing here reads them.
+//
+// It returns no error, where payment.NewID returns one it can never have:
+// crypto/rand.Read has had none to return since Go 1.24. See [New].
+func NewID() ID {
+	var b [16]byte
+	rand.Read(b[:])
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return ID(fmt.Sprintf("%x-%x-%x-%x-%x", b[:4], b[4:6], b[6:8], b[8:10], b[10:]))
+}
+
+// AccountID names the account a credential is of. It is opaque here, as
+// payment's is there, and it is not payment's: a credential says which
+// account a request is from, and what the request then does with the account
+// is for the handler to say, which converts. Sharing the type would have the
+// context that authenticates depend on the one that pays.
+type AccountID string
+
+// Scope says whose a credential is: one account's, or the deployment's.
+//
+// A word in the row and a word here, and never the absence of an account.
+// Null arrives by omission, and where null meant the wider grant, an insert
+// that left the column out would widen a credential without saying so.
+type Scope string
+
+const (
+	// ScopeAccount is a credential of one account, which it names.
+	ScopeAccount Scope = "account"
+	// ScopeDeployment is a credential of the whole deployment, naming no
+	// account. Nothing makes one yet: what issues credentials issues them to
+	// one account, and a row of the deployment is one a test writes by hand.
+	ScopeDeployment Scope = "deployment"
+)
+
+// Capability says what a credential may do.
+type Capability string
+
+const (
+	// ReadOnly may read and not write.
+	ReadOnly Capability = "read"
+	// ReadWrite may write, and so read. There is no write without read: a
+	// caller that could create a payment and not see whether it had would
+	// create it again.
+	ReadWrite Capability = "write"
+)
+
+// ErrNotFound reports that no unrevoked credential holds that token under
+// this key, or that none has that ID. For a token, whether it was never
+// issued, revoked, or issued under another key is not said, on purpose: see
+// [Postgres.FindByToken].
+var ErrNotFound = errors.New("credential: no such credential")
 
 // Token is a credential as it is presented: 64 hexadecimal characters, being
 // 32 bytes from crypto/rand.

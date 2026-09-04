@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -52,10 +53,10 @@ func TestNew_DoesNotRepeatItself(t *testing.T) {
 	}
 }
 
-// The compiler holds these already: nothing in this file that calls New or
-// NewKeyID would build if either took an argument. They have names because
-// what they say is what the rest rests on: a token, and a key's identifier,
-// derived from nothing a caller could know.
+// The compiler holds these already: nothing in this file that calls New,
+// NewKeyID or NewID would build if any took an argument. They have names
+// because what they say is what the rest rests on: a token, a key's
+// identifier and a credential's, derived from nothing a caller could know.
 func TestNew_TakesNothing(t *testing.T) {
 	t.Parallel()
 	takesNothing(t, "New", credential.New)
@@ -64,6 +65,11 @@ func TestNew_TakesNothing(t *testing.T) {
 func TestNewKeyID_TakesNothing(t *testing.T) {
 	t.Parallel()
 	takesNothing(t, "NewKeyID", credential.NewKeyID)
+}
+
+func TestNewID_TakesNothing(t *testing.T) {
+	t.Parallel()
+	takesNothing(t, "NewID", credential.NewID)
 }
 
 func takesNothing(t *testing.T, name string, fn any) {
@@ -80,6 +86,31 @@ func TestNewKeyID_DoesNotRepeatItself(t *testing.T) {
 	seen := make(map[string]bool, 1000)
 	for range 1000 {
 		id := credential.NewKeyID()
+		if seen[id] {
+			t.Fatalf("%q came back twice", id)
+		}
+		seen[id] = true
+	}
+}
+
+// The column is a uuid, and what PostgreSQL writes back is compared as text
+// with what was given, so the text has to be the one form it writes.
+var randomUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
+func TestNewID_IsARandomUUIDWrittenInLowercase(t *testing.T) {
+	t.Parallel()
+	for range 100 {
+		if id := credential.NewID(); !randomUUID.MatchString(string(id)) {
+			t.Fatalf("NewID made %q", id)
+		}
+	}
+}
+
+func TestNewID_DoesNotRepeatItself(t *testing.T) {
+	t.Parallel()
+	seen := make(map[credential.ID]bool, 1000)
+	for range 1000 {
+		id := credential.NewID()
 		if seen[id] {
 			t.Fatalf("%q came back twice", id)
 		}
