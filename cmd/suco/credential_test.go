@@ -4,8 +4,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sucopay/sucopay/internal/credential"
 	"github.com/sucopay/sucopay/internal/postgres"
@@ -84,36 +86,48 @@ func TestRun_CredentialNewRefusesToChooseACapability(t *testing.T) {
 	}
 }
 
-// TestRun_CredentialNewRefusesWhatServeRefuses checks the words, and not only
-// that both fail: an operator meets the refusal at whichever command they
-// run first, and two sentences for one problem read as two problems.
-func TestRun_CredentialNewRefusesWhatServeRefuses(t *testing.T) {
+// credentialCommands is every credential command with an argument it takes,
+// for the refusals all of them give alike.
+func credentialCommands() [][]string {
+	return [][]string{
+		{"credential", "new", "--read-only"},
+		{"credential", "list"},
+		{"credential", "revoke", string(credential.NewID())},
+	}
+}
+
+// TestRun_CredentialCommandsRefuseWhatServeRefuses checks the words, and not
+// only that both fail: an operator meets the refusal at whichever command
+// they run first, and two sentences for one problem read as two problems.
+func TestRun_CredentialCommandsRefuseWhatServeRefuses(t *testing.T) {
 	for _, c := range []struct {
 		name string
-		// What new reads, and what serve reads, at the same path. serve
-		// serves /healthz with no database, so its refusal has to be asked
-		// for by name.
-		forNew, forServe string
+		// What a credential command reads, and what serve reads, at the same
+		// path. serve serves /healthz with no database, so its refusal has
+		// to be asked for by name.
+		forCredential, forServe string
 	}{
 		{"a deployment with no database", "listen:\n  port: 9000\n", "database:\n  managed: true\n"},
 		{"a section nothing acts on", "networks:\n  local:\n    kind: simulated\n", "networks:\n  local:\n    kind: simulated\n"},
 	} {
-		t.Run(c.name, func(t *testing.T) {
-			path := document(t, c.forNew)
+		for _, args := range credentialCommands() {
+			t.Run(c.name+" met by "+strings.Join(args[:2], " "), func(t *testing.T) {
+				path := document(t, c.forCredential)
 
-			_, _, byNew := runArgs(t, "credential", "new", "--read-only")
+				_, _, byCredential := runArgs(t, args...)
 
-			if err := os.WriteFile(path, []byte(c.forServe), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			_, _, byServe := runArgs(t, "serve")
-			if byNew == nil || byServe == nil {
-				t.Fatalf("new: %v; serve: %v; want both to refuse", byNew, byServe)
-			}
-			if byNew.Error() != byServe.Error() {
-				t.Errorf("new refuses with:\n  %v\nserve with:\n  %v", byNew, byServe)
-			}
-		})
+				if err := os.WriteFile(path, []byte(c.forServe), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				_, _, byServe := runArgs(t, "serve")
+				if byCredential == nil || byServe == nil {
+					t.Fatalf("%s: %v; serve: %v; want both to refuse", strings.Join(args, " "), byCredential, byServe)
+				}
+				if byCredential.Error() != byServe.Error() {
+					t.Errorf("%s refuses with:\n  %v\nserve with:\n  %v", strings.Join(args, " "), byCredential, byServe)
+				}
+			})
+		}
 	}
 }
 
@@ -193,18 +207,22 @@ func TestRun_CredentialNewWritesATokenOnlyItsOwnerCanRead(t *testing.T) {
 	}
 }
 
-func TestRun_CredentialNewOnADatabaseWithoutTheSchemaNamesWhatAppliesIt(t *testing.T) {
-	document(t, namingADatabase())
-	t.Setenv("SUCO_DATABASE_URL", postgrestest.Fresh(t))
-	t.Chdir(t.TempDir())
+func TestRun_CredentialCommandsOnADatabaseWithoutTheSchemaNameWhatAppliesIt(t *testing.T) {
+	for _, args := range credentialCommands() {
+		t.Run(strings.Join(args[:2], " "), func(t *testing.T) {
+			document(t, namingADatabase())
+			t.Setenv("SUCO_DATABASE_URL", postgrestest.Fresh(t))
+			t.Chdir(t.TempDir())
 
-	_, _, err := runArgs(t, "credential", "new", "--read-only")
+			_, _, err := runArgs(t, args...)
 
-	if err == nil {
-		t.Fatal("want an error, got none: there is no account to issue to")
-	}
-	if !strings.Contains(err.Error(), "suco serve") {
-		t.Errorf("error does not name the command that applies the schema: %v", err)
+			if err == nil {
+				t.Fatal("want an error, got none: there is no table to read or write")
+			}
+			if !strings.Contains(err.Error(), "suco serve") {
+				t.Errorf("error does not name the command that applies the schema: %v", err)
+			}
+		})
 	}
 }
 
@@ -259,5 +277,344 @@ func TestRun_CredentialNewThatCannotWriteItsFileLeavesNoCredential(t *testing.T)
 	}
 	if len(left) != 0 {
 		t.Errorf("%d credentials are in force, want none", len(left))
+	}
+}
+
+// newCredential runs new and reads back what it made: the ID from the file's
+// name, and the token from the file.
+func newCredential(t *testing.T, d deployment, flag string) (credential.ID, credential.Token) {
+	t.Helper()
+	stdout, _, err := runArgs(t, "credential", "new", flag)
+	if err != nil {
+		t.Fatalf("new %s: %v", flag, err)
+	}
+	name := fileNamed(t, stdout)
+	token, err := os.ReadFile(filepath.Join(d.dir, name))
+	if err != nil {
+		t.Fatalf("new %s named a file it did not write: %v", flag, err)
+	}
+	id := strings.TrimSuffix(strings.TrimPrefix(name, "credential-"), ".token")
+	return credential.ID(id), credential.Token(token)
+}
+
+// row is one line of what list shows, under its header.
+type row struct {
+	id, keyID, scope, capability, lastUsed string
+}
+
+// listed reads the rows list wrote, in the order it wrote them.
+func listed(t *testing.T, stdout string) []row {
+	t.Helper()
+	header, rest, ok := strings.Cut(stdout, "\n")
+	if !ok || strings.Join(strings.Fields(header), " ") != "ID KEY ID SCOPE CAPABILITY LAST USED" {
+		t.Fatalf("stdout does not start with the header line:\n%s", stdout)
+	}
+	var rows []row
+	for _, line := range strings.Split(strings.TrimSuffix(rest, "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		f := strings.Fields(line)
+		if len(f) != 5 {
+			t.Fatalf("a row has %d columns, want 5: %q", len(f), line)
+		}
+		rows = append(rows, row{f[0], f[1], f[2], f[3], f[4]})
+	}
+	return rows
+}
+
+// account is the one account new issues to.
+func account(t *testing.T, d deployment) credential.AccountID {
+	t.Helper()
+	accounts, err := d.store.Accounts(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(accounts) != 1 {
+		t.Fatalf("%d accounts, want the one the schema makes", len(accounts))
+	}
+	return accounts[0]
+}
+
+func TestRun_CredentialListShowsEachCredentialsIDAndNeverItsToken(t *testing.T) {
+	d := deployed(t)
+	readOnly, readOnlyToken := newCredential(t, d, "--read-only")
+	readWrite, readWriteToken := newCredential(t, d, "--read-write")
+
+	stdout, _, err := runArgs(t, "credential", "list")
+
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, token := range []credential.Token{readOnlyToken, readWriteToken} {
+		if strings.Contains(stdout, string(token)) {
+			t.Errorf("stdout carries a token:\n%s", stdout)
+		}
+	}
+	rows := listed(t, stdout)
+	if len(rows) != 2 {
+		t.Fatalf("listed %d rows, want 2:\n%s", len(rows), stdout)
+	}
+	for _, want := range []row{
+		{string(readOnly), "testkey", "account", "read", "never"},
+		{string(readWrite), "testkey", "account", "write", "never"},
+	} {
+		if !slices.Contains(rows, want) {
+			t.Errorf("no row %+v among:\n%s", want, stdout)
+		}
+	}
+}
+
+func TestRun_CredentialListOrdersByLastUseWithTheNeverUsedLast(t *testing.T) {
+	// The order is what tells the credential a client is presenting from
+	// the rows a script made and abandoned. Made in this order so that the
+	// order made is not the order wanted.
+	d := deployed(t)
+	oldest, _ := newCredential(t, d, "--read-only")
+	usedEarlier, earlierToken := newCredential(t, d, "--read-only")
+	usedLater, laterToken := newCredential(t, d, "--read-write")
+	newest, _ := newCredential(t, d, "--read-only")
+	now := time.Now()
+	uses := map[credential.ID]time.Time{
+		usedEarlier: now.Add(-2 * time.Hour),
+		usedLater:   now.Add(-time.Hour),
+	}
+	for _, token := range []credential.Token{earlierToken, laterToken} {
+		found, err := d.store.FindByToken(t.Context(), token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := d.store.RecordUse(t.Context(), found, uses[found.ID]); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stdout, _, err := runArgs(t, "credential", "list")
+
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	rows := listed(t, stdout)
+	want := []credential.ID{usedLater, usedEarlier, newest, oldest}
+	if len(rows) != len(want) {
+		t.Fatalf("listed %d rows, want %d:\n%s", len(rows), len(want), stdout)
+	}
+	for i, r := range rows {
+		if r.id != string(want[i]) {
+			t.Errorf("row %d is %s, want %s:\n%s", i+1, r.id, want[i], stdout)
+		}
+		at, used := uses[credential.ID(r.id)]
+		if !used {
+			if r.lastUsed != "never" {
+				t.Errorf("row %d was never used and says %q", i+1, r.lastUsed)
+			}
+			continue
+		}
+		shown, err := time.Parse(time.RFC3339, r.lastUsed)
+		if err != nil {
+			t.Errorf("row %d does not show its last use as RFC 3339: %v", i+1, err)
+			continue
+		}
+		if !shown.Equal(at.Truncate(time.Second)) {
+			t.Errorf("row %d shows its last use as %s, want %s", i+1, r.lastUsed, at.Format(time.RFC3339))
+		}
+	}
+}
+
+func TestRun_CredentialListSaysWhichKeyEachCredentialWasMadeUnder(t *testing.T) {
+	// A deployment whose key was swapped has every request failing, and
+	// this column is what tells that from one whose credentials were all
+	// revoked: the reason shows nowhere else.
+	d := deployed(t)
+	ours, _ := newCredential(t, d, "--read-only")
+	otherKey, err := credential.ParseKey(strings.Repeat("ff", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := credential.NewPostgres(d.pool.Conns(), otherKey, "otherkey")
+	theirs, theirToken, err := other.Create(t.Context(), account(t, d), credential.ReadOnly, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, _, err := runArgs(t, "credential", "list")
+
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	keyOf := map[credential.ID]string{}
+	for _, r := range listed(t, stdout) {
+		keyOf[credential.ID(r.id)] = r.keyID
+	}
+	if keyOf[ours] != "testkey" || keyOf[theirs] != "otherkey" {
+		t.Errorf("list shows ours under %q and theirs under %q:\n%s", keyOf[ours], keyOf[theirs], stdout)
+	}
+	if _, err := d.store.FindByToken(t.Context(), theirToken); !errors.Is(err, credential.ErrNotFound) {
+		t.Errorf("the deployment does not refuse a credential made under another key: %v", err)
+	}
+}
+
+func TestRun_CredentialListQuotesAKeyIdentifierATerminalWouldActOn(t *testing.T) {
+	// The identifier is whatever the document that made the row held, and a
+	// report lays it out in columns a terminal shows.
+	d := deployed(t)
+	key, err := credential.ParseKey(testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := credential.NewPostgres(d.pool.Conns(), key, "clear\x1b[2Jscreen")
+	if _, _, err := other.Create(t.Context(), account(t, d), credential.ReadOnly, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, _, err := runArgs(t, "credential", "list")
+
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if strings.Contains(stdout, "\x1b") {
+		t.Errorf("the escape reached stdout:\n%q", stdout)
+	}
+	if !strings.Contains(stdout, `\x1b`) {
+		t.Errorf("the identifier is not shown quoted:\n%s", stdout)
+	}
+}
+
+func TestRun_CredentialRevokeStopsOneCredentialAndLeavesTheOther(t *testing.T) {
+	d := deployed(t)
+	revoked, revokedToken := newCredential(t, d, "--read-only")
+	kept, keptToken := newCredential(t, d, "--read-write")
+
+	stdout, _, err := runArgs(t, "credential", "revoke", string(revoked))
+
+	if err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if !strings.Contains(stdout, string(revoked)) {
+		t.Errorf("stdout does not say which credential was revoked:\n%s", stdout)
+	}
+	// The store was opened before the revoke, as a running server's is: no
+	// restart comes between a revoke and the request that meets it.
+	if _, err := d.store.FindByToken(t.Context(), revokedToken); !errors.Is(err, credential.ErrNotFound) {
+		t.Errorf("the revoked credential is still found: %v", err)
+	}
+	if _, err := d.store.FindByToken(t.Context(), keptToken); err != nil {
+		t.Errorf("the other credential is not found: %v", err)
+	}
+	stdout, _, err = runArgs(t, "credential", "list")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if rows := listed(t, stdout); len(rows) != 1 || rows[0].id != string(kept) {
+		t.Errorf("list shows %+v, want the one kept", rows)
+	}
+}
+
+func TestRun_CredentialRevokeTwiceSucceedsTwice(t *testing.T) {
+	// Two people who noticed the same leak revoke the same credential, and
+	// the second is not told it failed.
+	d := deployed(t)
+	id, _ := newCredential(t, d, "--read-only")
+
+	for i := range 2 {
+		if _, _, err := runArgs(t, "credential", "revoke", string(id)); err != nil {
+			t.Fatalf("revoke %d: %v", i+1, err)
+		}
+	}
+}
+
+func TestRun_CredentialRevokeOfAnIDNoRowHasNamesIt(t *testing.T) {
+	deployed(t)
+	id := credential.NewID()
+
+	_, _, err := runArgs(t, "credential", "revoke", string(id))
+
+	if !errors.Is(err, credential.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+	if !strings.Contains(err.Error(), string(id)) {
+		t.Errorf("error does not name the ID: %v", err)
+	}
+}
+
+// TestRun_CredentialListWithNothingInForceShowsTheHeaderAlone: an empty
+// output would leave whether the command failed or found nothing to whoever
+// reads it.
+func TestRun_CredentialListWithNothingInForceShowsTheHeaderAlone(t *testing.T) {
+	deployed(t)
+
+	stdout, _, err := runArgs(t, "credential", "list")
+
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if rows := listed(t, stdout); len(rows) != 0 {
+		t.Errorf("listed %d rows, want none:\n%s", len(rows), stdout)
+	}
+}
+
+func TestRun_CredentialCommandsRepeatNothingTheyAreGiven(t *testing.T) {
+	// What is typed after a credential command may be the token, from the
+	// file new wrote into the working directory, and an error is what a CI
+	// log keeps. The document is absent: a refusal that came after reading
+	// it would name absent.yaml, which is how the test tells the order.
+	token := string(credential.New())
+	for _, args := range [][]string{
+		{"new", token},
+		{"new", "--read-only", token},
+		{"list", token},
+		{"revoke", token},
+		{"revoke", string(credential.NewID()), token},
+	} {
+		t.Run(strings.Join(args[:len(args)-1], " ")+" and then a token", func(t *testing.T) {
+			t.Setenv("SUCO_CONFIG", filepath.Join(t.TempDir(), "absent.yaml"))
+
+			_, _, err := runArgs(t, append([]string{"credential"}, args...)...)
+
+			if err == nil {
+				t.Fatal("want an error, got none")
+			}
+			if strings.Contains(err.Error(), "absent.yaml") {
+				t.Errorf("the document was read before the argument was refused: %v", err)
+			}
+			if strings.Contains(err.Error(), token[:16]) {
+				t.Errorf("the error repeats the token: %v", err)
+			}
+		})
+	}
+}
+
+func TestRun_CredentialRevokeRefusesAnythingButOneIDWithoutRepeatingIt(t *testing.T) {
+	id := credential.NewID()
+	token := string(credential.New())
+	for _, c := range []struct {
+		name string
+		args []string
+	}{
+		{"nothing", nil},
+		{"an ID and then a token", []string{string(id), token}},
+		{"the token file's name", []string{"credential-" + string(id) + ".token"}},
+		{"a token, which is what somebody holding the file and not list would reach for", []string{token}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			// No document, so that the refusal is seen to come before
+			// anything is read.
+			t.Setenv("SUCO_CONFIG", filepath.Join(t.TempDir(), "absent.yaml"))
+
+			_, _, err := runArgs(t, append([]string{"credential", "revoke"}, c.args...)...)
+
+			if err == nil {
+				t.Fatal("want an error, got none")
+			}
+			if !strings.Contains(err.Error(), "ID") {
+				t.Errorf("error is not about the ID: %v", err)
+			}
+			if strings.Contains(err.Error(), "absent.yaml") {
+				t.Errorf("the document was read before the argument was: %v", err)
+			}
+			if strings.Contains(err.Error(), token) {
+				t.Errorf("error repeats what was typed in the ID's place: %v", err)
+			}
+		})
 	}
 }

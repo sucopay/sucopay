@@ -118,6 +118,45 @@ func TestNewID_DoesNotRepeatItself(t *testing.T) {
 	}
 }
 
+func TestParseID_ReadsWhatNewIDMintsAndNothingElse(t *testing.T) {
+	t.Parallel()
+	minted := credential.NewID()
+	if id, err := credential.ParseID(string(minted)); err != nil || id != minted {
+		t.Errorf("ParseID(%q) = %q, %v; want it back", minted, id, err)
+	}
+	for _, c := range []struct{ name, s string }{
+		{"empty", ""},
+		{"a word", "nope"},
+		{"one character short", string(minted)[1:]},
+		{"in capitals", strings.ToUpper(string(minted))},
+		{"the token file's name", "credential-" + string(minted) + ".token"},
+		{"a token", string(credential.New())},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := credential.ParseID(c.s); err == nil {
+				t.Errorf("ParseID accepted %q", c.s)
+			}
+		})
+	}
+}
+
+func TestParseID_KeepsWhatItRefusedOutOfItsError(t *testing.T) {
+	t.Parallel()
+	// What is typed in an ID's place may be the token, and an error is what
+	// a CI log keeps.
+	token := string(credential.New())
+
+	_, err := credential.ParseID(token)
+
+	if err == nil {
+		t.Fatal("ParseID accepted a token")
+	}
+	if strings.Contains(err.Error(), token[:8]) {
+		t.Errorf("the error repeats what it refused: %v", err)
+	}
+}
+
 func TestParseKey_AcceptsThirtyTwoBytesOfHexadecimal(t *testing.T) {
 	t.Parallel()
 	if _, err := credential.ParseKey(key); err != nil {

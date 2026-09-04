@@ -1,16 +1,63 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"text/tabwriter"
 	"time"
 
 	"github.com/sucopay/sucopay/internal/credential"
+	"github.com/sucopay/sucopay/internal/invisible"
 	"github.com/sucopay/sucopay/internal/postgres"
 )
+
+// openStore reads the document and opens the store of credentials it names,
+// for the commands that read or write one. A document serve refuses is
+// refused here in serve's words, and so is one naming no database: a
+// deployment with either meets the refusal at whichever command runs first,
+// and two sentences for one problem read as two problems.
+func openStore(ctx context.Context) (*postgres.Pool, *credential.Postgres, error) {
+	resolved, document, err := load()
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := unimplementedError(document, resolved); err != nil {
+		return nil, nil, err
+	}
+	cfg := resolved.Config
+	// The default database.managed is a document that names no database.
+	if cfg.Database.URL == "" {
+		return nil, nil, fmt.Errorf("%s: %s", document, ownDatabase)
+	}
+	// Read before the database is opened: a malformed key needs no
+	// connection to be refused.
+	key, err := credential.ParseKey(cfg.Credentials.Key)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	db, err := postgres.Open(ctx, cfg.Database.URL)
+	if err != nil {
+		return nil, nil, err
+	}
+	// serve applies the schema and logs what it applied. A command that
+	// answers a person with a line or two would apply it in silence, so
+	// these ask for it to have been applied.
+	version, err := db.SchemaVersion(ctx)
+	if err != nil {
+		db.Close()
+		return nil, nil, err
+	}
+	if version == "" {
+		db.Close()
+		return nil, nil, errors.New("the database has no schema. Run `suco serve` once to apply it")
+	}
+	return db, credential.NewPostgres(db.Conns(), key, cfg.Credentials.KeyID), nil
+}
 
 // credentialNew makes one credential and writes its token to a file in the
 // working directory, named by the credential's ID so that the file and the
@@ -24,44 +71,11 @@ func credentialNew(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-
-	resolved, document, err := load()
-	if err != nil {
-		return err
-	}
-	if err := unimplementedError(document, resolved); err != nil {
-		return err
-	}
-	cfg := resolved.Config
-	// The default database.managed is a document that names no database,
-	// and a credential has to be stored somewhere. The words are the ones
-	// serve refuses a document asking for one with, because a deployment
-	// with neither meets them at whichever command runs first.
-	if cfg.Database.URL == "" {
-		return fmt.Errorf("%s: %s", document, ownDatabase)
-	}
-
-	db, err := postgres.Open(ctx, cfg.Database.URL)
+	db, store, err := openStore(ctx)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	key, err := credential.ParseKey(cfg.Credentials.Key)
-	if err != nil {
-		return err
-	}
-	store := credential.NewPostgres(db.Conns(), key, cfg.Credentials.KeyID)
-
-	// serve applies the schema and logs what it applied. A command that
-	// answers a person with one line would apply it in silence, so this one
-	// asks for it to have been applied.
-	version, err := db.SchemaVersion(ctx)
-	if err != nil {
-		return err
-	}
-	if version == "" {
-		return errors.New("the database has no schema. Run `suco serve` once to apply it")
-	}
 
 	// Which accounts there are is the database's to say, and a credential
 	// is of exactly one of them. This build has no way for an operator to
@@ -98,17 +112,23 @@ func credentialNew(ctx context.Context, args []string, stdout io.Writer) error {
 // capabilityOf reads the one argument new takes. There is no default: which
 // of the two a credential may do is the operator's to choose, and a default
 // is what every credential made without a thought would have.
+//
+// No credential command repeats an argument in an error, where serve and
+// doctor name the one they were given. What is typed after these may be
+// the token, from the file new wrote into the working directory, and an
+// error is what a CI log keeps.
 func capabilityOf(args []string) (credential.Capability, error) {
-	if len(args) != 1 {
-		return "", errors.New("credential new takes exactly one of --read-only and --read-write")
-	}
-	switch args[0] {
-	case "--read-only":
+	switch {
+	case len(args) > 1:
+		return "", errors.New("credential new takes one of --read-only and --read-write, got more than one word")
+	case len(args) == 0:
+		return "", errors.New("credential new takes --read-only or --read-write")
+	case args[0] == "--read-only":
 		return credential.ReadOnly, nil
-	case "--read-write":
+	case args[0] == "--read-write":
 		return credential.ReadWrite, nil
 	}
-	return "", fmt.Errorf("credential new takes --read-only or --read-write, got %q", args[0])
+	return "", errors.New("credential new takes --read-only or --read-write, got neither")
 }
 
 // writeToken writes token, and nothing else, to a file only its owner can
@@ -128,4 +148,78 @@ func writeToken(name string, token credential.Token) error {
 		return fmt.Errorf("token file: %w", err)
 	}
 	return nil
+}
+
+// credentialList shows every credential in force, in the store's order: the
+// most recently used first, and the never used last. The last column answers
+// whether a client is presenting one, and the second which key a row was
+// made under, for a deployment whose every request fails.
+//
+// Nothing of a token is here to show: the row holds only its hash, and what
+// the store reads back holds not even that.
+func credentialList(ctx context.Context, args []string, stdout io.Writer) error {
+	if len(args) > 0 {
+		return fmt.Errorf("credential list takes no arguments, got %d", len(args))
+	}
+	db, store, err := openStore(ctx)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	all, err := store.List(ctx)
+	if err != nil {
+		return err
+	}
+	// Laid out in full before any of it is written, as doctor's report is.
+	var table bytes.Buffer
+	tw := tabwriter.NewWriter(&table, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tKEY ID\tSCOPE\tCAPABILITY\tLAST USED")
+	for _, c := range all {
+		lastUsed := "never"
+		if !c.LastUsedAt.IsZero() {
+			lastUsed = c.LastUsedAt.Format(time.RFC3339)
+		}
+		// The key identifier is whatever the document that made the row
+		// held, quoted as doctor quotes what a document holds.
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", c.ID, invisible.Quote(c.KeyID), c.Scope, c.Capability, lastUsed)
+	}
+	tw.Flush()
+	if _, err := stdout.Write(table.Bytes()); err != nil {
+		return fmt.Errorf("writing the list: %w", err)
+	}
+	return nil
+}
+
+// credentialRevoke takes one credential out of force. A route that asks for
+// a credential looks it up as each request arrives and keeps nothing between
+// requests, so it refuses the next request that presents this one.
+func credentialRevoke(ctx context.Context, args []string, stdout io.Writer) error {
+	id, err := idOf(args)
+	if err != nil {
+		return err
+	}
+	db, store, err := openStore(ctx)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	if err := store.Revoke(ctx, id, time.Now()); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Revoked %s\n", id)
+	return nil
+}
+
+// idOf reads the one argument revoke takes, before anything else is read.
+// As capabilityOf, it repeats none of what it was given.
+func idOf(args []string) (credential.ID, error) {
+	switch {
+	case len(args) > 1:
+		return "", fmt.Errorf("credential revoke takes one ID, got %d arguments", len(args))
+	case len(args) == 0:
+		return "", errors.New("credential revoke takes the ID of one credential, as list shows it")
+	}
+	return credential.ParseID(args[0])
 }

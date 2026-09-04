@@ -48,7 +48,8 @@ go build -o suco ./cmd/suco
 いるかどうかだけが出ます。`suco serve` は `http://localhost:7826` で待ち受けます。`/healthz` はプロセスが動いていることを、
 `/readyz` は必要なものに届いているかを答えます。走っている間に起きたことは stdout に書きます。
 データベースを設定した配備では、`suco credential new --read-only` か `--read-write` が API の
-資格情報を 1 本作り、トークンを所有者だけが読めるファイルへ書きます。
+資格情報を 1 本作り、トークンを所有者だけが読めるファイルへ書きます。`suco credential list` は
+有効な資格情報を最終使用の新しい順に表示し、`suco credential revoke <id>` は 1 本を失効させます。
 
 インストールスクリプトとビルド済みバイナリは最初のリリースで用意します。上の一覧にある機能は
 まだありません。

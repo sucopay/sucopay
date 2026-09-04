@@ -42,6 +42,8 @@ var commands = []command{
 	{name: "doctor", about: "show the resolved configuration and its sources", run: doctor},
 	{name: "credential", sub: []command{
 		{name: "new", about: "make a credential, and write its token to a file", run: credentialNew},
+		{name: "list", about: "show the credentials in force", run: credentialList},
+		{name: "revoke", about: "take one credential out of force", run: credentialRevoke},
 	}},
 }
 

@@ -23,7 +23,7 @@ var domainFiles = []string{"credential.go", "context.go"}
 // credential.
 var allowed = []string{
 	"context", "crypto/hmac", "crypto/rand", "crypto/sha256", "encoding/hex",
-	"errors", "fmt", "io", "log/slog", "time",
+	"errors", "fmt", "io", "log/slog", "regexp", "time",
 }
 
 func TestImports_TheDomainReachesNothingOutsideItself(t *testing.T) {

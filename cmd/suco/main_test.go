@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sucopay/sucopay/internal/credential"
 	"github.com/sucopay/sucopay/internal/postgres"
 	"github.com/sucopay/sucopay/internal/postgres/postgrestest"
 )
@@ -134,7 +135,7 @@ func TestRun_HelpWritesUsageToStdoutAndSucceeds(t *testing.T) {
 // Every command reading a document meets a missing one through load, so the
 // sentence it gives is asserted once rather than once per command.
 func TestRun_WithoutADocumentNamesTheCommandThatWritesOne(t *testing.T) {
-	for _, args := range [][]string{{"serve"}, {"doctor"}, {"credential", "new", "--read-only"}} {
+	for _, args := range append([][]string{{"serve"}, {"doctor"}}, credentialCommands()...) {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			t.Setenv("SUCO_CONFIG", filepath.Join(t.TempDir(), "absent.yaml"))
 
@@ -165,17 +166,30 @@ func paths(cmds []command, under ...string) [][]string {
 	return all
 }
 
-func TestRun_EveryCommandNamesAnArgumentItDoesNotTake(t *testing.T) {
+func TestRun_EveryCommandRefusesAnArgumentItDoesNotTakeBeforeReadingTheDocument(t *testing.T) {
+	// What the commands taking an argument take, so that the one after it
+	// is the one not taken.
+	takes := map[string][]string{
+		"credential new":    {"--read-only"},
+		"credential revoke": {string(credential.NewID())},
+	}
 	for _, path := range paths(commands) {
 		t.Run(strings.Join(path, " "), func(t *testing.T) {
-			t.Setenv("SUCO_CONFIG", filepath.Join(t.TempDir(), "suco.yaml"))
+			t.Setenv("SUCO_CONFIG", filepath.Join(t.TempDir(), "absent.yaml"))
+			args := append(slices.Clone(path), takes[strings.Join(path, " ")]...)
 
-			_, _, err := runArgs(t, append(path, "extra")...)
+			_, _, err := runArgs(t, append(args, "extra")...)
 
 			if err == nil {
 				t.Fatal("want an error, got none")
 			}
-			if !strings.Contains(err.Error(), `"extra"`) {
+			if strings.Contains(err.Error(), "absent.yaml") {
+				t.Errorf("the document was read before the argument was refused: %v", err)
+			}
+			// The commands outside credential name the word. Those under it
+			// repeat nothing they were given, and have a test of their own
+			// for that.
+			if path[0] != "credential" && !strings.Contains(err.Error(), `"extra"`) {
 				t.Errorf("error does not name the argument: %v", err)
 			}
 		})

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"regexp"
 	"time"
 )
 
@@ -54,6 +55,23 @@ func NewID() ID {
 	b[6] = b[6]&0x0f | 0x40
 	b[8] = b[8]&0x3f | 0x80
 	return ID(fmt.Sprintf("%x-%x-%x-%x-%x", b[:4], b[4:6], b[6:8], b[8:10], b[10:]))
+}
+
+// idShape is a UUID as PostgreSQL writes one, and so as [NewID] does.
+var idShape = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// ParseID reads an ID as list shows one, refusing anything that is not the
+// shape [NewID] produces. Lowercase alone, as payment.ParseID takes: an ID
+// is compared as text, and two spellings of one would be two IDs.
+//
+// Like [ParseKey] it repeats nothing of what it refused. What is typed in an
+// ID's place may be the token, by somebody holding the file and not list,
+// and an error is what a CI log keeps.
+func ParseID(s string) (ID, error) {
+	if !idShape.MatchString(s) {
+		return "", errors.New("credential ID: not a UUID in lowercase, as list shows one")
+	}
+	return ID(s), nil
 }
 
 // AccountID names the account a credential is of. It is opaque here, as
