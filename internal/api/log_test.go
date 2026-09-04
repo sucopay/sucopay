@@ -56,7 +56,7 @@ func TestHandler_WritesOneLineSayingWhatHappened(t *testing.T) {
 	log := &recorder{}
 	rec := httptest.NewRecorder()
 
-	api.Handler(log.logger(), nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	api.Handler(log.logger(), nil, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
 	line := log.String()
 	for _, want := range []string{
@@ -75,7 +75,7 @@ func TestHandler_KeepsTheQueryOutOfTheLine(t *testing.T) {
 	log := &recorder{}
 	rec := httptest.NewRecorder()
 
-	api.Handler(log.logger(), nil).ServeHTTP(rec,
+	api.Handler(log.logger(), nil, nil).ServeHTTP(rec,
 		httptest.NewRequest(http.MethodGet, "/healthz?token=hunter2", nil))
 
 	if strings.Contains(log.String(), "hunter2") {
@@ -101,7 +101,7 @@ func TestHandler_QuotesAPathAWholeRequestChose(t *testing.T) {
 			t.Parallel()
 			log := &recorder{}
 
-			api.Handler(log.jsonLogger(), nil).ServeHTTP(httptest.NewRecorder(),
+			api.Handler(log.jsonLogger(), nil, nil).ServeHTTP(httptest.NewRecorder(),
 				httptest.NewRequest(http.MethodGet, c.target, nil))
 
 			line := log.String()
@@ -121,7 +121,7 @@ func TestHandler_CutsAPathLongerThanALineShouldBe(t *testing.T) {
 	t.Parallel()
 	log := &recorder{}
 
-	api.Handler(log.logger(), nil).ServeHTTP(httptest.NewRecorder(),
+	api.Handler(log.logger(), nil, nil).ServeHTTP(httptest.NewRecorder(),
 		httptest.NewRequest(http.MethodGet, "/"+strings.Repeat("a", 4000), nil))
 
 	if line := log.String(); len(line) > 1000 {
@@ -132,7 +132,7 @@ func TestHandler_CutsAPathLongerThanALineShouldBe(t *testing.T) {
 func TestHandler_NamesEachRequestSeparately(t *testing.T) {
 	t.Parallel()
 	log := &recorder{}
-	h := api.Handler(log.logger(), nil)
+	h := api.Handler(log.logger(), nil, nil)
 
 	for range 2 {
 		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/healthz", nil))
@@ -157,7 +157,7 @@ func TestReadyz_ReportsTheDatabaseAndHealthzDoesNot(t *testing.T) {
 	// have an orchestrator restart an instance that is working.
 	log := &recorder{}
 	down := func(context.Context) error { return errors.New("no route to host") }
-	h := api.Handler(log.logger(), down)
+	h := api.Handler(log.logger(), down, nil)
 
 	alive := httptest.NewRecorder()
 	h.ServeHTTP(alive, httptest.NewRequest(http.MethodGet, "/healthz", nil))
@@ -182,7 +182,7 @@ func TestReadyz_SaysWhenNoDatabaseIsConfigured(t *testing.T) {
 	t.Parallel()
 	rec := httptest.NewRecorder()
 
-	api.Handler(quiet(), nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	api.Handler(quiet(), nil, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("/readyz = %d, want %d: no database is a state, not a failure", rec.Code, http.StatusOK)
@@ -201,7 +201,7 @@ func TestHandler_MeasuresHowLongTheRequestTook(t *testing.T) {
 		return nil
 	}
 
-	api.Handler(log.logger(), slow).ServeHTTP(httptest.NewRecorder(),
+	api.Handler(log.logger(), slow, nil).ServeHTTP(httptest.NewRecorder(),
 		httptest.NewRequest(http.MethodGet, "/readyz", nil))
 
 	got := field(t, log.String(), "duration_ms")
@@ -234,7 +234,7 @@ func TestHandler_CutsAMethodLongerThanAnyMethodIs(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	r.Method = strings.Repeat("A", 8000)
 
-	api.Handler(log.logger(), nil).ServeHTTP(httptest.NewRecorder(), r)
+	api.Handler(log.logger(), nil, nil).ServeHTTP(httptest.NewRecorder(), r)
 
 	if line := log.String(); len(line) > 1000 {
 		t.Errorf("one request wrote %d bytes", len(line))

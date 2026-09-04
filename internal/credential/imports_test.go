@@ -10,10 +10,11 @@ import (
 	"testing"
 )
 
-// domainFiles hold the part of this package that a credential is made of.
+// domainFiles hold the part of this package that reaches nothing outward:
+// what a credential is made of, and its place in a context.
 // postgres.go holds a driver and reaches outward on purpose, and does not
 // belong on the list below.
-var domainFiles = []string{"credential.go"}
+var domainFiles = []string{"credential.go", "context.go"}
 
 // allowed is everything those files may import. An allow list rather than a
 // block list, because the import worth catching is the one nobody thought to
@@ -21,8 +22,8 @@ var domainFiles = []string{"credential.go"}
 // called. A credential shaped by what a database returns is no longer a
 // credential.
 var allowed = []string{
-	"crypto/hmac", "crypto/rand", "crypto/sha256", "encoding/hex", "errors",
-	"fmt", "io", "log/slog", "time",
+	"context", "crypto/hmac", "crypto/rand", "crypto/sha256", "encoding/hex",
+	"errors", "fmt", "io", "log/slog", "time",
 }
 
 func TestImports_TheDomainReachesNothingOutsideItself(t *testing.T) {

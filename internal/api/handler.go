@@ -17,16 +17,19 @@ const maxErrorBytes = 512
 // to report rather than a failure.
 type Ready func(context.Context) error
 
-// Handler returns the routes an instance serves.
+// Handler returns the routes an instance serves, each behind what it asks of
+// a caller.
 //
 // database may be nil, which is what an instance configured without one
 // passes. A function rather than an interface, so that "no database" is a nil
 // nobody can get wrong: a nil pointer in a non-nil interface would read as
-// configured and panic when asked.
-func Handler(log *slog.Logger, database Ready) http.Handler {
+// configured and panic when asked. credentials is nil in the same instance,
+// and [Credentials] says what that refuses.
+func Handler(log *slog.Logger, database Ready, credentials Credentials) http.Handler {
 	mux := http.NewServeMux()
+	a := auth{log: log, credentials: credentials}
 	for _, r := range routes(log, database) {
-		mux.HandleFunc(r.pattern, r.handle)
+		mux.HandleFunc(r.pattern, a.admit(r.needs, r.handle))
 	}
 	return record(log, mux)
 }

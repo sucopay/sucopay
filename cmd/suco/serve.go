@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	"github.com/sucopay/sucopay/internal/api"
+	"github.com/sucopay/sucopay/internal/credential"
 	"github.com/sucopay/sucopay/internal/invisible"
 	"github.com/sucopay/sucopay/internal/postgres"
 )
@@ -36,7 +37,10 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		return err
 	}
 
-	var ready api.Ready
+	var (
+		ready       api.Ready
+		credentials api.Credentials
+	)
 	if cfg.Database.URL != "" {
 		db, err := postgres.Open(ctx, cfg.Database.URL)
 		if err != nil {
@@ -44,6 +48,11 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		defer db.Close()
 		ready = db.Ping
+		key, err := credential.ParseKey(cfg.Credentials.Key)
+		if err != nil {
+			return err
+		}
+		credentials = credential.NewPostgres(db.Conns(), key, cfg.Credentials.KeyID)
 
 		// Applied at every start rather than by a command an operator has to
 		// know about, which would leave an evaluator with an empty database
@@ -63,7 +72,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 
 	addr := net.JoinHostPort(cfg.Listen.Host, strconv.Itoa(cfg.Listen.Port))
-	server, err := api.Listen(addr, api.Handler(log, ready), log)
+	server, err := api.Listen(addr, api.Handler(log, ready, credentials), log)
 	if err != nil {
 		return err
 	}
