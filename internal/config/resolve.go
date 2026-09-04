@@ -2,6 +2,7 @@ package config
 
 import (
 	"cmp"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -39,13 +40,16 @@ func Resolve(doc map[string]any, env Lookup) (Resolved, error) {
 	logFormat := r.text("log.format", DefaultLogFormat)
 	managed := r.boolean("database.managed", true)
 	dbURL := r.text("database.url", "")
+	credentialsKey := r.text("credentials.key", "")
+	credentialsKeyID := r.text("credentials.key_id", "")
 	networks := r.networks()
 
 	cfg := Config{
-		Listen:   Listen{Host: host, Port: port, BaseURL: baseURL},
-		Log:      Log{Level: logLevel, Format: logFormat},
-		Database: Database{Managed: managed, URL: dbURL},
-		Networks: networks,
+		Listen:      Listen{Host: host, Port: port, BaseURL: baseURL},
+		Log:         Log{Level: logLevel, Format: logFormat},
+		Database:    Database{Managed: managed, URL: dbURL},
+		Credentials: Credentials{Key: credentialsKey, KeyID: credentialsKeyID},
+		Networks:    networks,
 	}
 	r.validate(cfg)
 	r.reportUnknownKeys()
@@ -259,6 +263,7 @@ func (r *reader) validate(cfg Config) {
 	}
 	if !r.failed("database.managed") && !r.failed("database.url") {
 		r.validateDatabase(cfg.Database)
+		r.validateCredentials(cfg.Database, cfg.Credentials)
 	}
 	r.validateLog(cfg.Log)
 	for name, n := range cfg.Networks {
@@ -329,6 +334,44 @@ func (r *reader) validateLog(l Log) {
 	if !r.failed("log.format") && !slices.Contains(LogFormats, l.Format) {
 		r.fail("log.format", "want one of %s, got %v",
 			strings.Join(LogFormats, ", "), invisible.Quote(l.Format))
+	}
+}
+
+// keyBytes is how much material a credential's stored form is hashed under.
+// The setting carries it as hexadecimal, an environment variable being text.
+const keyBytes = 32
+
+// validateCredentials refuses a missing key and one an instance could not
+// hash with, and refuses a key carrying no identifier.
+//
+// Required once a database is named, which is when a credential can be stored
+// and read back. An instance answering only /healthz holds none, and asking it
+// for a secret first would put one in front of finding out whether the thing
+// runs at all.
+//
+// Named against database.url because that is what serve opens on. A database
+// reached some other way would have to be named here too, or an instance would
+// read credentials with no key checked.
+func (r *reader) validateCredentials(db Database, c Credentials) {
+	// Length is checked after decoding. Thirty-two characters of hexadecimal
+	// are sixteen bytes, and a check on the text would take them for enough.
+	if !r.failed("credentials.key") {
+		switch raw, err := hex.DecodeString(c.Key); {
+		case c.Key == "":
+			// Not required until a database is named. A section contradicting
+			// itself has not named one, so [reader.failed] is asked about the
+			// whole of database as well as about its parts.
+			if db.URL != "" && !r.failed("database") {
+				r.fail("credentials.key", "required when a database is configured")
+			}
+		case err != nil:
+			r.fail("credentials.key", "not hexadecimal")
+		case len(raw) != keyBytes:
+			r.fail("credentials.key", "want %d bytes of hexadecimal", keyBytes)
+		}
+	}
+	if c.Key != "" && c.KeyID == "" && !r.failed("credentials.key_id") {
+		r.fail("credentials.key_id", "required alongside credentials.key")
 	}
 }
 

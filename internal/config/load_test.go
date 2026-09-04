@@ -78,7 +78,8 @@ func errorLine(t *testing.T, err error) int {
 
 func TestLoad_ReadsTheDocumentAndResolvesIt(t *testing.T) {
 	t.Parallel()
-	path := writeDocument(t, "listen:\n  port: 9000\ndatabase:\n  managed: false\n  url: ${SUCO_DATABASE_URL}\n")
+	path := writeDocument(t, "listen:\n  port: 9000\ndatabase:\n  managed: false\n  url: ${SUCO_DATABASE_URL}\n"+
+		"credentials:\n  key: "+testKey+"\n  key_id: testkey\n")
 	env := envOf(map[string]string{"SUCO_DATABASE_URL": "postgres://localhost/suco"})
 
 	got, err := config.Load(path, env)

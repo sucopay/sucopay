@@ -29,7 +29,7 @@ func TestReport_ReducesASecretToWhetherItIsSet(t *testing.T) {
 	}{
 		{
 			name: "supplied",
-			doc:  map[string]any{"database": map[string]any{"managed": false, "url": "${SUCO_DATABASE_URL}"}},
+			doc:  withKey(map[string]any{"database": map[string]any{"managed": false, "url": "${SUCO_DATABASE_URL}"}}),
 			env:  envOf(map[string]string{"SUCO_DATABASE_URL": dsn}),
 			want: "set",
 		},
@@ -62,7 +62,7 @@ func TestReport_ReducesASecretToWhetherItIsSet(t *testing.T) {
 
 func TestReport_KeepsTheVariableNameOfASecretVisible(t *testing.T) {
 	t.Parallel()
-	doc := map[string]any{"database": map[string]any{"managed": false, "url": "${SUCO_DATABASE_URL}"}}
+	doc := withKey(map[string]any{"database": map[string]any{"managed": false, "url": "${SUCO_DATABASE_URL}"}})
 	env := envOf(map[string]string{"SUCO_DATABASE_URL": "postgres://localhost/suco"})
 
 	lines := mustResolve(t, doc, env).Report()
@@ -126,5 +126,29 @@ func TestReport_QuotesWhatWouldOtherwiseForgeALine(t *testing.T) {
 		if strings.ContainsAny(line.Value, "\n\t\x1b") {
 			t.Errorf("value %q reaches a report unquoted", line.Value)
 		}
+	}
+}
+
+// withKey adds the credentials a document naming a database has to carry, so
+// that a case about something else does not have to say so itself.
+func withKey(doc map[string]any) map[string]any {
+	doc["credentials"] = map[string]any{"key": testKey, "key_id": "testkey"}
+	return doc
+}
+
+// The credentials key is held to the same rule as the database URL. Sharing
+// the code that hides them is why this passes; sharing it is also why nothing
+// would notice if the paths stopped matching.
+func TestReport_ReducesTheCredentialsKeyToWhetherItIsSet(t *testing.T) {
+	t.Parallel()
+	doc := map[string]any{"credentials": map[string]any{"key": testKey, "key_id": "testkey"}}
+
+	lines := mustResolve(t, doc, noEnv).Report()
+
+	if got := lineAt(t, lines, "credentials.key").Value; got != "set" {
+		t.Errorf("credentials.key reads %q, want set", got)
+	}
+	if got := lineAt(t, lines, "credentials.key_id").Value; got != "testkey" {
+		t.Errorf("credentials.key_id reads %q, want its value", got)
 	}
 }

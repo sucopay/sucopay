@@ -32,13 +32,15 @@ type ReportLine struct {
 // Config assembled without it can put a secret at a path this does not match.
 func (r Resolved) Report() []ReportLine {
 	values := map[string]string{
-		"listen.host":      r.Config.Listen.Host,
-		"listen.port":      strconv.Itoa(r.Config.Listen.Port),
-		"listen.base_url":  r.Config.Listen.BaseURL,
-		"log.level":        r.Config.Log.Level,
-		"log.format":       r.Config.Log.Format,
-		"database.managed": strconv.FormatBool(r.Config.Database.Managed),
-		"database.url":     r.Config.Database.URL,
+		"listen.host":        r.Config.Listen.Host,
+		"listen.port":        strconv.Itoa(r.Config.Listen.Port),
+		"listen.base_url":    r.Config.Listen.BaseURL,
+		"log.level":          r.Config.Log.Level,
+		"log.format":         r.Config.Log.Format,
+		"database.managed":   strconv.FormatBool(r.Config.Database.Managed),
+		"database.url":       r.Config.Database.URL,
+		"credentials.key":    r.Config.Credentials.Key,
+		"credentials.key_id": r.Config.Credentials.KeyID,
 	}
 	for name, n := range r.Config.Networks {
 		values["networks."+name+".kind"] = n.Kind

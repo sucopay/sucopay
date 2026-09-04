@@ -111,6 +111,18 @@ type Database struct {
 	URL     string
 }
 
+// Credentials is what an instance needs to read a stored credential.
+type Credentials struct {
+	// Key is what the stored form of a credential is hashed under. Empty
+	// unless a document sets one, and required once database.url is set,
+	// because that is when a credential can be stored and read back.
+	Key string
+	// KeyID says which key a stored credential was made with. Not a secret,
+	// and derived from nothing: a value taken from the key would let whoever
+	// read the table test a guess at the key without a credential in hand.
+	KeyID string
+}
+
 // Network is one chain the instance can observe. Kind names how to reach it;
 // only "simulated", a chain that runs inside the server, is accepted so far.
 type Network struct {
@@ -122,10 +134,11 @@ type Network struct {
 // document before it returns one; a Config assembled any other way has not been
 // checked.
 type Config struct {
-	Listen   Listen
-	Log      Log
-	Database Database
-	Networks map[string]Network
+	Listen      Listen
+	Log         Log
+	Database    Database
+	Credentials Credentials
+	Networks    map[string]Network
 }
 
 // Resolved is a Config together with where each of its values came from.
@@ -181,6 +194,7 @@ func (ps Problems) Error() string {
 // secretPaths are the dotted paths whose values never appear in a report. A
 // path ending in * matches any single segment in that position.
 var secretPaths = []string{
+	"credentials.key",
 	"database.url",
 	"networks.*.rpc",
 }

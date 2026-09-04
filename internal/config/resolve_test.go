@@ -160,8 +160,9 @@ func TestResolve_NamesTheVariableWhenItsValueHasTheWrongType(t *testing.T) {
 func TestResolve_RecordsWhereEachValueCameFrom(t *testing.T) {
 	t.Parallel()
 	doc := map[string]any{
-		"listen":   map[string]any{"port": uint64(9000)},
-		"database": map[string]any{"managed": false, "url": "${SUCO_DATABASE_URL}"},
+		"listen":      map[string]any{"port": uint64(9000)},
+		"database":    map[string]any{"managed": false, "url": "${SUCO_DATABASE_URL}"},
+		"credentials": map[string]any{"key": testKey, "key_id": "testkey"},
 	}
 	env := envOf(map[string]string{"SUCO_DATABASE_URL": "postgres://localhost/suco"})
 
@@ -556,10 +557,12 @@ func TestResolve_RejectsAValueOfTheWrongShape(t *testing.T) {
 
 func TestResolve_ReadsTrueAndFalseWrittenAsText(t *testing.T) {
 	t.Parallel()
-	doc := map[string]any{"database": map[string]any{
-		"managed": "false",
-		"url":     "postgres://localhost/suco",
-	}}
+	doc := map[string]any{
+		"credentials": map[string]any{"key": testKey, "key_id": "testkey"},
+		"database": map[string]any{
+			"managed": "false",
+			"url":     "postgres://localhost/suco",
+		}}
 
 	got := mustResolve(t, doc, noEnv).Config
 
@@ -677,7 +680,8 @@ func TestResolve_AcceptsCredentialsAtASecretSetting(t *testing.T) {
 	const dsn = "postgres://admin:hunter2@db.internal/sucopay"
 
 	got, err := config.Resolve(map[string]any{
-		"database": map[string]any{"managed": false, "url": dsn},
+		"database":    map[string]any{"managed": false, "url": dsn},
+		"credentials": map[string]any{"key": testKey, "key_id": "testkey"},
 	}, noEnv)
 
 	if err != nil {
@@ -746,5 +750,132 @@ func TestResolve_DefaultsToInfoAndText(t *testing.T) {
 
 	if got.Config.Log.Level != "info" || got.Config.Log.Format != "text" {
 		t.Errorf("log = %+v, want info and text", got.Config.Log)
+	}
+}
+
+// testKey is 32 bytes as the setting carries them.
+const testKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+// withDatabase returns a document naming a database, which is what makes the
+// credentials key required.
+func withDatabase(credentials map[string]any) map[string]any {
+	doc := map[string]any{"database": map[string]any{
+		"managed": false,
+		"url":     "postgres://localhost/suco",
+	}}
+	if credentials != nil {
+		doc["credentials"] = credentials
+	}
+	return doc
+}
+
+func TestResolve_RequiresACredentialsKeyWhenThereIsADatabase(t *testing.T) {
+	t.Parallel()
+	_, err := config.Resolve(withDatabase(nil), noEnv)
+
+	wantProblemAt(t, err, "credentials.key")
+}
+
+// Without a database there is no table to hold a credential and nothing to
+// hash, so a deployment that only answers /healthz does not have to be handed
+// a secret before it will start.
+func TestResolve_AsksForNoCredentialsKeyWithoutADatabase(t *testing.T) {
+	t.Parallel()
+	got := mustResolve(t, map[string]any{}, noEnv).Config
+
+	if got.Credentials.Key != "" {
+		t.Errorf("key = %q, want none", got.Credentials.Key)
+	}
+}
+
+func TestResolve_RejectsACredentialsKeyThatIsNotThirtyTwoBytes(t *testing.T) {
+	t.Parallel()
+	doc := withDatabase(map[string]any{"key": testKey[:32], "key_id": "abcd1234"})
+
+	_, err := config.Resolve(doc, noEnv)
+
+	wantProblemAt(t, err, "credentials.key")
+}
+
+func TestResolve_RejectsACredentialsKeyThatIsNotHexadecimal(t *testing.T) {
+	t.Parallel()
+	doc := withDatabase(map[string]any{"key": strings.Repeat("z", 64), "key_id": "abcd1234"})
+
+	_, err := config.Resolve(doc, noEnv)
+
+	wantProblemAt(t, err, "credentials.key")
+}
+
+// The identifier says which key a stored credential was made with. A key
+// without one leaves a deployment given the wrong key looking exactly like a
+// deployment whose credentials were all revoked.
+func TestResolve_RequiresAnIdentifierAlongsideTheKey(t *testing.T) {
+	t.Parallel()
+	doc := withDatabase(map[string]any{"key": testKey})
+
+	_, err := config.Resolve(doc, noEnv)
+
+	wantProblemAt(t, err, "credentials.key_id")
+}
+
+func TestResolve_KeepsTheCredentialsKeyFromTheEnvironment(t *testing.T) {
+	t.Parallel()
+	doc := withDatabase(map[string]any{"key": "${SUCO_CREDENTIALS_KEY}", "key_id": "abcd1234"})
+
+	got := mustResolve(t, doc, envOf(map[string]string{"SUCO_CREDENTIALS_KEY": testKey})).Config
+
+	if got.Credentials.Key != testKey {
+		t.Errorf("key = %q, want it read from the environment", got.Credentials.Key)
+	}
+	if got.Credentials.KeyID != "abcd1234" {
+		t.Errorf("key_id = %q, want abcd1234", got.Credentials.KeyID)
+	}
+}
+
+// The same rule the database URL is held to: a reference that did not resolve
+// leaves the key empty, and saying it is also required points at the empty
+// string rather than at the variable.
+func TestResolve_ReportsTheCauseWhenTheCredentialsKeyDoesNotResolve(t *testing.T) {
+	t.Parallel()
+	doc := withDatabase(map[string]any{"key": "${SUCO_CREDENTIALS_KEY}", "key_id": "testkey"})
+
+	_, err := config.Resolve(doc, envOf(map[string]string{"SUCO_DATABASE_URL": "postgres://x/y"}))
+
+	got := problems(t, err)
+	if len(got) != 1 {
+		t.Fatalf("got %d problems, want 1: %v", len(got), got)
+	}
+	if !strings.Contains(got[0].Message, "SUCO_CREDENTIALS_KEY") {
+		t.Errorf("message %q does not name the variable that failed to resolve", got[0].Message)
+	}
+}
+
+func TestResolve_ReportsTheCauseWhenTheIdentifierDoesNotResolve(t *testing.T) {
+	t.Parallel()
+	doc := withDatabase(map[string]any{"key": testKey, "key_id": "${SUCO_KEY_ID}"})
+
+	_, err := config.Resolve(doc, noEnv)
+
+	got := problems(t, err)
+	if len(got) != 1 {
+		t.Fatalf("got %d problems, want 1: %v", len(got), got)
+	}
+}
+
+// A database that is both managed and given a URL has not settled which it is,
+// so it has not named one to need a key for.
+func TestResolve_AsksForNoKeyWhileTheDatabaseContradictsItself(t *testing.T) {
+	t.Parallel()
+	doc := map[string]any{"database": map[string]any{
+		"managed": true,
+		"url":     "postgres://x/y",
+	}}
+
+	_, err := config.Resolve(doc, noEnv)
+
+	for _, p := range problems(t, err) {
+		if p.Path == "credentials.key" {
+			t.Errorf("asked for a key on top of a database that has not settled: %v", p)
+		}
 	}
 }

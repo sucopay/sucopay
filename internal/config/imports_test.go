@@ -20,7 +20,8 @@ var resolutionFiles = []string{"config.go", "report.go", "resolve.go"}
 // thought to forbid: an outward package of this project, or whatever a future
 // dependency is called.
 var resolutionImports = []string{
-	"cmp", "errors", "fmt", "math", "net/url", "slices", "strconv", "strings",
+	"cmp", "encoding/hex", "errors", "fmt", "math", "net/url", "slices", "strconv",
+	"strings",
 	// invisible decides which characters a report may carry. It reads
 	// nothing and reaches nothing; it is a list of runes.
 	"github.com/sucopay/sucopay/internal/invisible",

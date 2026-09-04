@@ -77,6 +77,10 @@ func FuzzResolve(f *testing.F) {
 		// environment: what a variable holds is out of the fuzzer's reach, so
 		// nothing it generated could ever exercise the redaction.
 		"database:\n  managed: false\n  url: [\"postgres://admin:hunter2@db/x\"]\n",
+		// The credentials key cannot carry the marker: it has to decode as
+		// hexadecimal to reach a report at all. What this seed exercises is
+		// the other check, that a secret path reads as whether it is set.
+		"credentials:\n  key: " + strings.Repeat("ab", 32) + "\n  key_id: k\n",
 	} {
 		f.Add(seed)
 	}
@@ -114,7 +118,7 @@ func FuzzResolve(f *testing.F) {
 		// The paths are written out rather than taken from config.Secret: the
 		// report decides what to hide with that same function, and one list
 		// driving both sides would hide a change to it from both at once.
-		secretPaths := map[string]bool{"database.url": true}
+		secretPaths := map[string]bool{"database.url": true, "credentials.key": true}
 		for _, line := range resolved.Report() {
 			if strings.Contains(line.Value, "hunter2") {
 				t.Errorf("the report shows a secret setting's value: %v", line)

@@ -402,7 +402,7 @@ func TestRun_DoctorSaysWhetherASecretIsSetAndNeverItsValue(t *testing.T) {
 	}{
 		{
 			name:     "supplied by a variable",
-			document: "database:\n  managed: false\n  url: ${SUCO_DATABASE_URL}\n",
+			document: namingADatabase(),
 			value:    "set",
 			source:   "${SUCO_DATABASE_URL}",
 			refused:  true,
@@ -499,10 +499,18 @@ func TestRun_DoctorFailsWhenTheReportCannotBeWritten(t *testing.T) {
 	}
 }
 
-// namingADatabase is a document pointing at the URL in an environment variable.
+// namingADatabase is a document pointing at the URL in an environment
+// variable, carrying the credentials key a document naming a database has to
+// carry. The key is written in rather than referenced: what these tests are
+// about is the database, and a second variable per test would only be
+// something else to forget to set.
 func namingADatabase() string {
-	return "database:\n  managed: false\n  url: ${SUCO_DATABASE_URL}\n"
+	return "database:\n  managed: false\n  url: ${SUCO_DATABASE_URL}\n" +
+		"credentials:\n  key: " + testKey + "\n  key_id: testkey\n"
 }
+
+// testKey is 32 bytes as the setting carries them.
+const testKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 // freePort returns a port nothing is listening on, so that a test binding one
 // does not depend on which ports this machine has free.

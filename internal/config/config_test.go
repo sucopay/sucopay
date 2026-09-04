@@ -95,6 +95,8 @@ func TestSecret_MatchesTheSecretPathsAndNothingElse(t *testing.T) {
 		want bool
 	}{
 		{"database.url", true},
+		{"credentials.key", true},
+		{"credentials.key_id", false},
 		{"networks.local.rpc", true},
 		{"networks.polygon.rpc", true},
 		{"listen.port", false},
