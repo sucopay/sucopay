@@ -23,20 +23,26 @@ import (
 // does not say otherwise.
 const defaultDocument = "suco.yaml"
 
-// command is one subcommand. Dispatch and the usage text read the same list, so
-// a command cannot exist without being named or be named without existing.
+// command is one subcommand, or a group of them. Dispatch and the usage text
+// read the same list, so a command cannot exist without being named or be
+// named without existing.
 type command struct {
 	name  string
 	about string
 	run   func(ctx context.Context, args []string, stdout io.Writer) error
+	// sub is what a group dispatches into, and is set instead of run.
+	sub []command
 }
 
 var commands = []command{
-	{"init", "write a configuration document", func(_ context.Context, args []string, stdout io.Writer) error {
+	{name: "init", about: "write a configuration document", run: func(_ context.Context, args []string, stdout io.Writer) error {
 		return initialise(args, stdout)
 	}},
-	{"serve", "run the server", serve},
-	{"doctor", "show the resolved configuration and its sources", doctor},
+	{name: "serve", about: "run the server", run: serve},
+	{name: "doctor", about: "show the resolved configuration and its sources", run: doctor},
+	{name: "credential", sub: []command{
+		{name: "new", about: "make a credential, and write its token to a file", run: credentialNew},
+	}},
 }
 
 // load reads the configuration the way every command needing it does, so that
@@ -51,19 +57,25 @@ func load() (config.Resolved, string, error) {
 	return resolved, document, err
 }
 
+// ownDatabase is the refusal of a database suco would run itself: what a
+// document asking for one is refused with, and what a document naming none
+// is refused with by a command that needs one.
+const ownDatabase = "a database of its own is not implemented. Set database.managed to false and give database.url"
+
 // unimplementedError refuses a document that configures something no part of
 // this build reads. Refusing these in the schema would take the settings out
 // before the code that needs them arrives.
 //
-// Both commands that read a document call this, so the refusal doctor gives is
-// the one serve will give. A default for database.managed is a document saying
-// nothing about a database, which is not the same as asking for one.
+// Every command that reads a document calls this, so the refusal doctor gives
+// is the one serve will give. A default for database.managed is a document
+// saying nothing about a database, which is not the same as asking for one:
+// serve serves /healthz without one, and a command that needs one refuses
+// the default itself.
 func unimplementedError(document string, r config.Resolved) error {
 	var refusals []string
 	if source, ok := r.SourceOf("database.managed"); r.Config.Database.Managed &&
 		ok && source.Origin != config.FromDefault {
-		refusals = append(refusals,
-			"a database of its own is not implemented. Set database.managed to false and give database.url")
+		refusals = append(refusals, ownDatabase)
 	}
 	if len(r.Config.Networks) > 0 {
 		refusals = append(refusals,
@@ -101,6 +113,13 @@ func main() {
 var errUsage = errors.New("usage")
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	return dispatch(ctx, commands, "command", args, stdout, stderr)
+}
+
+// dispatch runs the one of cmds that args names, and goes one level down for
+// a group. what is what an unknown name is refused as: a command at the top,
+// and a credential command under credential.
+func dispatch(ctx context.Context, cmds []command, what string, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		usage(stderr)
 		return errUsage
@@ -110,22 +129,37 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		usage(stdout)
 		return nil
 	}
-	for _, c := range commands {
-		if c.name == args[0] {
-			return c.run(ctx, args[1:], stdout)
+	for _, c := range cmds {
+		if c.name != args[0] {
+			continue
 		}
+		if c.sub != nil {
+			return dispatch(ctx, c.sub, c.name+" command", args[1:], stdout, stderr)
+		}
+		return c.run(ctx, args[1:], stdout)
 	}
 	usage(stderr)
-	return fmt.Errorf("unknown command %q", args[0])
+	return fmt.Errorf("unknown %s %q", what, args[0])
 }
 
 func usage(w io.Writer) {
 	fmt.Fprint(w, "suco Pay\n\nUsage:\n")
 	tw := tabwriter.NewWriter(w, 0, 0, 4, ' ', 0)
-	for _, c := range commands {
-		fmt.Fprintf(tw, "  suco %s\t%s\n", c.name, c.about)
-	}
+	lines(tw, commands, "suco")
 	fmt.Fprintf(tw, "  suco %s\t%s\n", "help", "show this text")
 	tw.Flush()
 	fmt.Fprintln(w)
+}
+
+// lines names every command under cmds, each with the words that reach it,
+// under being the words so far. A group is not a command and has no line of
+// its own.
+func lines(w io.Writer, cmds []command, under string) {
+	for _, c := range cmds {
+		if c.sub != nil {
+			lines(w, c.sub, under+" "+c.name)
+			continue
+		}
+		fmt.Fprintf(w, "  %s %s\t%s\n", under, c.name, c.about)
+	}
 }

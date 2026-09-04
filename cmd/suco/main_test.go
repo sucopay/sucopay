@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -67,36 +68,47 @@ func reportLine(t *testing.T, report, path string) string {
 	return ""
 }
 
-func TestRun_WithoutArgumentsWritesUsageAndFails(t *testing.T) {
+func TestRun_WithoutACommandWritesUsageAndFails(t *testing.T) {
 	t.Parallel()
-	stdout, stderr, err := runArgs(t)
+	// suco alone, and a command that is only a group of commands alone.
+	for _, args := range [][]string{{}, {"credential"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			t.Parallel()
+			stdout, stderr, err := runArgs(t, args...)
 
-	if !errors.Is(err, errUsage) {
-		t.Fatalf("err = %v, want errUsage", err)
-	}
-	if !strings.Contains(stderr, "suco serve") {
-		t.Errorf("stderr does not carry the usage text: %q", stderr)
-	}
-	if strings.Contains(stderr, "usage\n") {
-		t.Errorf("the sentinel leaked into the output: %q", stderr)
-	}
-	if stdout != "" {
-		t.Errorf("stdout = %q, want nothing", stdout)
+			if !errors.Is(err, errUsage) {
+				t.Fatalf("err = %v, want errUsage", err)
+			}
+			if !strings.Contains(stderr, "suco serve") {
+				t.Errorf("stderr does not carry the usage text: %q", stderr)
+			}
+			if strings.Contains(stderr, "usage\n") {
+				t.Errorf("the sentinel leaked into the output: %q", stderr)
+			}
+			if stdout != "" {
+				t.Errorf("stdout = %q, want nothing", stdout)
+			}
+		})
 	}
 }
 
 func TestRun_UnknownCommandNamesIt(t *testing.T) {
 	t.Parallel()
-	_, stderr, err := runArgs(t, "nope")
+	for _, args := range [][]string{{"nope"}, {"credential", "nope"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			t.Parallel()
+			_, stderr, err := runArgs(t, args...)
 
-	if err == nil {
-		t.Fatal("want an error, got none")
-	}
-	if !strings.Contains(err.Error(), `"nope"`) {
-		t.Errorf("error does not name the command: %v", err)
-	}
-	if !strings.Contains(stderr, "suco serve") {
-		t.Errorf("stderr does not carry the usage text: %q", stderr)
+			if err == nil {
+				t.Fatal("want an error, got none")
+			}
+			if !strings.Contains(err.Error(), `"nope"`) {
+				t.Errorf("error does not name the command: %v", err)
+			}
+			if !strings.Contains(stderr, "suco serve") {
+				t.Errorf("stderr does not carry the usage text: %q", stderr)
+			}
+		})
 	}
 }
 
@@ -122,11 +134,11 @@ func TestRun_HelpWritesUsageToStdoutAndSucceeds(t *testing.T) {
 // Every command reading a document meets a missing one through load, so the
 // sentence it gives is asserted once rather than once per command.
 func TestRun_WithoutADocumentNamesTheCommandThatWritesOne(t *testing.T) {
-	for _, name := range []string{"serve", "doctor"} {
-		t.Run(name, func(t *testing.T) {
+	for _, args := range [][]string{{"serve"}, {"doctor"}, {"credential", "new", "--read-only"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			t.Setenv("SUCO_CONFIG", filepath.Join(t.TempDir(), "absent.yaml"))
 
-			_, _, err := runArgs(t, name)
+			_, _, err := runArgs(t, args...)
 
 			if err == nil {
 				t.Fatal("want an error, got none")
@@ -141,12 +153,24 @@ func TestRun_WithoutADocumentNamesTheCommandThatWritesOne(t *testing.T) {
 	}
 }
 
+// paths is every command the table names, as the words that reach it: a
+// group of commands and each command under it.
+func paths(cmds []command, under ...string) [][]string {
+	var all [][]string
+	for _, c := range cmds {
+		path := append(slices.Clone(under), c.name)
+		all = append(all, path)
+		all = append(all, paths(c.sub, path...)...)
+	}
+	return all
+}
+
 func TestRun_EveryCommandNamesAnArgumentItDoesNotTake(t *testing.T) {
-	for _, c := range commands {
-		t.Run(c.name, func(t *testing.T) {
+	for _, path := range paths(commands) {
+		t.Run(strings.Join(path, " "), func(t *testing.T) {
 			t.Setenv("SUCO_CONFIG", filepath.Join(t.TempDir(), "suco.yaml"))
 
-			_, _, err := runArgs(t, c.name, "extra")
+			_, _, err := runArgs(t, append(path, "extra")...)
 
 			if err == nil {
 				t.Fatal("want an error, got none")
@@ -182,9 +206,9 @@ func TestUsage_NamesEveryCommandThatExistsAndNoOther(t *testing.T) {
 	named := func(name string) bool {
 		return regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\b`).MatchString(out.String())
 	}
-	for _, c := range commands {
-		if !named(c.name) {
-			t.Errorf("usage does not name %s:\n%s", c.name, out.String())
+	for _, path := range paths(commands) {
+		if name := strings.Join(path, " "); !named(name) {
+			t.Errorf("usage does not name %s:\n%s", name, out.String())
 		}
 	}
 	if !named("help") {
@@ -200,16 +224,17 @@ func TestUsage_NamesEveryCommandThatExistsAndNoOther(t *testing.T) {
 // TestRun_DispatchesEveryCommandItNames keeps the usage text and the dispatch
 // from drifting apart by reading the same list both do.
 func TestRun_DispatchesEveryCommandItNames(t *testing.T) {
-	for _, c := range commands {
-		t.Run(c.name, func(t *testing.T) {
+	for _, path := range paths(commands) {
+		t.Run(strings.Join(path, " "), func(t *testing.T) {
 			t.Setenv("SUCO_CONFIG", filepath.Join(t.TempDir(), "suco.yaml"))
-			_, _, err := runArgs(t, c.name, "an-argument-no-command-takes")
+			_, _, err := runArgs(t, append(path, "an-argument-no-command-takes")...)
 
 			if err == nil {
 				t.Fatal("want an error, got none")
 			}
-			if strings.Contains(err.Error(), "unknown command") {
-				t.Errorf("%s is named in the usage text but not dispatched", c.name)
+			// What an unknown command is refused with ends by naming it.
+			if strings.HasSuffix(err.Error(), fmt.Sprintf("command %q", path[len(path)-1])) {
+				t.Errorf("%s is named in the usage text but not dispatched: %v", strings.Join(path, " "), err)
 			}
 		})
 	}

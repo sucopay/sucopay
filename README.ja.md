@@ -31,7 +31,7 @@ suco Pay は自社のインフラで動作します。資金は顧客のウォ�
 - [ ] Refund: 記録と送金指示の作成
 - [ ] 照合: 内部状態とチェーンの定期突合
 - [ ] Console: Payment と Transaction の照会、返金、Webhook 送信履歴
-- [x] CLI: `init` `serve` `doctor`
+- [x] CLI: `init` `serve` `doctor` `credential`
 
 ## インストール
 
@@ -47,6 +47,8 @@ go build -o suco ./cmd/suco
 解決後の設定値と、それぞれの出所を表示します。秘密のキーについては、値ではなく設定されて
 いるかどうかだけが出ます。`suco serve` は `http://localhost:7826` で待ち受けます。`/healthz` はプロセスが動いていることを、
 `/readyz` は必要なものに届いているかを答えます。走っている間に起きたことは stdout に書きます。
+データベースを設定した配備では、`suco credential new --read-only` か `--read-write` が API の
+資格情報を 1 本作り、トークンを所有者だけが読めるファイルへ書きます。
 
 インストールスクリプトとビルド済みバイナリは最初のリリースで用意します。上の一覧にある機能は
 まだありません。

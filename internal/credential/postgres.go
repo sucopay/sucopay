@@ -50,6 +50,28 @@ func NewPostgres(pool *pgxpool.Pool, key Key, keyID string) *Postgres {
 // columns is what a Credential is read from, in the order scan reads them.
 const columns = `id, scope, account_id, capability, key_id, last_used_at`
 
+// Accounts reads every account a credential can be of, in no order a caller
+// may rely on.
+//
+// What issues a credential asks this before [Postgres.Create]: which accounts
+// there are is the database's to say. The first migration writes the one a
+// deployment has, and a build carrying a copy of that value would go on
+// issuing to it after a migration had written a second.
+func (s *Postgres) Accounts(ctx context.Context) ([]AccountID, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx, `select id from accounts`)
+	if err != nil {
+		return nil, fmt.Errorf("accounts: %w", err)
+	}
+	accounts, err := pgx.CollectRows(rows, pgx.RowTo[AccountID])
+	if err != nil {
+		return nil, fmt.Errorf("accounts: %w", err)
+	}
+	return accounts, nil
+}
+
 // Create stores a credential of one account and returns its token, which then
 // exists nowhere else: not in the row, which holds the hash, and not here.
 //

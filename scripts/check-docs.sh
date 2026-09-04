@@ -30,8 +30,10 @@ suco="$(mktemp)"
 trap 'rm -f "$suco"' EXIT
 go build -o "$suco" ./cmd/suco
 
-# help is a command but not a feature, so the READMEs leave it out.
-dispatched="$("$suco" help | sed -n 's/^  suco \([a-z][a-z]*\).*/\1/p' | sed '/^help$/d' | sort | tr '\n' ' ')"
+# help is a command but not a feature, so the READMEs leave it out. The first
+# word after suco is what a README names; a group of commands has one line
+# per command and one word in a README.
+dispatched="$("$suco" help | sed -n 's/^  suco \([a-z][a-z]*\).*/\1/p' | sed '/^help$/d' | sort -u | tr '\n' ' ')"
 
 for readme in README.md README.ja.md; do
   line="$(grep -m1 -E "$list" "$readme" || true)"

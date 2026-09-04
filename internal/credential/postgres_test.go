@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -132,6 +133,23 @@ func TestStore_FindsByTokenWhatCreateMadeForEachAccount(t *testing.T) {
 	}
 }
 
+func TestStore_ReadsEveryAccountACredentialCanBeOf(t *testing.T) {
+	t.Parallel()
+	// The one the schema makes and the one the tests add, so that a read
+	// stopping at the first row is told apart from one reading them all.
+	s, _ := store(t)
+
+	got, err := s.Accounts(t.Context())
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(got)
+	if want := []credential.AccountID{first, other}; !slices.Equal(got, want) {
+		t.Errorf("accounts = %v, want %v", got, want)
+	}
+}
+
 func TestStore_DoesNotSayWhyATokenIsNotFound(t *testing.T) {
 	t.Parallel()
 	// Whoever presents a token that is not found learns that and nothing else.
@@ -210,7 +228,7 @@ func TestStore_FailsWithoutReadingWhenNoConnectionIsFree(t *testing.T) {
 	// A request is authenticated before anything else, so this wait is what
 	// every request pays when the database is behind. It has to end, and it
 	// has to end without a connection: one opened for the failure would be
-	// one more thing the database is behind on. The other four calls are
+	// one more thing the database is behind on. The other five calls are
 	// under the same deadline, so that a list run against a database that
 	// is behind ends as well.
 	const name = "suco-credential-held-test"
@@ -285,11 +303,12 @@ func TestStore_ReportsADatabaseItCannotReach(t *testing.T) {
 }
 
 // methods is each call the store has, made with what a stored credential
-// gives a caller, for the tests that run all five against a database they
+// gives a caller, for the tests that run all six against a database they
 // cannot reach. The use recorded is of a credential never used, which is the
 // one call that has to write.
 func methods(t *testing.T, s *credential.Postgres, id credential.ID, token credential.Token) map[string]func() error {
 	return map[string]func() error{
+		"Accounts":    func() error { _, err := s.Accounts(t.Context()); return err },
 		"Create":      func() error { _, _, err := s.Create(t.Context(), first, credential.ReadOnly, sometime); return err },
 		"FindByToken": func() error { _, err := s.FindByToken(t.Context(), token); return err },
 		"List":        func() error { _, err := s.List(t.Context()); return err },
