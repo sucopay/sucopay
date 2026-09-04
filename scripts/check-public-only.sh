@@ -27,7 +27,7 @@ done < <(grep -rl --exclude-dir=.git --exclude=check-public-only.sh -e "$marker"
 # reference was carrying has to be said here instead.
 while IFS= read -r -d '' f; do
   [ "$f" = "scripts/check-public-only.sh" ] && continue
-  if grep -nE '\[?ADR [0-9]|decisions/adr/' "$f" >/dev/null 2>&1; then
+  if grep -nE '\[?ADR [0-9]|decisions/adr/|sucopay-strategy|open-questions|strategy repository|private repository' "$f" >/dev/null 2>&1; then
     note "$f cites a document only the private repository has."
   fi
 done < <(git ls-files -z --cached --others --exclude-standard)
