@@ -27,6 +27,9 @@ type Ready func(context.Context) error
 // and [Credentials] says what that refuses.
 func Handler(log *slog.Logger, database Ready, credentials Credentials) http.Handler {
 	mux := http.NewServeMux()
+	// TODO(1101hirokin): every route served is open, so no request reaches
+	// credentials through here yet, and no test shows that this passes it
+	// on. The first route that asks for a credential will.
 	a := auth{log: log, credentials: credentials}
 	for _, r := range routes(log, database) {
 		mux.HandleFunc(r.pattern, a.admit(r.needs, r.handle))

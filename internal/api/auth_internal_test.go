@@ -484,6 +484,18 @@ func TestAdmit_ReadsTheSchemeInEitherCase(t *testing.T) {
 	f.expect(f.do(http.MethodGet, f.stored(first), "bearer "+string(token)), http.StatusOK, true)
 }
 
+func TestAdmit_AsksAHeadRequestForWhatItAsksAGet(t *testing.T) {
+	t.Parallel()
+	// The mux serves HEAD with the handler of the GET pattern, and admit asks
+	// the same of it: a body left out is a payment read all the same.
+	f := served(t)
+	token := f.created(first, credential.ReadOnly)
+	at := f.stored(first)
+
+	f.expect(f.do(http.MethodHead, at, ""), http.StatusUnauthorized, false)
+	f.expect(f.do(http.MethodHead, at, bearing(token)), http.StatusOK, true)
+}
+
 // held is a credential store holding one credential, which any token
 // presents.
 type held credential.Credential

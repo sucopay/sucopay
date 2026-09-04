@@ -86,6 +86,10 @@ func (a auth) admit(needs access, next http.HandlerFunc) http.HandlerFunc {
 // answer to one nobody issued. Checking its shape here would give a
 // malformed one an answer of its own.
 //
+// A header under another scheme is refused before any lookup, and every
+// token is looked up. How long a 401 took says at most which of the two the
+// header was, and whoever sent it knows that already.
+//
 // The scheme is compared as [http.Request.BasicAuth] compares its own: a
 // scheme is case-insensitive, and the token after it is not.
 func bearer(header string) (credential.Token, bool) {
@@ -103,8 +107,9 @@ func bearer(header string) (credential.Token, bool) {
 // it was is what whoever is guessing at a token would want to know.
 //
 // The header names the scheme, which RFC 9110 requires of a 401, and names
-// no error alongside it. RFC 6750 would have a malformed token answered 400
-// and a revoked one told so, and both are answers of their own.
+// no error alongside it. RFC 6750 would have it say invalid_token for a
+// revoked or malformed one and nothing for a request with no header, and
+// that is an answer of its own for each.
 func unauthorized(w http.ResponseWriter) {
 	w.Header().Set("WWW-Authenticate", "Bearer")
 	writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
