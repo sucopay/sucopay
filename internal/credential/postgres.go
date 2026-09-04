@@ -150,6 +150,49 @@ func (s *Postgres) Revoke(ctx context.Context, id ID, now time.Time) error {
 	return nil
 }
 
+// useInterval is how long a recorded use stands for the uses after it.
+// Written on every request, the row would be a lock the requests of one
+// client take in turn, and an hour is enough for what last_used_at is read
+// for: telling the credentials in use from the ones a script made and
+// abandoned.
+const useInterval = time.Hour
+
+// RecordUse writes that c was used at now, unless the row already says it
+// was used within the hour.
+//
+// c is what FindByToken returned, and its LastUsedAt is what decides: within
+// useInterval of it, nothing is written and the database is not asked. The
+// row is not read again to decide. The statement's where clause holds the
+// same hour, for the N workers of one client that read an old value in the
+// same moment: the second and later updates wait on the row lock, re-read
+// the row the winner wrote, match nothing, and return. The cast in that
+// clause is for the parser, which would otherwise read $2 beside an
+// interval as one.
+//
+// An update that matches no row is the usual outcome, and nothing tells it
+// from an ID no row has. The ID came out of FindByToken a moment ago.
+//
+// Like every call this one is under storeTimeout, after FindByToken has had
+// its own, so the request that writes waits at most twice. That request is
+// the first of its credential's hour.
+func (s *Postgres) RecordUse(ctx context.Context, c Credential, now time.Time) error {
+	if !c.LastUsedAt.IsZero() && now.Sub(c.LastUsedAt) <= useInterval {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	if _, err := s.pool.Exec(ctx, `
+		update credentials
+		   set last_used_at = $2
+		 where id = $1
+		   and (last_used_at is null or last_used_at < $2::timestamptz - interval '1 hour')`,
+		c.ID, now); err != nil {
+		return fmt.Errorf("credential %s: %w", c.ID, err)
+	}
+	return nil
+}
+
 // scan reads one row of columns. The two nullable ones come through pointers,
 // since a value type has nothing to be when the column is null.
 func scan(row pgx.Row) (Credential, error) {

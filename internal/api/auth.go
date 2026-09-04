@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/sucopay/sucopay/internal/credential"
 	"github.com/sucopay/sucopay/internal/invisible"
@@ -25,6 +26,9 @@ import (
 // left unset.
 type Credentials interface {
 	FindByToken(ctx context.Context, token credential.Token) (credential.Credential, error)
+	// RecordUse writes that c, as FindByToken returned it, was used at now.
+	// It is the store's to decide from c whether the row needs writing.
+	RecordUse(ctx context.Context, c credential.Credential, now time.Time) error
 }
 
 // auth is what every route is registered behind.
@@ -65,6 +69,19 @@ func (a auth) admit(needs access, next http.HandlerFunc) http.HandlerFunc {
 				slog.String("error", invisible.Shown(err.Error(), maxErrorBytes)))
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "unavailable"})
 			return
+		}
+		// Found is used, and recorded before the route has its say: a
+		// read-only credential tried on a route that writes is in someone's
+		// hands, and whose hands credentials are in is what the time of last
+		// use is read to learn. A request is not wrong for going unrecorded,
+		// so a write that fails is logged and the request goes on. It waits
+		// for the write all the same, under the store's deadline: a write
+		// left to a goroutine of its own outlives its request, and under a
+		// database that is behind, each one left that way would wait for a
+		// connection a request is waiting for.
+		if err := a.credentials.RecordUse(r.Context(), c, time.Now()); err != nil {
+			logger(r.Context(), a.log).WarnContext(r.Context(), "could not record the credential's use",
+				slog.String("error", invisible.Shown(err.Error(), maxErrorBytes)))
 		}
 		// Not needs == write: an access this does not know, the zero one
 		// included, is treated as the one that asks the most, so that a

@@ -497,12 +497,14 @@ func TestAdmit_AsksAHeadRequestForWhatItAsksAGet(t *testing.T) {
 }
 
 // held is a credential store holding one credential, which any token
-// presents.
+// presents, and recording no use.
 type held credential.Credential
 
 func (h held) FindByToken(context.Context, credential.Token) (credential.Credential, error) {
 	return credential.Credential(h), nil
 }
+
+func (held) RecordUse(context.Context, credential.Credential, time.Time) error { return nil }
 
 func TestAdmit_TreatsAnAccessNoRouteMayStateAsTheStrictest(t *testing.T) {
 	t.Parallel()
@@ -532,5 +534,153 @@ func TestAdmit_TreatsAnAccessNoRouteMayStateAsTheStrictest(t *testing.T) {
 				t.Errorf("status %d, want %d", rec.Code, c.want)
 			}
 		})
+	}
+}
+
+// recorded is a credential store holding one credential, which any token
+// presents, and keeping every use it is told of. When set, lookup is what
+// finding the credential fails with, and refusal what recording a use does.
+type recorded struct {
+	credential credential.Credential
+	lookup     error
+	refusal    error
+	uses       []credential.Credential
+	at         []time.Time
+}
+
+func (s *recorded) FindByToken(context.Context, credential.Token) (credential.Credential, error) {
+	return s.credential, s.lookup
+}
+
+func (s *recorded) RecordUse(_ context.Context, c credential.Credential, now time.Time) error {
+	s.uses = append(s.uses, c)
+	s.at = append(s.at, now)
+	return s.refusal
+}
+
+func TestAdmit_RecordsTheUseOfEveryCredentialItFinds(t *testing.T) {
+	t.Parallel()
+	// Found is used, whether or not the route admits it: a read-only
+	// credential tried on a route that writes is in someone's hands, and
+	// whose hands credentials are in is what last_used_at is read to learn.
+	// A token nobody issued has no row to be recorded in.
+	f := served(t)
+	at := f.stored(first)
+	readOnly := credential.Credential{ID: credential.NewID(), Scope: credential.ScopeAccount, Account: first, Capability: credential.ReadOnly, KeyID: keyID, LastUsedAt: now}
+	for _, c := range []struct {
+		name   string
+		store  *recorded
+		method string
+		target string
+		status int
+		uses   int
+	}{
+		{"a credential the route admits", &recorded{credential: readOnly}, http.MethodGet, at, http.StatusOK, 1},
+		{"a credential the route refuses", &recorded{credential: readOnly}, http.MethodPost, "/payments", http.StatusForbidden, 1},
+		{"a token nobody issued", &recorded{lookup: credential.ErrNotFound}, http.MethodGet, at, http.StatusUnauthorized, 0},
+	} {
+		f.serve(c.store)
+		before := time.Now()
+
+		f.expect(f.do(c.method, c.target, bearing(credential.New())), c.status, c.status == http.StatusOK)
+
+		if len(c.store.uses) != c.uses {
+			t.Errorf("%s: %d uses recorded, want %d", c.name, len(c.store.uses), c.uses)
+			continue
+		}
+		for i, use := range c.store.uses {
+			if use != readOnly {
+				t.Errorf("%s: recorded a use of %+v, want of the credential found, %+v", c.name, use, readOnly)
+			}
+			if at := c.store.at[i]; at.Before(before) || at.After(time.Now()) {
+				t.Errorf("%s: recorded a use at %s, want the time the request was served", c.name, at)
+			}
+		}
+	}
+}
+
+func TestAdmit_ServesARequestWhoseUseItCouldNotRecord(t *testing.T) {
+	t.Parallel()
+	// When a credential was last used is read by whoever runs the
+	// deployment, and a request is not wrong for going unrecorded. The
+	// reason goes to the log, under the request's identifier.
+	f := served(t)
+	at := f.stored(first)
+	f.serve(&recorded{
+		credential: credential.Credential{ID: credential.NewID(), Scope: credential.ScopeAccount, Account: first, Capability: credential.ReadOnly, KeyID: keyID},
+		refusal:    errors.New("no connection was free"),
+	})
+	token := credential.New()
+
+	f.expect(f.do(http.MethodGet, at, bearing(token)), http.StatusOK, true)
+
+	line := f.line("could not record the credential's use")
+	for _, want := range []string{"no connection was free", "request_id="} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the line does not carry %s:\n%s", want, line)
+		}
+	}
+	if strings.Contains(f.log.String(), string(token)) {
+		t.Errorf("the log carries the token:\n%s", f.log.String())
+	}
+}
+
+// line is the one line of the log that carries text, and fails the test
+// when none or more than one does.
+func (f *fixture) line(text string) string {
+	f.t.Helper()
+	var found []string
+	for _, line := range strings.Split(strings.TrimSpace(f.log.String()), "\n") {
+		if strings.Contains(line, text) {
+			found = append(found, line)
+		}
+	}
+	if len(found) != 1 {
+		f.t.Fatalf("%d lines carry %q, want 1:\n%s", len(found), text, f.log.String())
+	}
+	return found[0]
+}
+
+// lastUsed reads when the credential token presents was last used.
+func (f *fixture) lastUsed(token credential.Token) time.Time {
+	f.t.Helper()
+	c, err := f.store.FindByToken(f.t.Context(), token)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return c.LastUsedAt
+}
+
+func TestAdmit_RecordsAUseOnceAnHourOverTheStore(t *testing.T) {
+	t.Parallel()
+	// Over the store itself: the first request records its use, another
+	// within the hour does not move it, and one an hour on records again.
+	f := served(t)
+	token := f.created(first, credential.ReadOnly)
+	at := f.stored(first)
+	// The column holds microseconds.
+	before := time.Now().Truncate(time.Microsecond)
+
+	f.expect(f.do(http.MethodGet, at, bearing(token)), http.StatusOK, true)
+	usedAt := f.lastUsed(token)
+	if usedAt.Before(before) {
+		t.Errorf("last used at %s, want the time of the request, not before %s", usedAt, before)
+	}
+
+	f.expect(f.do(http.MethodGet, at, bearing(token)), http.StatusOK, true)
+	if got := f.lastUsed(token); !got.Equal(usedAt) {
+		t.Errorf("a second request within the hour moved last used from %s to %s", usedAt, got)
+	}
+
+	c, err := f.store.FindByToken(t.Context(), token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(t.Context(), `update credentials set last_used_at = $2 where id = $1`, c.ID, usedAt.Add(-2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	f.expect(f.do(http.MethodGet, at, bearing(token)), http.StatusOK, true)
+	if got := f.lastUsed(token); !got.After(usedAt) {
+		t.Errorf("a request an hour on left last used at %s", got)
 	}
 }

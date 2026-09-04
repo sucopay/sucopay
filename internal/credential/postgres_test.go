@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -209,7 +210,7 @@ func TestStore_FailsWithoutReadingWhenNoConnectionIsFree(t *testing.T) {
 	// A request is authenticated before anything else, so this wait is what
 	// every request pays when the database is behind. It has to end, and it
 	// has to end without a connection: one opened for the failure would be
-	// one more thing the database is behind on. The other three calls are
+	// one more thing the database is behind on. The other four calls are
 	// under the same deadline, so that a list run against a database that
 	// is behind ends as well.
 	const name = "suco-credential-held-test"
@@ -284,14 +285,16 @@ func TestStore_ReportsADatabaseItCannotReach(t *testing.T) {
 }
 
 // methods is each call the store has, made with what a stored credential
-// gives a caller, for the tests that run all four against a database they
-// cannot reach.
+// gives a caller, for the tests that run all five against a database they
+// cannot reach. The use recorded is of a credential never used, which is the
+// one call that has to write.
 func methods(t *testing.T, s *credential.Postgres, id credential.ID, token credential.Token) map[string]func() error {
 	return map[string]func() error{
 		"Create":      func() error { _, _, err := s.Create(t.Context(), first, credential.ReadOnly, sometime); return err },
 		"FindByToken": func() error { _, err := s.FindByToken(t.Context(), token); return err },
 		"List":        func() error { _, err := s.List(t.Context()); return err },
 		"Revoke":      func() error { return s.Revoke(t.Context(), id, sometime) },
+		"RecordUse":   func() error { return s.RecordUse(t.Context(), credential.Credential{ID: id}, sometime) },
 	}
 }
 
@@ -422,5 +425,144 @@ func TestStore_ReportsNotFoundForRevokingWhatNobodyMade(t *testing.T) {
 
 	if !errors.Is(err, credential.ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// found reads the credential token presents.
+func found(t *testing.T, s *credential.Postgres, token credential.Token) credential.Credential {
+	t.Helper()
+	c, err := s.FindByToken(t.Context(), token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func TestStore_RecordsAUseOnceAnHourHoweverOftenItIsAsked(t *testing.T) {
+	t.Parallel()
+	// Every call is given the value read before any of them wrote, which is
+	// what N workers of one client hold after reading the row in the same
+	// moment. What keeps the writes to one an hour is then the statement,
+	// with nothing left to the caller.
+	s, _ := store(t)
+	_, token := created(t, s, first, credential.ReadOnly, sometime.Add(-time.Hour))
+	unused := found(t, s, token)
+
+	for _, c := range []struct {
+		name string
+		at   time.Time
+		want time.Time
+	}{
+		{"the first use", sometime, sometime},
+		{"a use within the hour", sometime.Add(59 * time.Minute), sometime},
+		{"a use an hour on", sometime.Add(61 * time.Minute), sometime.Add(61 * time.Minute)},
+	} {
+		if err := s.RecordUse(t.Context(), unused, c.at); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if got := found(t, s, token).LastUsedAt; !got.Equal(c.want) {
+			t.Errorf("%s: last used at %s, want %s", c.name, got, c.want)
+		}
+	}
+}
+
+// workers is how many of one client record a use in the same moment. More
+// than the pool has connections, so that some wait for one and some for the
+// row.
+const workers = 16
+
+func TestStore_WritesOnceWhenUsesAreRecordedTogether(t *testing.T) {
+	t.Parallel()
+	// Without the hour in the statement's where clause, every update after
+	// the first waits on the row lock and then writes; with it, each re-reads
+	// the row the winner wrote, matches nothing, and returns. The row read
+	// back afterwards holds the last write and says nothing of how many
+	// there were, so the database counts them.
+	s, pool := store(t)
+	_, token := created(t, s, first, credential.ReadOnly, sometime.Add(-time.Hour))
+	unused := found(t, s, token)
+	counting(t, pool)
+
+	var group sync.WaitGroup
+	errs := make(chan error, workers)
+	for range workers {
+		group.Go(func() { errs <- s.RecordUse(t.Context(), unused, sometime) })
+	}
+	group.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Error(err)
+		}
+	}
+	if n := written(t, pool); n != 1 {
+		t.Errorf("%d writes of last_used_at, want 1", n)
+	}
+	if got := found(t, s, token).LastUsedAt; !got.Equal(sometime) {
+		t.Errorf("last used at %s, want %s", got, sometime)
+	}
+}
+
+// counting has the database count every row an update of last_used_at
+// writes, in a table of the test's own.
+func counting(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(t.Context(), `
+		create table writes (id uuid not null);
+		create function noting() returns trigger language plpgsql as $$
+		begin
+			insert into writes (id) values (new.id);
+			return null;
+		end $$;
+		create trigger noting after update of last_used_at on credentials
+			for each row execute function noting()`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// written is how many rows updates of last_used_at have written since
+// counting began.
+func written(t *testing.T, pool *pgxpool.Pool) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(t.Context(), `select count(*) from writes`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestStore_RecordsAUseWithinTheHourWithoutTheDatabase(t *testing.T) {
+	t.Parallel()
+	// The value FindByToken read is what decides, and the row is not read
+	// again to decide it. With the pool's one connection held, a use within
+	// the hour of the one recorded is done at once, and a use an hour on
+	// waits for the connection and fails.
+	const name = "suco-credential-recorded-test"
+	pool := opened(t, postgrestest.WithName(t, withOneConnection(t, postgrestest.Fresh(t)), name))
+	s := credential.NewPostgres(pool, parsed(t, key), keyID)
+	_, token := created(t, s, first, credential.ReadOnly, sometime.Add(-time.Hour))
+	if err := s.RecordUse(t.Context(), found(t, s, token), sometime); err != nil {
+		t.Fatal(err)
+	}
+	used := found(t, s, token)
+	held, err := pool.Acquire(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Release()
+
+	started := time.Now()
+	err = s.RecordUse(t.Context(), used, sometime.Add(59*time.Minute))
+	waited := time.Since(started)
+
+	if err != nil {
+		t.Errorf("a use within the hour failed with no connection free: %v", err)
+	}
+	if waited > time.Second {
+		t.Errorf("a use within the hour waited %s, want done without a connection", waited)
+	}
+	if err := s.RecordUse(t.Context(), used, sometime.Add(61*time.Minute)); err == nil {
+		t.Error("a use an hour on succeeded with no connection to write over")
 	}
 }

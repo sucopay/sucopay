@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/sucopay/sucopay/internal/api"
 	"github.com/sucopay/sucopay/internal/credential"
@@ -70,13 +71,19 @@ func TestHandler_TellsBrowsersNotToSniffTheContentType(t *testing.T) {
 	}
 }
 
-// consulted is a credential store whose every lookup fails the test.
+// consulted is a credential store whose every call fails the test.
 type consulted struct{ t *testing.T }
 
 func (c consulted) FindByToken(context.Context, credential.Token) (credential.Credential, error) {
 	c.t.Helper()
 	c.t.Error("a route that asks for no credential looked one up")
 	return credential.Credential{}, credential.ErrNotFound
+}
+
+func (c consulted) RecordUse(context.Context, credential.Credential, time.Time) error {
+	c.t.Helper()
+	c.t.Error("a route that asks for no credential recorded a use of one")
+	return nil
 }
 
 func TestHandler_ServesHealthzAndReadyzWithoutConsultingCredentials(t *testing.T) {
