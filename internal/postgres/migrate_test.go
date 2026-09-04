@@ -78,7 +78,7 @@ func TestMigrate_LeavesTablesAnOperatorCanRead(t *testing.T) {
 		t.Error("applied nothing to an empty database")
 	}
 	got := tables(t, dsn)
-	for _, want := range []string{"accounts", "payments", "schema_migrations"} {
+	for _, want := range []string{"accounts", "credentials", "payments", "schema_migrations"} {
 		if !contains(got, want) {
 			t.Errorf("the database has no %s table, only %v", want, got)
 		}
