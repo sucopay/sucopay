@@ -7,7 +7,9 @@ services:
       POSTGRES_USER: sucopay
       POSTGRES_PASSWORD: sucopay
       POSTGRES_DB: sucopay
-    ports: ["5432:5432"]
+    # Bound to the loopback address: the password above is public, and
+    # Docker publishes a port past the host firewall.
+    ports: ["127.0.0.1:5432:5432"]
     volumes: [pgdata:/var/lib/postgresql/data]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U sucopay"]
