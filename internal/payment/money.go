@@ -7,10 +7,10 @@ import (
 	"strings"
 )
 
-// MaxAmountDigits bounds what [ParseMoney] will read. Parsing base ten costs
-// more than linearly in the length of the input, and the string comes from
-// whoever is asking for a payment. Seventy eight digits is more than any
-// token's total supply in its smallest unit.
+// MaxAmountDigits bounds what [ParseMoney] and [ParseUnits] will read.
+// Parsing base ten costs more than linearly in the length of the input, and
+// the string comes from whoever is asking for a payment. Seventy eight digits
+// is more than any token's total supply in its smallest unit.
 const MaxAmountDigits = 78
 
 // Money is an amount of one asset, held in that asset's smallest unit.
@@ -63,6 +63,60 @@ func ParseMoney(asset Asset, amount string) (Money, error) {
 	return NewMoney(asset, n)
 }
 
+// ParseUnits reads an amount written in the asset's own units, the way
+// [Money.Units] writes one: digits, and after a point up to as many more as
+// the asset divides into. A sign, an exponent, a separator, a space, and a
+// digit of any script but ASCII are refused, so that one amount has one
+// spelling apart from zeros at either end.
+func ParseUnits(asset Asset, amount string) (Money, error) {
+	n, err := parseUnits(amount, asset.Decimals())
+	if err != nil {
+		return Money{}, fmt.Errorf("%s: %w", asset, err)
+	}
+	return NewMoney(asset, n)
+}
+
+// parseUnits reads amount, written with up to decimals places, as a count of
+// the smallest unit: the fraction is filled out to decimals places.
+func parseUnits(amount string, decimals uint8) (*big.Int, error) {
+	// Reading base ten costs more than linearly in the length of the input,
+	// and the string comes from whoever is asking for a payment. An amount of
+	// any asset fits in MaxAmountDigits digits and a point.
+	if len(amount) > MaxAmountDigits+1 {
+		return nil, fmt.Errorf("amount is %d characters, at most %d", len(amount), MaxAmountDigits+1)
+	}
+	whole, fraction, hasPoint := strings.Cut(amount, ".")
+	if !isDigits(whole) || hasPoint && !isDigits(fraction) {
+		return nil, fmt.Errorf("%q is not an amount: digits, and after a point up to %d more",
+			amount, decimals)
+	}
+	places := int(decimals)
+	if len(fraction) > places {
+		return nil, fmt.Errorf("%q has more places after the point than the asset's %d", amount, places)
+	}
+	digits := whole + fraction + strings.Repeat("0", places-len(fraction))
+	if len(digits) > MaxAmountDigits {
+		return nil, fmt.Errorf("%q is %d digits in the smallest unit, at most %d",
+			amount, len(digits), MaxAmountDigits)
+	}
+	// digits holds ASCII digits and nothing else, which SetString reads.
+	n, _ := new(big.Int).SetString(digits, 10)
+	return n, nil
+}
+
+// isDigits reports whether s is one or more ASCII digits.
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // Asset returns which token the amount is of.
 func (m Money) Asset() Asset { return m.asset }
 
@@ -86,13 +140,17 @@ func (m Money) String() string {
 	if !m.IsSet() {
 		return "no amount"
 	}
-	return m.units() + " " + m.asset.String()
+	return m.Units() + " " + m.asset.String()
 }
 
-// units renders the amount with the asset's decimal point put back in. The
-// smallest unit is what is stored and what is compared; this is only for
-// showing a person, who does not think in units of 10^-18.
-func (m Money) units() string {
+// Units renders the amount in the asset's own units, with the decimal point
+// put back and no zeros after the last place that has one: what a person
+// reads, and what [ParseUnits] reads back. The smallest unit is what is
+// stored and what is compared; nobody thinks in units of 10^-18.
+func (m Money) Units() string {
+	if !m.IsSet() {
+		return "no amount"
+	}
 	digits := m.amount.String()
 	places := int(m.asset.decimals)
 	if places == 0 {

@@ -240,3 +240,144 @@ func TestMoney_TheZeroValueIsNotAnAmountOfAnything(t *testing.T) {
 		t.Errorf("the zero Money has amount sign %d, want 0", got)
 	}
 }
+
+func TestParseUnits_ReadsAnAmountInTheAssetsOwnUnits(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name   string
+		asset  payment.Asset
+		amount string
+		stored string
+		shown  string
+	}{
+		{"a whole number", jpyc(t), "1000", "1000" + strings.Repeat("0", 18), "1000"},
+		{"a fraction", jpyc(t), "1000.5", "10005" + strings.Repeat("0", 17), "1000.5"},
+		{"trailing zeros", jpyc(t), "1000.500", "10005" + strings.Repeat("0", 17), "1000.5"},
+		{"the smallest unit", jpyc(t), "0.000000000000000001", "1", "0.000000000000000001"},
+		{"nothing", jpyc(t), "0", "0", "0"},
+		{"nothing, with a point", jpyc(t), "0.0", "0", "0"},
+		{"leading zeros", usdc(t), "007.50", "7500000", "7.5"},
+		{"an asset that does not divide", asset(t, "polygon", "r", "WHOLE", 0), "7", "7", "7"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m, err := payment.ParseUnits(c.asset, c.amount)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if got := m.Amount().String(); got != c.stored {
+				t.Errorf("ParseUnits(%q) stores %s, want %s", c.amount, got, c.stored)
+			}
+			if got := m.Units(); got != c.shown {
+				t.Errorf("ParseUnits(%q).Units() = %q, want %q", c.amount, got, c.shown)
+			}
+			if !m.Asset().Same(c.asset) {
+				t.Errorf("ParseUnits(%q) is of %v, want %v", c.amount, m.Asset(), c.asset)
+			}
+		})
+	}
+}
+
+func TestParseUnits_TwoSpellingsOfOneAmountAreOneMoney(t *testing.T) {
+	t.Parallel()
+	a, err := payment.ParseUnits(jpyc(t), "1000.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := payment.ParseUnits(jpyc(t), "1000.500")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cmp, err := a.Cmp(b); err != nil || cmp != 0 {
+		t.Errorf("Cmp = %d, %v; want 0 and no error", cmp, err)
+	}
+}
+
+func TestParseUnits_RefusesWhatIsNotDigitsWithAPoint(t *testing.T) {
+	t.Parallel()
+	for _, amount := range []string{
+		"-1", "+1", "1e3", "1,000", " 1", "1 ", "１", "", ".", "1.", ".5", "1.5.0", "0x10",
+	} {
+		t.Run(amount, func(t *testing.T) {
+			_, err := payment.ParseUnits(jpyc(t), amount)
+
+			if err == nil {
+				t.Fatalf("ParseUnits(%q) returned no error", amount)
+			}
+			// The refusal says what an amount is made of, so that a person
+			// who wrote a sign or an exponent learns what to write.
+			if !strings.Contains(err.Error(), "digits") {
+				t.Errorf("ParseUnits(%q) = %v, want a refusal that says what an amount is made of", amount, err)
+			}
+		})
+	}
+}
+
+func TestParseUnits_RefusesMorePlacesThanTheAssetDivides(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name  string
+		asset payment.Asset
+		ok    string
+		over  string
+	}{
+		{"18 places", jpyc(t), "1." + strings.Repeat("0", 17) + "1", "1." + strings.Repeat("0", 18) + "1"},
+		{"6 places", usdc(t), "1.000001", "1.0000001"},
+		{"no places", asset(t, "polygon", "r", "WHOLE", 0), "1", "1.0"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := payment.ParseUnits(c.asset, c.ok); err != nil {
+				t.Errorf("ParseUnits(%q) = %v, want the amount", c.ok, err)
+			}
+			if _, err := payment.ParseUnits(c.asset, c.over); err == nil {
+				t.Errorf("ParseUnits(%q) returned no error, want a refusal", c.over)
+			}
+		})
+	}
+}
+
+func TestParseUnits_RefusesAnAmountLongerThanAnyAmountCouldBe(t *testing.T) {
+	t.Parallel()
+	// The count that matters is of digits in the smallest unit, once the
+	// fraction is filled out to the asset's places: 60 digits before the
+	// point and 18 after make 78 with JPYC.
+	whole := strings.Repeat("9", payment.MaxAmountDigits-int(jpyc(t).Decimals()))
+
+	m, err := payment.ParseUnits(jpyc(t), whole)
+	if err != nil {
+		t.Fatalf("refused an amount of the greatest length it allows: %v", err)
+	}
+	if got := len(m.Amount().String()); got != payment.MaxAmountDigits {
+		t.Errorf("stored %d digits, want %d", got, payment.MaxAmountDigits)
+	}
+	if _, err := payment.ParseUnits(jpyc(t), "1"+whole); err == nil {
+		t.Errorf("read an amount of %d digits in the smallest unit", payment.MaxAmountDigits+1)
+	}
+	// A refusal is read on a screen and in a response, where a string of
+	// any length the sender chose has no place.
+	long := strings.Repeat("0", 200)
+	_, err = payment.ParseUnits(jpyc(t), long)
+	if err == nil {
+		t.Fatal("read an amount of more characters than any amount has")
+	}
+	if strings.Contains(err.Error(), long) {
+		t.Errorf("the refusal repeats all %d characters: %v", len(long), err)
+	}
+}
+
+func TestParseUnits_RefusesAnAmountOfNoAsset(t *testing.T) {
+	t.Parallel()
+	if _, err := payment.ParseUnits(payment.Asset{}, "1"); err == nil {
+		t.Error("ParseUnits of no asset returned no error")
+	}
+}
+
+func TestMoney_UnitsSaysWhenThereIsNoAmount(t *testing.T) {
+	t.Parallel()
+	var m payment.Money
+
+	if got := m.Units(); got != "no amount" {
+		t.Errorf("the zero Money's Units() = %q, want it to say there is none", got)
+	}
+}
