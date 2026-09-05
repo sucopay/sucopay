@@ -7,10 +7,13 @@ import (
 	"log/slog"
 	"net"
 	"strconv"
+	"time"
 
+	"github.com/sucopay/sucopay/internal/accepted"
 	"github.com/sucopay/sucopay/internal/api"
 	"github.com/sucopay/sucopay/internal/credential"
 	"github.com/sucopay/sucopay/internal/invisible"
+	"github.com/sucopay/sucopay/internal/payment"
 	"github.com/sucopay/sucopay/internal/postgres"
 )
 
@@ -42,6 +45,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	var (
 		ready       api.Ready
 		credentials api.Credentials
+		payments    api.Payments
 	)
 	if cfg.Database.URL != "" {
 		db, err := postgres.Open(ctx, cfg.Database.URL)
@@ -55,6 +59,9 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 		credentials = credential.NewPostgres(db.Conns(), key, cfg.Credentials.KeyID)
+		payments = payment.NewHTTP(
+			payment.NewService(payment.NewPostgres(db.Conns()), time.Now),
+			cfg.Assets, accepted.NewPostgres(db.Conns()))
 
 		// Applied at every start rather than by a command an operator has to
 		// know about, which would leave an evaluator with an empty database
@@ -74,7 +81,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 
 	addr := net.JoinHostPort(cfg.Listen.Host, strconv.Itoa(cfg.Listen.Port))
-	deps := api.Dependencies{Database: ready, Credentials: credentials}
+	deps := api.Dependencies{Database: ready, Credentials: credentials, Payments: payments}
 	server, err := api.Listen(addr, api.Handler(log, deps), log)
 	if err != nil {
 		return err

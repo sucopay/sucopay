@@ -985,7 +985,8 @@ func serving(t *testing.T, args ...string) (announced string, stop func() string
 			mu.Lock()
 			written.WriteString(scanner.Text() + "\n")
 			mu.Unlock()
-			if !announced && strings.Contains(scanner.Text(), "msg=serving") {
+			if !announced && (strings.Contains(scanner.Text(), "msg=serving") ||
+				strings.Contains(scanner.Text(), `"msg":"serving"`)) {
 				announced = true
 				close(began)
 			}
