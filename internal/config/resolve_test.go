@@ -818,6 +818,27 @@ func TestResolve_RequiresAnIdentifierAlongsideTheKey(t *testing.T) {
 	wantProblemAt(t, err, "credentials.key_id")
 }
 
+// A key that is not asked for is still checked when it is given. A deployment
+// that starts without a database, and is later given one, would otherwise
+// fail on a key that was accepted the day before.
+func TestResolve_ChecksAKeyItDidNotAskForAlike(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		credentials map[string]any
+		at          string
+	}{
+		{"short", map[string]any{"key": testKey[:32], "key_id": "abcd1234"}, "credentials.key"},
+		{"without an identifier", map[string]any{"key": testKey}, "credentials.key_id"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := config.Resolve(map[string]any{"credentials": tc.credentials}, noEnv)
+
+			wantProblemAt(t, err, tc.at)
+		})
+	}
+}
+
 func TestResolve_KeepsTheCredentialsKeyFromTheEnvironment(t *testing.T) {
 	t.Parallel()
 	doc := withDatabase(map[string]any{"key": "${SUCO_CREDENTIALS_KEY}", "key_id": "abcd1234"})
