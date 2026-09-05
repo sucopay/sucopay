@@ -35,12 +35,15 @@ type route struct {
 // patterns back for anything to notice afterwards. A test reads this package
 // and refuses a registrar anywhere but [Handler].
 //
-// A handler here closes over the Database and Credentials it takes from deps
-// rather than reaching them. routes runs while an instance is still starting,
-// and both are nil in a deployment configured without a database.
+// A handler here closes over what it takes from deps, the Database,
+// Credentials and Payments, rather than reaching them. routes runs while an
+// instance is still starting, and all three are nil in one configured
+// without a database.
 func routes(log *slog.Logger, deps Dependencies) []route {
 	return []route{
 		{pattern: "GET /healthz", needs: open, handle: alive},
 		{pattern: "GET /readyz", needs: open, handle: ready(log, deps.Database, deps.Credentials)},
+		{pattern: "POST /payments", needs: write, handle: forAccount(log, deps.Payments, Payments.Create)},
+		{pattern: "GET /payments/{id}", needs: read, handle: forAccount(log, deps.Payments, Payments.Read)},
 	}
 }

@@ -22,20 +22,19 @@ type Ready func(context.Context) error
 // Database may be nil, which is what an instance configured without one
 // passes. A function rather than an interface, so that "no database" is a
 // nil nobody can get wrong: a nil pointer in a non-nil interface would read
-// as configured and panic when asked. Credentials is nil in the same
-// instance, and [Credentials] says what that refuses.
+// as configured and panic when asked. Credentials and Payments are nil in
+// the same instance; [Credentials] says what that refuses, and [Payments]
+// what it answers.
 type Dependencies struct {
 	Database    Ready
 	Credentials Credentials
+	Payments    Payments
 }
 
 // Handler returns the routes an instance serves, each behind what it asks of
 // a caller.
 func Handler(log *slog.Logger, deps Dependencies) http.Handler {
 	mux := http.NewServeMux()
-	// TODO(1101hirokin): every route served is open, so no request reaches
-	// credentials through admit yet, and no test shows that this passes it
-	// on. The first route that asks for a credential will.
 	a := auth{log: log, credentials: deps.Credentials}
 	for _, r := range routes(log, deps) {
 		mux.HandleFunc(r.pattern, a.admit(r.needs, r.handle))

@@ -21,11 +21,12 @@ import (
 	"github.com/sucopay/sucopay/internal/postgres/postgrestest"
 )
 
-// The instance serves no route yet that asks for a credential, so these tests
-// serve three of their own, over a payment repository and registered as
-// Handler registers the instance's. What admit promises is that the account a
-// credential names is the account a handler asks the repository about, and
-// only a repository at the end of a route shows that.
+// These tests serve three routes of their own, over a payment repository and
+// registered as Handler registers the instance's, rather than the instance's
+// routes. What admit promises is that the account a credential names is the
+// account a handler asks the repository about, and only a repository at the
+// end of a route shows that; the instance's routes end in a [Payments] that a
+// test of them stands in for.
 
 // The account the schema creates, and a second one made here. One account can
 // never show that a credential keeps a request to its own.

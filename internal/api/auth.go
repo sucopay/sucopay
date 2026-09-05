@@ -76,7 +76,7 @@ func (a auth) admit(needs access, next http.HandlerFunc) http.HandlerFunc {
 			// were not asked for anything yet.
 			logger(r.Context(), a.log).ErrorContext(r.Context(), "could not look up the credential",
 				slog.String("error", invisible.Shown(err.Error(), maxErrorBytes)))
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "unavailable"})
+			unavailable(w)
 			return
 		}
 		// Found is used, and recorded before the route has its say: a
@@ -148,4 +148,11 @@ func unauthorized(w http.ResponseWriter) {
 // which of the two capabilities it has is what they chose when they made it.
 func forbidden(w http.ResponseWriter) {
 	writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+}
+
+// unavailable answers a request the instance could not serve for want of
+// a dependency: one it could not reach, or one it runs without. Whoever
+// found that out logs the reason, and the answer carries none of it.
+func unavailable(w http.ResponseWriter) {
+	writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "unavailable"})
 }
