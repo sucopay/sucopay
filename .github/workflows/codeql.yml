@@ -1,0 +1,42 @@
+name: CodeQL
+
+on:
+  push: { branches: [main] }
+  pull_request:
+  # The queries and the library models change on their own, so a weekly run
+  # reads code nobody has touched with the current ones.
+  schedule:
+    # Seventeen past: the top of the hour is when every schedule fires,
+    # and runs queue there.
+    - cron: '17 3 * * 1'
+
+# security-events is what writing the results to code scanning takes, and
+# nothing else here needs more than reading the checkout.
+permissions:
+  contents: read
+  security-events: write
+
+env:
+  GO_VERSION: '1.26'
+
+# Pinned to commits, for the reason ci.yml gives.
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: { go-version: '${{ env.GO_VERSION }}', cache: true }
+      # The model pack under .github/codeql/extensions is read without being
+      # named here: it is where code scanning looks. security-extended adds
+      # the medium-precision security queries to the default suite; a false
+      # positive from one costs a dismissal, and a miss costs more.
+      - uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          languages: go
+          build-mode: manual
+          queries: security-extended
+      # Traced, so CodeQL reads what the compiler reads. The tests are not
+      # compiled here and are not read.
+      - run: go build ./...
+      - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9

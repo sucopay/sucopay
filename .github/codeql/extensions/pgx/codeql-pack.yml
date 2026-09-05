@@ -1,0 +1,9 @@
+# A model pack, in the shape code scanning looks for under
+# .github/codeql/extensions: a manifest beside the models it lists.
+name: sucopay/pgx-models
+version: 0.0.1
+library: true
+extensionTargets:
+  codeql/go-all: '*'
+dataExtensions:
+  - pgx.yml
