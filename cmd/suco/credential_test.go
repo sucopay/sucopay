@@ -1,7 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -585,5 +588,101 @@ func TestRun_CredentialRevokeRefusesAnythingButOneIDWithoutRepeatingIt(t *testin
 				t.Errorf("error repeats what was typed in the ID's place: %v", err)
 			}
 		})
+	}
+}
+
+func TestRun_DoctorSaysWhatCredentialsAreInForce(t *testing.T) {
+	// A deployment nobody can create a payment in is well by every other
+	// measure doctor takes.
+	d := deployed(t)
+	for _, step := range []struct {
+		flag string
+		want string
+	}{
+		{"", "credentials: none\n"},
+		{"--read-only", "credentials: read-only\n"},
+		{"--read-write", "credentials: read-write\n"},
+	} {
+		if step.flag != "" {
+			newCredential(t, d, step.flag)
+		}
+
+		stdout, _, err := runArgs(t, "doctor")
+
+		if err != nil {
+			t.Fatalf("doctor after %q: %v", step.flag, err)
+		}
+		if !strings.Contains(stdout, step.want) {
+			t.Errorf("doctor after %q does not say %q:\n%s", step.flag, step.want, stdout)
+		}
+	}
+}
+
+func TestRun_ServeAnswersReadyzWithWhatCredentialsAreInForce(t *testing.T) {
+	// The whole path, from a row in the table to the body a probe reads.
+	// With no credential in force /readyz is ready: were it not, there would
+	// be no reaching the deployment to make one.
+	port := freePort(t)
+	d := deployed(t)
+	document(t, fmt.Sprintf("listen:\n  port: %d\n%s", port, namingADatabase()))
+	_, stop := serving(t)
+	defer stop()
+	url := fmt.Sprintf("http://127.0.0.1:%d/readyz", port)
+
+	before := probed(t, url)
+	newCredential(t, d, "--read-only")
+	after := probed(t, url)
+
+	if before.status != http.StatusOK || after.status != http.StatusOK {
+		t.Errorf("/readyz = %d before a credential and %d after, want %d both times", before.status, after.status, http.StatusOK)
+	}
+	if before.body["credentials"] != string(credential.NoneInForce) {
+		t.Errorf("credentials = %q before any was made, want %q", before.body["credentials"], credential.NoneInForce)
+	}
+	if after.body["credentials"] != string(credential.ReadOnlyInForce) {
+		t.Errorf("credentials = %q with one that reads, want %q", after.body["credentials"], credential.ReadOnlyInForce)
+	}
+}
+
+// answer is what a probe read.
+type answer struct {
+	status int
+	body   map[string]string
+}
+
+// probed reads url as a probe does.
+func probed(t *testing.T, url string) answer {
+	t.Helper()
+	resp, err := http.Get(url) //nolint:noctx // a test's own request, over a test's own lifetime
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("%s answered something other than JSON: %v", url, err)
+	}
+	return answer{resp.StatusCode, body}
+}
+
+func TestRun_DoctorFailsWhenTheCredentialsCannotBeReadAndStillPrintsTheReport(t *testing.T) {
+	// A schema version saying the table is there, over a database it is not
+	// in: what a report that said nothing of credentials would pass off as a
+	// deployment with none.
+	d := deployed(t)
+	if _, err := d.pool.Conns().Exec(t.Context(), `drop table credentials`); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, _, err := runArgs(t, "doctor")
+
+	if err == nil {
+		t.Error("doctor succeeded over a database whose credentials it could not read")
+	}
+	if !strings.Contains(stdout, "database: PostgreSQL") {
+		t.Errorf("the report does not name the database it reached:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "credentials:") {
+		t.Errorf("the report speaks of credentials it could not read:\n%s", stdout)
 	}
 }

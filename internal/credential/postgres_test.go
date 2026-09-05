@@ -228,7 +228,7 @@ func TestStore_FailsWithoutReadingWhenNoConnectionIsFree(t *testing.T) {
 	// A request is authenticated before anything else, so this wait is what
 	// every request pays when the database is behind. It has to end, and it
 	// has to end without a connection: one opened for the failure would be
-	// one more thing the database is behind on. The other five calls are
+	// one more thing the database is behind on. The other six calls are
 	// under the same deadline, so that a list run against a database that
 	// is behind ends as well.
 	const name = "suco-credential-held-test"
@@ -303,7 +303,7 @@ func TestStore_ReportsADatabaseItCannotReach(t *testing.T) {
 }
 
 // methods is each call the store has, made with what a stored credential
-// gives a caller, for the tests that run all six against a database they
+// gives a caller, for the tests that run all seven against a database they
 // cannot reach. The use recorded is of a credential never used, which is the
 // one call that has to write.
 func methods(t *testing.T, s *credential.Postgres, id credential.ID, token credential.Token) map[string]func() error {
@@ -314,6 +314,7 @@ func methods(t *testing.T, s *credential.Postgres, id credential.ID, token crede
 		"List":        func() error { _, err := s.List(t.Context()); return err },
 		"Revoke":      func() error { return s.Revoke(t.Context(), id, sometime) },
 		"RecordUse":   func() error { return s.RecordUse(t.Context(), credential.Credential{ID: id}, sometime) },
+		"InForce":     func() error { _, err := s.InForce(t.Context()); return err },
 	}
 }
 
@@ -583,5 +584,94 @@ func TestStore_RecordsAUseWithinTheHourWithoutTheDatabase(t *testing.T) {
 	}
 	if err := s.RecordUse(t.Context(), used, sometime.Add(61*time.Minute)); err == nil {
 		t.Error("a use an hour on succeeded with no connection to write over")
+	}
+}
+
+func TestStore_InForceIsNoneOverATableNothingWasMadeIn(t *testing.T) {
+	t.Parallel()
+	s, _ := store(t)
+
+	got, err := s.InForce(t.Context())
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != credential.NoneInForce {
+		t.Errorf("in force = %q over an empty table, want %q", got, credential.NoneInForce)
+	}
+}
+
+func TestStore_InForceIsReadOnlyWhenNothingInForceMayWrite(t *testing.T) {
+	t.Parallel()
+	// A credential that writes was made and revoked: what is in force is
+	// what may be presented, and a revoked row may not.
+	s, _ := store(t)
+	created(t, s, first, credential.ReadOnly, sometime)
+	id, _ := created(t, s, first, credential.ReadWrite, sometime)
+	if err := s.Revoke(t.Context(), id, sometime); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.InForce(t.Context())
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != credential.ReadOnlyInForce {
+		t.Errorf("in force = %q with one read-only credential and one revoked, want %q", got, credential.ReadOnlyInForce)
+	}
+}
+
+func TestStore_InForceIsReadWriteWhenOneInForceMayWrite(t *testing.T) {
+	t.Parallel()
+	s, _ := store(t)
+	created(t, s, first, credential.ReadOnly, sometime)
+	created(t, s, first, credential.ReadWrite, sometime)
+
+	got, err := s.InForce(t.Context())
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != credential.ReadWriteInForce {
+		t.Errorf("in force = %q with a credential that writes, want %q", got, credential.ReadWriteInForce)
+	}
+}
+
+func TestStore_InForceCountsACredentialMadeUnderAnotherKey(t *testing.T) {
+	t.Parallel()
+	// A deployment whose key was swapped refuses every request and still
+	// holds a credential that writes. Which key each row was made under is
+	// what tells that apart, and it is what List shows.
+	s, pool := store(t)
+	created(t, credential.NewPostgres(pool, parsed(t, key), "k2"), first, credential.ReadWrite, sometime)
+
+	got, err := s.InForce(t.Context())
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != credential.ReadWriteInForce {
+		t.Errorf("in force = %q with a credential that writes made under k2, want %q", got, credential.ReadWriteInForce)
+	}
+}
+
+func TestStore_InForceIsNoneWhenEveryCredentialWasRevoked(t *testing.T) {
+	t.Parallel()
+	// A deployment whose every credential was revoked is one with none, and
+	// it says so: a row out of force is not one that may be presented.
+	s, _ := store(t)
+	id, _ := created(t, s, first, credential.ReadOnly, sometime)
+	if err := s.Revoke(t.Context(), id, sometime); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.InForce(t.Context())
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != credential.NoneInForce {
+		t.Errorf("in force = %q after the one credential was revoked, want %q", got, credential.NoneInForce)
 	}
 }

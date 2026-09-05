@@ -8,6 +8,8 @@ import (
 	"io"
 	"text/tabwriter"
 
+	"github.com/sucopay/sucopay/internal/config"
+	"github.com/sucopay/sucopay/internal/credential"
 	"github.com/sucopay/sucopay/internal/invisible"
 	"github.com/sucopay/sucopay/internal/postgres"
 )
@@ -45,8 +47,14 @@ func doctor(ctx context.Context, args []string, stdout io.Writer) error {
 		return fmt.Errorf("writing the report: %w", err)
 	}
 
-	database, reach := describeDatabase(ctx, resolved.Config.Database.URL)
-	if _, err := fmt.Fprintf(stdout, "\ndatabase: %s\n\n", database); err != nil {
+	database, credentials, reach := describeDatabase(ctx, resolved.Config)
+	var tail bytes.Buffer
+	fmt.Fprintf(&tail, "\ndatabase: %s\n", database)
+	if credentials != "" {
+		fmt.Fprintf(&tail, "credentials: %s\n", credentials)
+	}
+	tail.WriteString("\n")
+	if _, err := stdout.Write(tail.Bytes()); err != nil {
 		return fmt.Errorf("writing the report: %w", err)
 	}
 
@@ -58,33 +66,55 @@ func doctor(ctx context.Context, args []string, stdout io.Writer) error {
 	return reach
 }
 
-// describeDatabase reports what an instance would reach, and separately why it
-// would not. The description is written into the report either way, so that a
-// failure is shown beside the setting that caused it rather than on its own.
+// describeDatabase reports what an instance would reach, what credentials
+// it would find in force there, and separately why it would not. The
+// description is written into the report either way, so that a failure is
+// shown beside the setting that caused it rather than on its own.
+//
+// The credentials are described as /readyz describes them, in the same word,
+// and left out where there is no table to ask or the table did not answer: a
+// database without the schema, one that was not reached, or one whose table
+// could not be read.
 //
 // Everything here was chosen by a server at the other end of a network, so it
 // is bounded and quoted before it reaches a terminal.
-func describeDatabase(ctx context.Context, url string) (string, error) {
-	if url == "" {
-		return "none configured", nil
+func describeDatabase(ctx context.Context, cfg config.Config) (database string, credentials credential.InForce, err error) {
+	if cfg.Database.URL == "" {
+		return "none configured", "", nil
 	}
-	db, err := postgres.Open(ctx, url)
+	db, err := postgres.Open(ctx, cfg.Database.URL)
 	if err != nil {
-		return "unreachable", errors.New(invisible.Quote(err.Error()))
+		return "unreachable", "", errors.New(invisible.Quote(err.Error()))
 	}
 	defer db.Close()
 
 	version, err := db.ServerVersion(ctx)
 	if err != nil {
-		return "unreachable", errors.New(invisible.Quote(err.Error()))
+		return "unreachable", "", errors.New(invisible.Quote(err.Error()))
 	}
 	// What an instance would find there, which is not the same question as
 	// whether it answered.
 	schema, err := db.SchemaVersion(ctx)
 	if err != nil {
-		return "unreachable", errors.New(invisible.Quote(err.Error()))
+		return "unreachable", "", errors.New(invisible.Quote(err.Error()))
 	}
-	return describeVersion(version) + ", schema " + describeSchema(schema), nil
+	database = describeVersion(version) + ", schema " + describeSchema(schema)
+	if schema == "" {
+		return database, "", nil
+	}
+	// The store hashes under the key, and this asks it nothing that hashes.
+	// The key is parsed all the same, so that a store is only ever built as
+	// serve builds one. What the document holds passed the same check when
+	// it was read, so this cannot fail past that.
+	key, err := credential.ParseKey(cfg.Credentials.Key)
+	if err != nil {
+		return database, "", err
+	}
+	credentials, err = credential.NewPostgres(db.Conns(), key, cfg.Credentials.KeyID).InForce(ctx)
+	if err != nil {
+		return database, "", errors.New(invisible.Quote(err.Error()))
+	}
+	return database, credentials, nil
 }
 
 // describeSchema names the migration a database has been brought up to.

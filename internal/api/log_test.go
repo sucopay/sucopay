@@ -190,6 +190,9 @@ func TestReadyz_SaysWhenNoDatabaseIsConfigured(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "none configured") {
 		t.Errorf("body = %s, want it to say there is none", rec.Body)
 	}
+	if strings.Contains(rec.Body.String(), "credentials") {
+		t.Errorf("body = %s, want nothing said of credentials it has nowhere to look for", rec.Body)
+	}
 }
 
 func TestHandler_MeasuresHowLongTheRequestTook(t *testing.T) {

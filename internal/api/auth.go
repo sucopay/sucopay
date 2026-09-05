@@ -29,6 +29,9 @@ type Credentials interface {
 	// RecordUse writes that c, as FindByToken returned it, was used at now.
 	// It is the store's to decide from c whether the row needs writing.
 	RecordUse(ctx context.Context, c credential.Credential, now time.Time) error
+	// InForce reports what the credentials in force add up to, for a probe
+	// to answer with.
+	InForce(ctx context.Context) (credential.InForce, error)
 }
 
 // auth is what every route is registered behind.

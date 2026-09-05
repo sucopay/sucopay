@@ -29,7 +29,7 @@ func TestRoutes_EveryRouteSaysWhatReachingItRequires(t *testing.T) {
 		t.Fatal("the zero access is one a route may state, so leaving needs out would pass")
 	}
 
-	for _, r := range routes(quiet, nil) {
+	for _, r := range routes(quiet, nil, nil) {
 		t.Run(r.pattern, func(t *testing.T) {
 			if !slices.Contains(stated, r.needs) {
 				t.Errorf("does not say what reaching it requires")

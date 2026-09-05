@@ -1119,4 +1119,7 @@ func TestRun_DoctorSaysWhenTheSchemaHasNotBeenApplied(t *testing.T) {
 	if !strings.Contains(stdout, "not applied") {
 		t.Errorf("the report does not say the schema is missing:\n%s", stdout)
 	}
+	if strings.Contains(stdout, "credentials:") {
+		t.Errorf("the report speaks of credentials in a database with no table of them:\n%s", stdout)
+	}
 }

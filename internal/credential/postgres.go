@@ -151,6 +151,30 @@ func (s *Postgres) List(ctx context.Context) ([]Credential, error) {
 	return all, nil
 }
 
+// InForce reports what the credentials in force add up to. Rows made under
+// another key count, as [Postgres.List] lists them: a deployment whose key
+// was swapped holds credentials nothing can present, and telling that apart
+// is what the key identifier beside each row List returns is for.
+func (s *Postgres) InForce(ctx context.Context) (InForce, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	var some, writes bool
+	if err := s.pool.QueryRow(ctx, `
+		select exists (select from credentials where revoked_at is null),
+		       exists (select from credentials where revoked_at is null and capability = $1)`,
+		ReadWrite).Scan(&some, &writes); err != nil {
+		return "", fmt.Errorf("credentials: %w", err)
+	}
+	switch {
+	case writes:
+		return ReadWriteInForce, nil
+	case some:
+		return ReadOnlyInForce, nil
+	}
+	return NoneInForce, nil
+}
+
 // Revoke marks a credential as one nothing will find again. Asking twice is
 // the same as asking once: the row keeps the time it was first revoked at,
 // and neither call fails. [ErrNotFound] is for an ID no row has.

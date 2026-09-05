@@ -506,6 +506,13 @@ func (h held) FindByToken(context.Context, credential.Token) (credential.Credent
 
 func (held) RecordUse(context.Context, credential.Credential, time.Time) error { return nil }
 
+func (h held) InForce(context.Context) (credential.InForce, error) {
+	if h.Capability == credential.ReadWrite {
+		return credential.ReadWriteInForce, nil
+	}
+	return credential.ReadOnlyInForce, nil
+}
+
 func TestAdmit_TreatsAnAccessNoRouteMayStateAsTheStrictest(t *testing.T) {
 	t.Parallel()
 	// A route literal that leaves needs out carries the zero access, and the
@@ -556,6 +563,10 @@ func (s *recorded) RecordUse(_ context.Context, c credential.Credential, now tim
 	s.uses = append(s.uses, c)
 	s.at = append(s.at, now)
 	return s.refusal
+}
+
+func (s *recorded) InForce(ctx context.Context) (credential.InForce, error) {
+	return held(s.credential).InForce(ctx)
 }
 
 func TestAdmit_RecordsTheUseOfEveryCredentialItFinds(t *testing.T) {

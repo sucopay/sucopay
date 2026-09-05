@@ -49,7 +49,8 @@ export SUCO_CREDENTIALS_KEY="$(cat -- 'credentials-<key_id>.key')"
 鍵を読む環境変数の名前だけが入り、鍵の値は入りません。その環境変数は `suco` を動かすシェルで
 設定してください。`suco doctor` は解決後の設定値と、それぞれの出所を表示します。秘密のキーについては、値ではなく設定されて
 いるかどうかだけが出ます。`suco serve` は `http://localhost:7826` で待ち受けます。`/healthz` はプロセスが動いていることを、
-`/readyz` は必要なものに届いているかを答えます。走っている間に起きたことは stdout に書きます。
+`/readyz` は必要なものに届いているかと、有効な資格情報に書き込みできるものがあるかを答えます。
+走っている間に起きたことは stdout に書きます。
 データベースを設定した配備では、`suco credential new --read-only` か `--read-write` が API の
 資格情報を 1 本作り、トークンを所有者だけが読めるファイルへ書きます。`suco credential list` は
 有効な資格情報を最終使用の新しい順に表示し、`suco credential revoke <id>` は 1 本を失効させます。

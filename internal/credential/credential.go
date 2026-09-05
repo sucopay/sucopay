@@ -109,6 +109,24 @@ const (
 	ReadWrite Capability = "write"
 )
 
+// InForce is what the credentials in force add up to, in one word for
+// whatever reports on a deployment. A deployment holding none, or only ones
+// that read, is one no client can create a payment in, and one every other
+// measure of health finds well.
+type InForce string
+
+const (
+	// NoneInForce is a deployment with no credential in force: a new one,
+	// or one whose every credential was revoked.
+	NoneInForce InForce = "none"
+	// ReadOnlyInForce is a deployment whose credentials in force may all
+	// read and none write.
+	ReadOnlyInForce InForce = "read-only"
+	// ReadWriteInForce is a deployment where at least one credential in
+	// force may write.
+	ReadWriteInForce InForce = "read-write"
+)
+
 // ErrNotFound reports that no unrevoked credential holds that token under
 // this key, or that none has that ID. For a token, whether it was never
 // issued, revoked, or issued under another key is not said, on purpose: see

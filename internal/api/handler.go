@@ -28,10 +28,10 @@ type Ready func(context.Context) error
 func Handler(log *slog.Logger, database Ready, credentials Credentials) http.Handler {
 	mux := http.NewServeMux()
 	// TODO(1101hirokin): every route served is open, so no request reaches
-	// credentials through here yet, and no test shows that this passes it
+	// credentials through admit yet, and no test shows that this passes it
 	// on. The first route that asks for a credential will.
 	a := auth{log: log, credentials: credentials}
-	for _, r := range routes(log, database) {
+	for _, r := range routes(log, database, credentials) {
 		mux.HandleFunc(r.pattern, a.admit(r.needs, r.handle))
 	}
 	return record(log, mux)
@@ -49,13 +49,21 @@ func alive(w http.ResponseWriter, _ *http.Request) {
 
 // ready answers whether the instance can serve, which is what a load balancer
 // decides on.
-func ready(log *slog.Logger, database Ready) http.HandlerFunc {
+//
+// The body also says what credentials are in force, which does not change
+// the answer. A deployment holding no credential that writes is one nobody
+// can create a payment in, and one that is well by every other measure; and
+// were it not ready, there would be no reaching it to make one. Nor does
+// the word prove that authentication works: a deployment whose key was
+// swapped holds credentials that write and refuses every request.
+func ready(log *slog.Logger, database Ready, credentials Credentials) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if database == nil {
 			writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "database": "none configured"})
 			return
 		}
-		if err := database(r.Context()); err != nil {
+		body, err := reached(r.Context(), database, credentials)
+		if err != nil {
 			// The reason goes to the log, where an operator reads it. What
 			// comes back over HTTP names the dependency and nothing else: a
 			// readiness probe is read by whoever can reach the port.
@@ -69,8 +77,32 @@ func ready(log *slog.Logger, database Ready) http.HandlerFunc {
 				map[string]string{"status": "unavailable", "database": "unreachable"})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "database": "reachable"})
+		writeJSON(w, http.StatusOK, body)
 	}
+}
+
+// reached asks the database, and then the store over it, for what a probe
+// answers when both answer. Each is asked under its own bound, so a probe
+// waits at most for the two in turn. A database that answers a ping and not
+// a query over its own table is one no request can be authenticated against,
+// and it is answered for as one not reached.
+//
+// credentials is nil where nothing built a store over the database, which
+// a test does. There is then nothing to ask.
+func reached(ctx context.Context, database Ready, credentials Credentials) (map[string]string, error) {
+	if err := database(ctx); err != nil {
+		return nil, err
+	}
+	body := map[string]string{"status": "ok", "database": "reachable"}
+	if credentials == nil {
+		return body, nil
+	}
+	inForce, err := credentials.InForce(ctx)
+	if err != nil {
+		return nil, err
+	}
+	body["credentials"] = string(inForce)
+	return body, nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
