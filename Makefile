@@ -9,8 +9,8 @@ export SUCO_TEST_DATABASE_URL ?= postgres://sucopay:sucopay@127.0.0.1:5432/sucop
 FUZZ = ./internal/config:FuzzDecode ./internal/config:FuzzResolve \
        ./internal/credential:FuzzParseKey ./internal/credential:FuzzParseID \
        ./internal/invisible:FuzzQuote \
-       ./internal/payment:FuzzParseMoney ./internal/payment:FuzzMetadata \
-       ./internal/payment:FuzzParseAddress
+       ./internal/payment:FuzzParseMoney ./internal/payment:FuzzParseUnits \
+       ./internal/payment:FuzzMetadata ./internal/payment:FuzzParseAddress
 FUZZTIME ?= 60s
 
 .PHONY: help
