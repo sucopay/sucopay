@@ -48,6 +48,12 @@ type auth struct {
 // the wrong method is 405 whether or not a credential came with the request.
 // What the instance serves is what its documentation says it serves, and
 // answering 401 to those would cost every client's first mistake the reason.
+//
+// Nothing here recovers a panic. What this package raises, as an error or a
+// panic, carries no token, and a stack trace prints a string as an address
+// and a length; so what net/http records of a panic during authentication
+// carries nothing of what was presented. A recover here that hid the token
+// would hide it on the paths someone thought of and on none of the rest.
 func (a auth) admit(needs access, next http.HandlerFunc) http.HandlerFunc {
 	if needs == open {
 		return next

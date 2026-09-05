@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -45,7 +46,8 @@ var now = time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 // fixture is the routes over a database of the test's own.
 type fixture struct {
 	t        *testing.T
-	log      bytes.Buffer
+	log      journal
+	logger   *slog.Logger
 	pool     *pgxpool.Pool
 	store    *credential.Postgres
 	payments *payment.Postgres
@@ -55,6 +57,31 @@ type fixture struct {
 	// read them on one goroutine: a recorder serves a request in the caller.
 	reached int
 	seen    credential.Credential
+}
+
+// journal is the lines a logger wrote. A test that serves over a listener
+// has them written on the serving goroutine, so the buffer is guarded.
+type journal struct {
+	mu    sync.Mutex
+	lines bytes.Buffer
+}
+
+func (j *journal) Write(b []byte) (int, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.lines.Write(b)
+}
+
+func (j *journal) String() string {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.lines.String()
+}
+
+func (j *journal) Reset() {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.lines.Reset()
 }
 
 // served returns the routes over a migrated database with both accounts in
@@ -84,6 +111,7 @@ func served(t *testing.T) *fixture {
 func (f *fixture) serve(credentials Credentials) {
 	f.log.Reset()
 	log := slog.New(slog.NewTextHandler(&f.log, nil))
+	f.logger = log
 	a := auth{log: log, credentials: credentials}
 	service := payment.NewService(f.payments, func() time.Time { return now })
 	mux := http.NewServeMux()
@@ -693,5 +721,113 @@ func TestAdmit_RecordsAUseOnceAnHourOverTheStore(t *testing.T) {
 	f.expect(f.do(http.MethodGet, at, bearing(token)), http.StatusOK, true)
 	if got := f.lastUsed(token); !got.After(usedAt) {
 		t.Errorf("a request an hour on left last used at %s", got)
+	}
+}
+
+// serverWait is how long a test waits for the server it started to stop.
+// Without it a server that did not stop would hold the package until the
+// go test deadline.
+const serverWait = 15 * time.Second
+
+// serving serves the routes over a port the kernel chooses, the way a
+// deployment is served. A panic in a handler is then net/http's to recover
+// and record. The server stops with the test.
+func (f *fixture) serving() *Server {
+	f.t.Helper()
+	s, err := Listen("127.0.0.1:0", f.handler, f.logger)
+	if err != nil {
+		f.t.Fatalf("listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(f.t.Context())
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx) }()
+	f.t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				f.t.Errorf("run: %v", err)
+			}
+		case <-time.After(serverWait):
+			f.t.Error("the server did not stop after its context was cancelled")
+		}
+	})
+	return s
+}
+
+// fell is what the store panics with in the test below, and what the record
+// of the panic is looked for by.
+const fell = "the store fell over"
+
+// panicking is a store that panics when one token is looked up, as a store
+// over a database might for a reason nothing here foresaw.
+type panicking struct {
+	Credentials
+	on credential.Token
+}
+
+func (p panicking) FindByToken(ctx context.Context, token credential.Token) (credential.Credential, error) {
+	if token == p.on {
+		panic(fell)
+	}
+	return p.Credentials.FindByToken(ctx, token)
+}
+
+func TestAdmit_KeepsWhatWasPresentedOutOfEveryRecord(t *testing.T) {
+	t.Parallel()
+	// Three requests are served over a listener, so that the third is
+	// recorded as a deployment records it: net/http recovers the panic and
+	// writes it, with the stack, to the server's log. The log is read once
+	// all three were answered.
+	f := served(t)
+	live := f.created(first, credential.ReadWrite)
+	unissued := credential.New()
+	doomed := credential.New()
+	at := f.stored(first)
+	f.serve(panicking{Credentials: f.store, on: doomed})
+	url := "http://" + f.serving().Addr() + at
+	client := &http.Client{Timeout: serverWait}
+	for _, tc := range []struct {
+		path   string
+		token  credential.Token
+		status int
+	}{
+		{"failure", unissued, http.StatusUnauthorized},
+		{"success", live, http.StatusOK},
+	} {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", bearing(tc.token))
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != tc.status {
+			t.Fatalf("%s was answered %d, want %d", tc.path, resp.StatusCode, tc.status)
+		}
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", bearing(doomed))
+	if resp, err := client.Do(req); err == nil {
+		resp.Body.Close()
+		t.Fatalf("the request whose lookup panicked was answered %d, want the connection closed", resp.StatusCode)
+	}
+
+	record := f.log.String()
+	for _, want := range []string{"panic serving", fell} {
+		if !strings.Contains(record, want) {
+			t.Fatalf("the log does not record the panic by %q:\n%s", want, record)
+		}
+	}
+	for _, token := range []credential.Token{unissued, live, doomed} {
+		if strings.Contains(record, string(token)) {
+			t.Errorf("the log carries a token that was presented:\n%s", record)
+		}
 	}
 }
