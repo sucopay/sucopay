@@ -10,13 +10,15 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/signal"
-	"strings"
+	"slices"
 	"syscall"
 	"text/tabwriter"
 
 	"github.com/sucopay/sucopay/internal/config"
+	"github.com/sucopay/sucopay/internal/problem"
 )
 
 // defaultDocument is where suco looks for its configuration when SUCO_CONFIG
@@ -64,6 +66,13 @@ func load() (config.Resolved, string, error) {
 // is refused with by a command that needs one.
 const ownDatabase = "a database of its own is not implemented. Set database.managed to false and give database.url"
 
+// The refusals of a network this build would ignore, each written under the
+// network's path. A name is a key of the document, and is quoted as one.
+const (
+	unreferencedNetwork = "no asset refers to it, so nothing reads it. Remove it or list an asset on it"
+	unreadRPC           = "nothing reads it. Remove it rather than run a server that ignores it"
+)
+
 // unimplementedError refuses a document that configures something no part of
 // this build reads. Refusing these in the schema would take the settings out
 // before the code that needs them arrives.
@@ -73,25 +82,35 @@ const ownDatabase = "a database of its own is not implemented. Set database.mana
 // saying nothing about a database, which is not the same as asking for one:
 // serve serves /healthz without one, and a command that needs one refuses
 // the default itself.
+//
+// A network is read by way of the assets that refer to it, and a simulated
+// one declares that nothing is observed, which is what this build does; so
+// such a network is accepted. One no asset refers to is refused, and so is an
+// rpc on any network, since nothing reads the URL. The kind is not looked at
+// here: simulated is the one kind config admits.
 func unimplementedError(document string, r config.Resolved) error {
 	var refusals []string
 	if source, ok := r.SourceOf("database.managed"); r.Config.Database.Managed &&
 		ok && source.Origin != config.FromDefault {
 		refusals = append(refusals, ownDatabase)
 	}
-	if len(r.Config.Networks) > 0 {
-		refusals = append(refusals,
-			"nothing reads networks. Remove the section rather than run a server that ignores it")
+	referred := map[string]bool{}
+	for _, asset := range r.Config.Assets {
+		referred[string(asset.Network())] = true
 	}
-
-	switch len(refusals) {
-	case 0:
+	for _, name := range slices.Sorted(maps.Keys(r.Config.Networks)) {
+		n := r.Config.Networks[name]
+		if !referred[name] {
+			refusals = append(refusals, problem.Line("networks."+name, unreferencedNetwork))
+		}
+		if n.RPC != "" {
+			refusals = append(refusals, problem.Line("networks."+name+".rpc", unreadRPC))
+		}
+	}
+	if len(refusals) == 0 {
 		return nil
-	case 1:
-		return fmt.Errorf("%s: %s", document, refusals[0])
-	default:
-		return fmt.Errorf("%s:\n  %s", document, strings.Join(refusals, "\n  "))
 	}
+	return errors.New(problem.List(document, refusals))
 }
 
 // writeNew creates name holding contents, readable by its owner alone, and

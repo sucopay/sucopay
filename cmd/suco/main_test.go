@@ -646,11 +646,11 @@ func TestRun_ServeRefusesASectionNothingActsOn(t *testing.T) {
 		says []string
 	}{
 		{"a database of its own", "database:\n  managed: true\n", []string{"database.managed"}},
-		{"networks", "networks:\n  local:\n    kind: simulated\n", []string{"networks"}},
+		{"a network no asset refers to", "networks:\n  local:\n    kind: simulated\n", []string{"networks.local"}},
 		{
 			"both",
 			"database:\n  managed: true\nnetworks:\n  local:\n    kind: simulated\n",
-			[]string{"database.managed", "networks"},
+			[]string{"database.managed", "networks.local"},
 		},
 	}
 	for _, c := range cases {
@@ -778,10 +778,10 @@ func TestRun_DoctorPrintsTheReportAndThenRefusesASectionNothingActsOn(t *testing
 	if err == nil {
 		t.Fatal("want an error, got none")
 	}
-	if !strings.Contains(err.Error(), "networks") {
-		t.Errorf("error does not name the section: %v", err)
+	if !strings.Contains(err.Error(), "networks.local") {
+		t.Errorf("error does not name the network: %v", err)
 	}
-	if !strings.Contains(err.Error(), "Remove the section") {
+	if !strings.Contains(err.Error(), "Remove it") {
 		t.Errorf("error does not say what to do about it: %v", err)
 	}
 	if !strings.Contains(err.Error(), filepath.Base(path)) {
@@ -789,6 +789,119 @@ func TestRun_DoctorPrintsTheReportAndThenRefusesASectionNothingActsOn(t *testing
 	}
 	if !strings.Contains(stdout, "listen.port") {
 		t.Errorf("the report was withheld, leaving nothing to diagnose:\n%s", stdout)
+	}
+}
+
+// anAssetOn is a document listing one asset on a simulated network of the
+// name given, with more written into the networks section after it: a
+// setting of that network at its indent, or another network at the section's.
+func anAssetOn(network, more string) string {
+	return "networks:\n  " + network + ":\n    kind: simulated\n" + more +
+		"assets:\n  jpyc:\n    network: " + network + "\n" +
+		"    reference: \"0x0000000000000000000000000000000000000001\"\n" +
+		"    symbol: JPYC\n    decimals: 18\n"
+}
+
+func TestRun_ServeStartsWithANetworkAnAssetRefersTo(t *testing.T) {
+	document(t, fmt.Sprintf("listen:\n  port: %d\n%s", freePort(t), anAssetOn("local", "")))
+
+	_, stop := serving(t)
+	stop()
+}
+
+func TestRun_DoctorShowsTheAssetsOfADocumentItAccepts(t *testing.T) {
+	document(t, anAssetOn("local", ""))
+
+	stdout, _, err := runArgs(t, "doctor")
+
+	if err != nil {
+		t.Fatalf("err = %v, want none", err)
+	}
+	for _, want := range []struct{ path, value string }{
+		{"assets.jpyc.network", "local"},
+		{"assets.jpyc.reference", "0x0000000000000000000000000000000000000001"},
+		{"assets.jpyc.symbol", "JPYC"},
+		{"assets.jpyc.decimals", "18"},
+	} {
+		line := reportLine(t, stdout, want.path)
+		if !strings.Contains(line, want.value) || !strings.Contains(line, "file") {
+			t.Errorf("%s reads %q, want the value %s from file", want.path, line, want.value)
+		}
+	}
+}
+
+// TestRun_ServeRefusesANetworkNothingReads checks that a refusal names the
+// networks it is about and no other, in the order of their names, and that
+// doctor refuses in the same words: an operator meets the refusal at whichever
+// command they run first. A name is a key of the document, so naming it
+// repeats nothing that was typed after suco; and a key can hold a newline, so
+// one that does is quoted rather than given a line of its own.
+func TestRun_ServeRefusesANetworkNothingReads(t *testing.T) {
+	cases := []struct {
+		name string
+		doc  string
+		// The paths named, one refusal each, in the order they are written.
+		names []string
+	}{
+		{
+			"one no asset refers to",
+			"networks:\n  local:\n    kind: simulated\n",
+			[]string{"networks.local"},
+		},
+		{
+			"one with an rpc, though an asset refers to it",
+			anAssetOn("local", "    rpc: http://127.0.0.1:1\n"),
+			[]string{"networks.local.rpc"},
+		},
+		{
+			"the one no asset refers to, beside one an asset does",
+			anAssetOn("local", "  other:\n    kind: simulated\n"),
+			[]string{"networks.other"},
+		},
+		{
+			"one no asset refers to, with an rpc: both are said",
+			"networks:\n  local:\n    kind: simulated\n    rpc: http://127.0.0.1:1\n",
+			[]string{"networks.local", "networks.local.rpc"},
+		},
+		{
+			"two no asset refers to, in the order of their names",
+			"networks:\n  b:\n    kind: simulated\n  a:\n    kind: simulated\n",
+			[]string{"networks.a", "networks.b"},
+		},
+		{
+			"one whose name holds a newline",
+			"networks:\n  \"a\\nb\":\n    kind: simulated\n",
+			[]string{`"networks.a\nb"`},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			document(t, c.doc)
+
+			_, _, byServe := runArgs(t, "serve")
+			_, _, byDoctor := runArgs(t, "doctor")
+
+			if byServe == nil || byDoctor == nil {
+				t.Fatalf("serve: %v; doctor: %v; want both to refuse", byServe, byDoctor)
+			}
+			if byServe.Error() != byDoctor.Error() {
+				t.Errorf("serve refuses with:\n  %v\ndoctor with:\n  %v", byServe, byDoctor)
+			}
+			// One refusal is written on the document's line; more than one
+			// take a line each under it.
+			refusals := strings.Split(byServe.Error(), "\n")
+			if len(c.names) > 1 {
+				refusals = refusals[1:]
+			}
+			if len(refusals) != len(c.names) {
+				t.Fatalf("want %d refusals, got %d:\n%v", len(c.names), len(refusals), byServe)
+			}
+			for i, name := range c.names {
+				if !strings.Contains(refusals[i], name+":") {
+					t.Errorf("refusal %d does not name %s: %s", i, name, refusals[i])
+				}
+			}
+		})
 	}
 }
 
