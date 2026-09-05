@@ -14,34 +14,43 @@ import (
 	"github.com/sucopay/sucopay/internal/postgres"
 )
 
-// openStore reads the document and opens the store of credentials it names,
-// for the commands that read or write one. A document serve refuses is
-// refused here in serve's words, and so is one naming no database: a
-// deployment with either meets the refusal at whichever command runs first,
-// and two sentences for one problem read as two problems.
-func openStore(ctx context.Context) (*postgres.Pool, *credential.Postgres, error) {
+// opened is what a command that reads or writes the database has once
+// [openStore] returns: the database the document names, and the store of
+// credentials over it.
+type opened struct {
+	db          *postgres.Pool
+	credentials *credential.Postgres
+}
+
+// openStore reads the document and opens the database it names, with the
+// store of credentials over it, for the commands that read or write either.
+// A document serve refuses is refused here in serve's words, and so is one
+// naming no database: a deployment with either meets the refusal at
+// whichever command runs first, and two sentences for one problem read as
+// two problems.
+func openStore(ctx context.Context) (opened, error) {
 	resolved, document, err := load()
 	if err != nil {
-		return nil, nil, err
+		return opened{}, err
 	}
 	if err := unimplementedError(document, resolved); err != nil {
-		return nil, nil, err
+		return opened{}, err
 	}
 	cfg := resolved.Config
 	// The default database.managed is a document that names no database.
 	if cfg.Database.URL == "" {
-		return nil, nil, fmt.Errorf("%s: %s", document, ownDatabase)
+		return opened{}, fmt.Errorf("%s: %s", document, ownDatabase)
 	}
 	// Read before the database is opened: a malformed key needs no
 	// connection to be refused.
 	key, err := credential.ParseKey(cfg.Credentials.Key)
 	if err != nil {
-		return nil, nil, err
+		return opened{}, err
 	}
 
 	db, err := postgres.Open(ctx, cfg.Database.URL)
 	if err != nil {
-		return nil, nil, err
+		return opened{}, err
 	}
 	// serve applies the schema and logs what it applied. A command that
 	// answers a person with a line or two would apply it in silence, so
@@ -49,13 +58,31 @@ func openStore(ctx context.Context) (*postgres.Pool, *credential.Postgres, error
 	version, err := db.SchemaVersion(ctx)
 	if err != nil {
 		db.Close()
-		return nil, nil, err
+		return opened{}, err
 	}
 	if version == "" {
 		db.Close()
-		return nil, nil, errors.New("the database has no schema. Run `suco serve` once to apply it")
+		return opened{}, errors.New("the database has no schema. Run `suco serve` once to apply it")
 	}
-	return db, credential.NewPostgres(db.Conns(), key, cfg.Credentials.KeyID), nil
+	return opened{
+		db:          db,
+		credentials: credential.NewPostgres(db.Conns(), key, cfg.Credentials.KeyID),
+	}, nil
+}
+
+// oneAccount is the account a command acts on. Which accounts there are is
+// the database's to say, and a command here acts on exactly one of them.
+// This build has no way for an operator to name one, so it acts on the one
+// there is, and refuses to choose among more.
+func oneAccount(ctx context.Context, store *credential.Postgres) (credential.AccountID, error) {
+	accounts, err := store.Accounts(ctx)
+	if err != nil {
+		return "", err
+	}
+	if len(accounts) != 1 {
+		return "", fmt.Errorf("the database has %d accounts, and this acts on one of them; naming one is not implemented", len(accounts))
+	}
+	return accounts[0], nil
 }
 
 // credentialNew makes one credential and writes its token to a file in the
@@ -70,25 +97,17 @@ func credentialNew(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	db, store, err := openStore(ctx)
+	o, err := openStore(ctx)
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer o.db.Close()
 
-	// Which accounts there are is the database's to say, and a credential
-	// is of exactly one of them. This build has no way for an operator to
-	// name one, so it issues to the one there is, and refuses to choose
-	// among more.
-	accounts, err := store.Accounts(ctx)
+	account, err := oneAccount(ctx, o.credentials)
 	if err != nil {
 		return err
 	}
-	if len(accounts) != 1 {
-		return fmt.Errorf("the database has %d accounts, and a credential is of one; naming one is not implemented", len(accounts))
-	}
-
-	id, token, err := store.Create(ctx, accounts[0], capability, time.Now())
+	id, token, err := o.credentials.Create(ctx, account, capability, time.Now())
 	if err != nil {
 		return err
 	}
@@ -99,7 +118,7 @@ func credentialNew(ctx context.Context, args []string, stdout io.Writer) error {
 		// and one list would show as in force until somebody revoked it.
 		// Revoked past the context: a signal between the insert and the
 		// write is not a reason to leave it.
-		if revokeErr := store.Revoke(context.WithoutCancel(ctx), id, time.Now()); revokeErr != nil {
+		if revokeErr := o.credentials.Revoke(context.WithoutCancel(ctx), id, time.Now()); revokeErr != nil {
 			return errors.Join(err, fmt.Errorf("credential %s is in force with no token written, and revoking it failed: %w", id, revokeErr))
 		}
 		return err
@@ -140,13 +159,13 @@ func credentialList(ctx context.Context, args []string, stdout io.Writer) error 
 	if len(args) > 0 {
 		return fmt.Errorf("credential list takes no arguments, got %d", len(args))
 	}
-	db, store, err := openStore(ctx)
+	o, err := openStore(ctx)
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer o.db.Close()
 
-	all, err := store.List(ctx)
+	all, err := o.credentials.List(ctx)
 	if err != nil {
 		return err
 	}
@@ -178,13 +197,13 @@ func credentialRevoke(ctx context.Context, args []string, stdout io.Writer) erro
 	if err != nil {
 		return err
 	}
-	db, store, err := openStore(ctx)
+	o, err := openStore(ctx)
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer o.db.Close()
 
-	if err := store.Revoke(ctx, id, time.Now()); err != nil {
+	if err := o.credentials.Revoke(ctx, id, time.Now()); err != nil {
 		return err
 	}
 	fmt.Fprintf(stdout, "Revoked %s\n", id)
