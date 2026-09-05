@@ -3,6 +3,7 @@ package payment_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -227,5 +228,89 @@ func TestService_DoesNotReachAPaymentAnotherAccountOpened(t *testing.T) {
 
 	if !errors.Is(err, payment.ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestService_GivesAPaymentAnHourWhenTheRequestNamesNoDeadline(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := serving(t)
+	r := request(t)
+	r.ExpiresAt = time.Time{}
+
+	p, err := svc.Open(t.Context(), first, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if want := p.CreatedAt().Add(time.Hour); !p.ExpiresAt().Equal(want) {
+		t.Errorf("expires_at = %s, want %s, an hour after it was created", p.ExpiresAt(), want)
+	}
+}
+
+func TestService_AcceptsADeadlineThirtyDaysOff(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := serving(t)
+	r := request(t)
+	r.ExpiresAt = now.Add(30 * 24 * time.Hour)
+
+	p, err := svc.Open(t.Context(), first, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !p.ExpiresAt().Equal(r.ExpiresAt) {
+		t.Errorf("expires_at = %s, want %s", p.ExpiresAt(), r.ExpiresAt)
+	}
+}
+
+func TestService_RefusesADeadlineOutsideWhatAPaymentMayHave(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name  string
+		at    time.Time
+		words string
+	}{
+		{"already past", now.Add(-time.Second), "is not after"},
+		{"a microsecond past thirty days", now.Add(30*24*time.Hour + time.Microsecond), "the latest"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			svc, _, _ := serving(t)
+			r := request(t)
+			r.ExpiresAt = c.at
+
+			_, err := svc.Open(t.Context(), first, r)
+
+			ps := wantProblems(t, err)
+			if len(ps) != 1 || ps[0].Field != "expires_at" {
+				t.Fatalf("problems = %v, want one about expires_at", ps)
+			}
+			if !strings.Contains(ps[0].Message, c.words) {
+				t.Errorf("message %q does not say %q", ps[0].Message, c.words)
+			}
+		})
+	}
+}
+
+func TestService_ReportsADeadlineTooFarOffAlongWithTheOtherProblems(t *testing.T) {
+	t.Parallel()
+	// One round trip tells the caller everything, the way New does.
+	svc, _, _ := serving(t)
+	zero, err := payment.ParseMoney(jpyc(t), "0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := request(t)
+	r.Amount = zero
+	r.ExpiresAt = now.Add(31 * 24 * time.Hour)
+
+	_, err = svc.Open(t.Context(), first, r)
+
+	var fields []string
+	for _, p := range wantProblems(t, err) {
+		fields = append(fields, p.Field)
+	}
+	if got := strings.Join(fields, " "); got != "amount expires_at" {
+		t.Errorf("problem fields = %q, want exactly %q", got, "amount expires_at")
 	}
 }

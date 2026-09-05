@@ -2,6 +2,7 @@ package payment
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -23,15 +24,42 @@ func NewService(payments Repository, now func() time.Time) *Service {
 	return &Service{payments: payments, now: now}
 }
 
+// DefaultExpiry is how long a payment stays payable when the request names no
+// deadline. It is one value for every account.
+const DefaultExpiry = time.Hour
+
+// MaxExpiry is the furthest off a request may put a deadline. It too is one
+// value for every account.
+const MaxExpiry = 30 * 24 * time.Hour
+
 // Open records that an amount is being accepted for a piece of business.
 //
 // The payment is not payable yet. Whatever shows it to a customer calls
 // [Service.Await] when it is ready to, so that a payment cannot be paid before
 // whoever asked for it has finished setting it up.
+//
+// A request naming no deadline gets one [DefaultExpiry] from now, and one
+// naming a deadline further off than [MaxExpiry] is refused along with
+// whatever else is wrong with it. The bound is read here rather than by [New],
+// which [Restore] shares: a payment stored under a bound that has since been
+// lowered still has to load.
 func (s *Service) Open(ctx context.Context, account AccountID, r Request) (*Payment, error) {
-	p, err := New(r, s.now())
-	if err != nil {
+	now := s.now()
+	if r.ExpiresAt.IsZero() {
+		r.ExpiresAt = now.Add(DefaultExpiry)
+	}
+	p, err := New(r, now)
+	var problems Problems
+	if err != nil && !errors.As(err, &problems) {
 		return nil, err
+	}
+	if latest := now.Add(MaxExpiry); r.ExpiresAt.After(latest) {
+		problems = append(problems, Problem{Field: "expires_at", Message: fmt.Sprintf(
+			"%s is after %s, the latest deadline a payment opened now can have",
+			r.ExpiresAt.UTC().Format(time.RFC3339), latest.UTC().Format(time.RFC3339))})
+	}
+	if len(problems) > 0 {
+		return nil, problems
 	}
 	if err := s.payments.Create(ctx, account, p); err != nil {
 		return nil, err
