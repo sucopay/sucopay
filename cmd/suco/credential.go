@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"text/tabwriter"
 	"time"
 
@@ -94,7 +93,8 @@ func credentialNew(ctx context.Context, args []string, stdout io.Writer) error {
 		return err
 	}
 	name := "credential-" + string(id) + ".token"
-	if err := writeToken(name, token); err != nil {
+	if err := writeNew(name, []byte(token)); err != nil {
+		err = fmt.Errorf("token file: %w", err)
 		// A row whose token was never written is one nobody can present,
 		// and one list would show as in force until somebody revoked it.
 		// Revoked past the context: a signal between the insert and the
@@ -127,25 +127,6 @@ func capabilityOf(args []string) (credential.Capability, error) {
 		return credential.ReadWrite, nil
 	}
 	return "", errors.New("credential new takes --read-only or --read-write, got neither")
-}
-
-// writeToken writes token, and nothing else, to a file only its owner can
-// read. No newline after it: a client reads the file whole and presents
-// what it read, and a token with a newline on the end is one nobody issued.
-//
-// O_EXCL as init writes the document: the name is a UUID's, so a file of that
-// name already there is not one this run wrote, and it is not overwritten.
-func writeToken(name string, token credential.Token) error {
-	f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return fmt.Errorf("token file: %w", err)
-	}
-	_, writeErr := io.WriteString(f, string(token))
-	closeErr := f.Close()
-	if err := errors.Join(writeErr, closeErr); err != nil {
-		return fmt.Errorf("token file: %w", err)
-	}
-	return nil
 }
 
 // credentialList shows every credential in force, in the store's order: the

@@ -94,6 +94,27 @@ func unimplementedError(document string, r config.Resolved) error {
 	}
 }
 
+// writeNew creates name holding contents, readable by its owner alone, and
+// fails rather than overwrite a file already there. Every file suco writes
+// goes through it: the document an operator edits, a token, a key. Nothing
+// after contents, in particular no newline: a client reads a token file
+// whole and presents what it read, and a token with a newline on the end is
+// one nobody issued.
+//
+// 0600 rather than 0644: the document is the file an operator adds a
+// database URL to, and it is read on a host that may have other accounts on
+// it. O_EXCL rather than a plain create: a token or key file's name is
+// random, so a file of that name already there is not one this run wrote;
+// and overwriting a document someone has edited is not recoverable.
+func writeNew(name string, contents []byte) error {
+	f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, writeErr := f.Write(contents)
+	return errors.Join(writeErr, f.Close())
+}
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

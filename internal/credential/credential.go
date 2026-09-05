@@ -191,6 +191,23 @@ func (k Key) Format(f fmt.State, _ rune) {
 	_, _ = io.WriteString(f, redacted) //nolint:errcheck // fmt's own buffer, and nothing to report it to
 }
 
+// NewKey mints a key: 32 bytes from crypto/rand, for init to write to a
+// file. It takes nothing, as [New] takes nothing.
+func NewKey() Key {
+	var k Key
+	rand.Read(k.bytes[:])
+	return k
+}
+
+// Hex is a key as configuration carries it, 64 lowercase hexadecimal
+// characters, for the file init writes and [ParseKey] reads back. The name
+// is one nothing calls on its own: String is what fmt calls, MarshalText
+// what slog and encoding/json call, and a Key handed to any of them shows
+// nothing of itself.
+func (k Key) Hex() string {
+	return hex.EncodeToString(k.bytes[:])
+}
+
 // ParseKey reads a key as configuration carries it: 64 hexadecimal
 // characters, in either case. What it was given is a secret, and its errors
 // do not repeat it.

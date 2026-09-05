@@ -38,13 +38,16 @@ suco Pay は自社のインフラで動作します。資金は顧客のウォ�
 ```bash
 git clone https://github.com/sucopay/sucopay && cd sucopay
 go build -o suco ./cmd/suco
-./suco init
+./suco init   # 下の export の行を、書き出した鍵ファイルの名前入りで印字します
+export SUCO_CREDENTIALS_KEY="$(cat -- 'credentials-<key_id>.key')"
 ./suco doctor
 ./suco serve
 ```
 
-`suco init` が `suco.yaml` を書き出します。読んでコミットできる設定です。`suco doctor` は
-解決後の設定値と、それぞれの出所を表示します。秘密のキーについては、値ではなく設定されて
+`suco init` が `suco.yaml` と鍵のファイルを書き出します。`suco.yaml` は読んでコミットできる
+設定で、鍵のファイルは所有者だけが読めます。資格情報は `suco` が鍵を使って保存します。`suco.yaml` には
+鍵を読む環境変数の名前だけが入り、鍵の値は入りません。その環境変数は `suco` を動かすシェルで
+設定してください。`suco doctor` は解決後の設定値と、それぞれの出所を表示します。秘密のキーについては、値ではなく設定されて
 いるかどうかだけが出ます。`suco serve` は `http://localhost:7826` で待ち受けます。`/healthz` はプロセスが動いていることを、
 `/readyz` は必要なものに届いているかを答えます。走っている間に起きたことは stdout に書きます。
 データベースを設定した配備では、`suco credential new --read-only` か `--read-write` が API の

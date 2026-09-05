@@ -37,13 +37,17 @@ suco Pay runs on your own infrastructure. Funds go straight from the customer's 
 ```bash
 git clone https://github.com/sucopay/sucopay && cd sucopay
 go build -o suco ./cmd/suco
-./suco init
+./suco init   # prints the export line below, with the name of the key file it wrote
+export SUCO_CREDENTIALS_KEY="$(cat -- 'credentials-<key_id>.key')"
 ./suco doctor
 ./suco serve
 ```
 
-`suco init` writes a `suco.yaml` you can read and commit. `suco doctor` prints the settings it
-resolved and where each value came from, saying of a secret only whether it is set. `suco serve`
+`suco init` writes a `suco.yaml` you can read and commit, and a key file only its owner can read.
+Credentials are stored under the key; `suco.yaml` names the environment variable the key is read
+from and holds no key, so set the variable in the shell that runs `suco`. `suco doctor` prints
+the settings it resolved and where each value came from, saying of a secret only whether it is
+set. `suco serve`
 listens on `http://localhost:7826`, where `/healthz` says the process is up and `/readyz` says
 whether it can reach what it needs. It writes what it is doing to stdout. With a database
 configured, `suco credential new --read-only` or `--read-write` makes a credential for the API and

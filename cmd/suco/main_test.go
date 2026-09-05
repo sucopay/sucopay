@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -17,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sucopay/sucopay/internal/config"
 	"github.com/sucopay/sucopay/internal/credential"
 	"github.com/sucopay/sucopay/internal/postgres"
 	"github.com/sucopay/sucopay/internal/postgres/postgrestest"
@@ -329,6 +331,9 @@ func TestRun_InitWritesADocumentAndNamesWhatToDoNext(t *testing.T) {
 	if !strings.Contains(stdout, path) {
 		t.Errorf("stdout does not name the document it wrote: %q", stdout)
 	}
+	if key := keyFile(t, dir); !strings.Contains(stdout, key) {
+		t.Errorf("stdout does not name the key file it wrote: %q", stdout)
+	}
 	if !strings.Contains(stdout, "suco serve") {
 		t.Errorf("stdout does not name the next step: %q", stdout)
 	}
@@ -338,7 +343,8 @@ func TestRun_InitWritesADocumentAndNamesWhatToDoNext(t *testing.T) {
 }
 
 func TestRun_InitRefusesToOverwriteADocument(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "suco.yaml")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "suco.yaml")
 	const edited = "listen:\n  port: 9999\n"
 	if err := os.WriteFile(path, []byte(edited), 0o644); err != nil {
 		t.Fatal(err)
@@ -360,14 +366,158 @@ func TestRun_InitRefusesToOverwriteADocument(t *testing.T) {
 	if string(got) != edited {
 		t.Errorf("the document was changed:\n%s", got)
 	}
+	if keys := keyFiles(t, dir); len(keys) != 0 {
+		t.Errorf("init refused and wrote a key all the same: %q", keys)
+	}
 }
 
-func TestRun_ServeAcceptsWhatInitWrote(t *testing.T) {
+// TestRun_InitLeavesNoKeyWhenTheDocumentIsNotWritten covers the failure
+// between the two files: the key is written first, so the document never
+// names a key that is not there, and a document that then fails takes the
+// key with it, or the next init would find a key it did not write.
+//
+// A dangling symbolic link is what makes the document fail here: it is not
+// there for the check, and it is there for a create that refuses to follow
+// links.
+func TestRun_InitLeavesNoKeyWhenTheDocumentIsNotWritten(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "suco.yaml")
+	if err := os.Symlink(filepath.Join(dir, "nowhere"), path); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SUCO_CONFIG", path)
+
+	_, _, err := runArgs(t, "init")
+
+	if err == nil {
+		t.Fatal("want an error, got none")
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("error does not name the document: %v", err)
+	}
+	if keys := keyFiles(t, dir); len(keys) != 0 {
+		t.Errorf("init failed and left a key behind: %q", keys)
+	}
+}
+
+// TestRun_InitWritesTheKeyToAFileOnlyItsOwnerCanRead is what the environment
+// reads the key from, so it holds the key alone, as ParseKey reads one and
+// with no newline after it, and nobody but its owner reads it.
+func TestRun_InitWritesTheKeyToAFileOnlyItsOwnerCanRead(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SUCO_CONFIG", filepath.Join(dir, "suco.yaml"))
+	if _, _, err := runArgs(t, "init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	name := keyFile(t, dir)
+
+	info, err := os.Stat(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := info.Mode().Perm(); mode&0o077 != 0 {
+		t.Errorf("mode = %04o, want nothing for group or other", mode)
+	}
+	contents, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := credential.ParseKey(string(contents)); err != nil {
+		t.Errorf("the file holds %q, which ParseKey refuses: %v", contents, err)
+	}
+}
+
+func TestRun_InitTwiceWritesTwoKeys(t *testing.T) {
+	var keys []string
+	for range 2 {
+		dir := t.TempDir()
+		t.Setenv("SUCO_CONFIG", filepath.Join(dir, "suco.yaml"))
+		if _, _, err := runArgs(t, "init"); err != nil {
+			t.Fatalf("init: %v", err)
+		}
+		key, err := os.ReadFile(keyFile(t, dir))
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, string(key))
+	}
+
+	if keys[0] == keys[1] {
+		t.Error("the two runs wrote the same key")
+	}
+}
+
+// TestRun_InitKeepsTheKeyOutOfTheDocument is the split init makes: the
+// document is the file an operator reads and commits, so it names the key
+// file's identifier and the variable the key comes from, and holds no key.
+func TestRun_InitKeepsTheKeyOutOfTheDocument(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "suco.yaml")
+	t.Setenv("SUCO_CONFIG", path)
+	if _, _, err := runArgs(t, "init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	name := keyFile(t, dir)
+	key, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if bytes.Contains(document, key) {
+		t.Error("the document holds the key")
+	}
+	t.Setenv(config.KeyVar, string(key))
+	resolved, err := config.Load(path, os.LookupEnv)
+	if err != nil {
+		t.Fatalf("the document does not resolve with the key set: %v", err)
+	}
+	if want := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(name), "credentials-"), ".key"); resolved.Config.Credentials.KeyID != want {
+		t.Errorf("key_id = %q, want %q, the identifier in the key file's name", resolved.Config.Credentials.KeyID, want)
+	}
+	if got := resolved.Sources["credentials.key"]; got.Var != config.KeyVar {
+		t.Errorf("credentials.key comes from %+v, want the variable %s", got, config.KeyVar)
+	}
+}
+
+func TestRun_ServeRefusesWhatInitWroteUntilTheKeyIsSet(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "suco.yaml")
 	t.Setenv("SUCO_CONFIG", path)
 	if _, _, err := runArgs(t, "init"); err != nil {
 		t.Fatalf("init: %v", err)
 	}
+	onFreePort(t, path)
+
+	_, _, err := runArgs(t, "serve")
+
+	if err == nil {
+		t.Fatal("serve started without the key")
+	}
+	if !strings.Contains(err.Error(), config.KeyVar) {
+		t.Errorf("error does not name the variable to set: %v", err)
+	}
+}
+
+// TestRun_ServeAcceptsWhatInitWrote runs the line init prints, in a shell as
+// an operator would, and starts serve with what it set. The directory has a
+// space and a quote in its name, so that the line is one the shell reads
+// whole.
+func TestRun_ServeAcceptsWhatInitWrote(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "it's here")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "suco.yaml")
+	t.Setenv("SUCO_CONFIG", path)
+	stdout, _, err := runArgs(t, "init")
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	t.Setenv(config.KeyVar, exported(t, stdout, config.KeyVar))
 	// init writes the port it defaults to, which something else on this
 	// machine may hold. That says nothing about whether the document is
 	// acceptable, so the port is moved and the rest of it is what is tested.
@@ -379,7 +529,7 @@ func TestRun_ServeAcceptsWhatInitWrote(t *testing.T) {
 	cancel()
 	var out, errOut bytes.Buffer
 
-	err := run(ctx, []string{"serve"}, &out, &errOut)
+	err = run(ctx, []string{"serve"}, &out, &errOut)
 
 	// The cancelled context is the only thing that should have stopped it.
 	// Matching on the wording of a refusal stops matching the first time that
@@ -387,6 +537,71 @@ func TestRun_ServeAcceptsWhatInitWrote(t *testing.T) {
 	if err != nil && !errors.Is(err, context.Canceled) {
 		t.Fatalf("serve did not accept the document init wrote: %v", err)
 	}
+}
+
+// TestRun_InitPrintsALineThatReadsAPathBeginningWithADash is the one path a
+// quoted word does not make safe for cat, which reads it as an option. A
+// document named relative to the working directory is what puts a dash
+// first.
+func TestRun_InitPrintsALineThatReadsAPathBeginningWithADash(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.Mkdir("-here", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SUCO_CONFIG", filepath.Join("-here", "suco.yaml"))
+	stdout, _, err := runArgs(t, "init")
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	key := exported(t, stdout, config.KeyVar)
+
+	if _, err := credential.ParseKey(key); err != nil {
+		t.Errorf("the line init printed did not set %s to the key: %v", config.KeyVar, err)
+	}
+}
+
+// exported runs the one line of stdout that begins with export through sh,
+// and returns what the shell then holds under name.
+func exported(t *testing.T, stdout, name string) string {
+	t.Helper()
+	var line string
+	for l := range strings.Lines(stdout) {
+		if l = strings.TrimSpace(l); strings.HasPrefix(l, "export ") {
+			if line != "" {
+				t.Fatalf("stdout has more than one line to run:\n%s", stdout)
+			}
+			line = l
+		}
+	}
+	if line == "" {
+		t.Fatalf("stdout has no line to run:\n%s", stdout)
+	}
+	out, err := exec.Command("sh", "-c", line+"; printf %s \"$"+name+"\"").Output()
+	if err != nil {
+		t.Fatalf("sh refused %q: %v", line, err)
+	}
+	return string(out)
+}
+
+// keyFile is the one key file init wrote in dir.
+func keyFile(t *testing.T, dir string) string {
+	t.Helper()
+	keys := keyFiles(t, dir)
+	if len(keys) != 1 {
+		t.Fatalf("want one key file in %s, got %q", dir, keys)
+	}
+	return keys[0]
+}
+
+// keyFiles lists the key files in dir, by the name init gives one.
+func keyFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	keys, err := filepath.Glob(filepath.Join(dir, "credentials-*.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return keys
 }
 
 // onFreePort rewrites the port in a document to one nothing is listening on.

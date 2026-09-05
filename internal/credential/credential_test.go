@@ -93,6 +93,40 @@ func TestNewKeyID_DoesNotRepeatItself(t *testing.T) {
 	}
 }
 
+func TestNewKey_TakesNothing(t *testing.T) {
+	t.Parallel()
+	takesNothing(t, "NewKey", credential.NewKey)
+}
+
+func TestNewKey_DoesNotRepeatItself(t *testing.T) {
+	t.Parallel()
+	seen := make(map[string]bool, 1000)
+	for range 1000 {
+		k := credential.NewKey().Hex()
+		if seen[k] {
+			t.Fatal("a key came back twice")
+		}
+		seen[k] = true
+	}
+}
+
+// TestKey_HexIsWhatParseKeyReads ties init to serve: init writes Hex to a
+// file, and what the environment carries from there reaches ParseKey.
+func TestKey_HexIsWhatParseKeyReads(t *testing.T) {
+	t.Parallel()
+	if got := parsed(t, key).Hex(); got != key {
+		t.Errorf("Hex = %q, want %q", got, key)
+	}
+	k := credential.NewKey()
+	back, err := credential.ParseKey(k.Hex())
+	if err != nil {
+		t.Fatalf("ParseKey refused what Hex wrote: %v", err)
+	}
+	if back != k {
+		t.Error("ParseKey read Hex as another key")
+	}
+}
+
 // The column is a uuid, and what PostgreSQL writes back is compared as text
 // with what was given, so the text has to be the one form it writes.
 var randomUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
