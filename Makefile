@@ -27,7 +27,7 @@ build: ## Build suco
 
 .PHONY: check
 check: ## Everything CI runs
-	gofmt -l . | tee /dev/stderr | (! read)
+	test -z "$$(gofmt -l . | tee /dev/stderr)"
 	go build ./...
 	go test -race ./...
 	$(MAKE) lint
