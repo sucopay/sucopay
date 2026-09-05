@@ -1,12 +1,17 @@
 version: 2
 
+# A release waits a week before it is proposed. A compromised release is
+# usually noticed and pulled within days, and nothing here needs a version
+# the day it appears. Security updates skip the wait.
 updates:
   # The workflow pins actions to a commit, which no longer moves on its own.
   # Dependabot is what moves them, with the tag comment kept in step.
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
 
   - package-ecosystem: gomod
     directory: /
     schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
