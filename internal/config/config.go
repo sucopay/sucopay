@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/sucopay/sucopay/internal/payment"
 	"github.com/sucopay/sucopay/internal/problem"
 )
 
@@ -130,6 +131,19 @@ type Network struct {
 	RPC  string
 }
 
+// Assets are the tokens the instance accepts payment in, keyed by the name a
+// document gives each. The name is a label for requests and the CLI to say;
+// the token itself is its network and reference. A document that gives two
+// names to one token is refused: a transfer seen on the chain is in the
+// token, and would have no one name to be recorded under.
+type Assets map[string]payment.Asset
+
+// Asset returns the token a name stands for, and whether there is one.
+func (a Assets) Asset(name string) (payment.Asset, bool) {
+	asset, ok := a[name]
+	return asset, ok
+}
+
 // Config is the boot-time configuration of one instance. [Resolve] validates a
 // document before it returns one; a Config assembled any other way has not been
 // checked.
@@ -139,6 +153,7 @@ type Config struct {
 	Database    Database
 	Credentials Credentials
 	Networks    map[string]Network
+	Assets      Assets
 }
 
 // Resolved is a Config together with where each of its values came from.

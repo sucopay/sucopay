@@ -46,6 +46,12 @@ func (r Resolved) Report() []ReportLine {
 		values["networks."+name+".kind"] = n.Kind
 		values["networks."+name+".rpc"] = n.RPC
 	}
+	for name, a := range r.Config.Assets {
+		values["assets."+name+".network"] = string(a.Network())
+		values["assets."+name+".reference"] = a.Reference()
+		values["assets."+name+".symbol"] = a.Symbol()
+		values["assets."+name+".decimals"] = strconv.Itoa(int(a.Decimals()))
+	}
 
 	lines := make([]ReportLine, 0, len(values))
 	for path, value := range values {

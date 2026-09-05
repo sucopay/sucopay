@@ -25,6 +25,10 @@ var resolutionImports = []string{
 	// invisible decides which characters a report may carry. It reads
 	// nothing and reaches nothing; it is a list of runes.
 	"github.com/sucopay/sucopay/internal/invisible",
+	// payment says what an asset is, and a document's asset is one it has
+	// accepted. It reads nothing and reaches nothing; it is the rules of
+	// money.
+	"github.com/sucopay/sucopay/internal/payment",
 	// problem renders a list of them for a reader. It reads nothing and
 	// reaches nothing; it is a way of laying out strings.
 	"github.com/sucopay/sucopay/internal/problem",

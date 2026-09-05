@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/sucopay/sucopay/internal/invisible"
+	"github.com/sucopay/sucopay/internal/payment"
 )
 
 // Lookup reports the value of an environment variable and whether it was set.
@@ -43,6 +44,7 @@ func Resolve(doc map[string]any, env Lookup) (Resolved, error) {
 	credentialsKey := r.text("credentials.key", "")
 	credentialsKeyID := r.text("credentials.key_id", "")
 	networks := r.networks()
+	assets := r.assets(networks)
 
 	cfg := Config{
 		Listen:      Listen{Host: host, Port: port, BaseURL: baseURL},
@@ -50,6 +52,7 @@ func Resolve(doc map[string]any, env Lookup) (Resolved, error) {
 		Database:    Database{Managed: managed, URL: dbURL},
 		Credentials: Credentials{Key: credentialsKey, KeyID: credentialsKeyID},
 		Networks:    networks,
+		Assets:      assets,
 	}
 	r.validate(cfg)
 	r.reportUnknownKeys()
@@ -216,39 +219,118 @@ func (r *reader) boolean(path string, def bool) bool {
 	return def
 }
 
-func (r *reader) networks() map[string]Network {
-	v, ok := walk(r.doc, []string{"networks"})
+// section returns the names under a top-level mapping of them, sorted, with
+// what being the noun a message calls one entry.
+//
+// A name becomes a segment of the dotted paths that carry provenance and mark
+// secrets, so a dot inside one would split it in two and take networks.*.rpc
+// out of the secret set. Such a name is refused, and nothing under it is
+// read: reporting each of its keys as unknown would bury the name that caused
+// it.
+func (r *reader) section(section, what string) []string {
+	v, ok := walk(r.doc, []string{section})
 	if !ok {
-		return map[string]Network{}
+		return nil
 	}
 	entries, isMap := v.(map[string]any)
 	if !isMap {
-		r.fail("networks", "want a mapping of names to networks, got %s", kindOf(v))
-		return map[string]Network{}
+		r.fail(section, "want a mapping of names to %ss, got %s", what, kindOf(v))
+		// Read, if not understood: calling it an unknown key as well would
+		// send the reader after the name when the shape is the mistake.
+		r.seen[section] = true
+		return nil
 	}
-	out := make(map[string]Network, len(entries))
+	names := make([]string, 0, len(entries))
 	for name := range entries {
-		// A name becomes a segment of the dotted paths that carry provenance
-		// and mark secrets, so a dot inside one would split it in two and take
-		// networks.*.rpc out of the secret set.
 		if strings.Contains(name, ".") {
-			r.fail("networks", "network name %q contains a dot", name)
-			// Nothing under a rejected name is read, and reporting each of its
-			// keys as unknown would bury the name that caused it.
+			r.fail(section, "%s name %q contains a dot", what, name)
 			for _, path := range leaves(r.doc, "") {
-				if strings.HasPrefix(path, "networks."+name+".") {
+				if strings.HasPrefix(path, section+"."+name+".") {
 					r.seen[path] = true
 				}
 			}
 			continue
 		}
-		r.seen["networks."+name] = true
+		r.seen[section+"."+name] = true
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
+}
+
+func (r *reader) networks() map[string]Network {
+	out := map[string]Network{}
+	for _, name := range r.section("networks", "network") {
 		out[name] = Network{
 			Kind: r.text("networks."+name+".kind", ""),
 			RPC:  r.text("networks."+name+".rpc", ""),
 		}
 	}
 	return out
+}
+
+func (r *reader) assets(networks map[string]Network) Assets {
+	out := Assets{}
+	for _, name := range r.section("assets", "asset") {
+		if asset, ok := r.asset("assets."+name, networks); ok {
+			out[name] = asset
+		}
+	}
+	return out
+}
+
+// asset reads one entry and returns the token it describes once payment
+// accepts it, with every problem found on the way reported. The checks sit
+// here rather than in validate because a payment.Asset exists only once
+// payment.NewAsset has accepted it, so there is nothing to validate
+// afterwards.
+//
+// A token belongs on a network the document declares: the section is a list
+// of what the server observes, and an asset on a network nobody declared
+// would be accepted in a request and never seen paid.
+func (r *reader) asset(path string, networks map[string]Network) (payment.Asset, bool) {
+	network := r.text(path+".network", "")
+	reference := r.text(path+".reference", "")
+	symbol := r.text(path+".symbol", "")
+	decimals := r.integer(path+".decimals", 0)
+
+	if p := path + ".network"; !r.failed(p) {
+		if network == "" {
+			r.fail(p, "required")
+		} else if _, known := networks[network]; !known {
+			r.fail(p, "no network named %v", shown(p, network))
+		}
+	}
+	if p := path + ".reference"; !r.failed(p) && reference == "" {
+		r.fail(p, "required")
+	}
+	if p := path + ".symbol"; !r.failed(p) && symbol == "" {
+		r.fail(p, "required")
+	}
+	decimalsPath := path + ".decimals"
+	size, fits := toByte(decimals)
+	if !r.failed(decimalsPath) {
+		switch {
+		case r.sources[decimalsPath].Origin == FromDefault:
+			r.fail(decimalsPath, "required")
+		case !fits:
+			r.fail(decimalsPath, "outside 0-%d: %d", math.MaxUint8, decimals)
+		}
+	}
+	// NewAsset refuses an empty network or reference too, and would say so
+	// again. It is still asked about the rest when only the symbol or the
+	// network's existence is wrong, so that a report holds every problem.
+	if network == "" || reference == "" || !fits || r.failed(decimalsPath) {
+		return payment.Asset{}, false
+	}
+	asset, err := payment.NewAsset(payment.Network(network), reference, symbol, size)
+	switch {
+	case errors.Is(err, payment.ErrTooManyDecimals):
+		r.fail(decimalsPath, "%v", err)
+	case err != nil:
+		r.fail(path, "%v", err)
+	}
+	return asset, err == nil
 }
 
 func (r *reader) validate(cfg Config) {
@@ -270,6 +352,25 @@ func (r *reader) validate(cfg Config) {
 		path := "networks." + name + ".kind"
 		if !r.failed(path) && !slices.Contains(knownNetworkKinds, n.Kind) {
 			r.fail(path, "unknown kind %v, want one of %s", shown(path, n.Kind), strings.Join(knownNetworkKinds, ", "))
+		}
+	}
+	r.validateAssets(cfg.Assets)
+}
+
+// validateAssets refuses two names for one token. Which of the two is the
+// mistake is the document's to say, so both are named, in the document's
+// sorted order so that a report reads the same each time.
+func (r *reader) validateAssets(assets Assets) {
+	names := make([]string, 0, len(assets))
+	for name := range assets {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for i, name := range names {
+		for _, earlier := range names[:i] {
+			if assets[earlier].Same(assets[name]) {
+				r.fail("assets", "%q and %q name the same asset", earlier, name)
+			}
 		}
 	}
 }
@@ -461,6 +562,15 @@ var (
 	errNotWhole  = errors.New("want a whole number")
 	errNotNumber = errors.New("want a number")
 )
+
+// toByte returns v as the byte an asset counts decimals in, and false when
+// it is outside one. Converting without looking would let 256 through as 0.
+func toByte(v int) (uint8, bool) {
+	if v < 0 || v > math.MaxUint8 {
+		return 0, false
+	}
+	return uint8(v), true
+}
 
 func toInt(v any) (int, error) {
 	switch n := v.(type) {
