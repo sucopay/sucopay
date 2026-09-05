@@ -8,8 +8,24 @@ linters:
     # The rule about t.Parallel is in CONTRIBUTING; this is what keeps it from
     # depending on a reviewer noticing.
     - paralleltest
+    # What a reader reviewing for security looks for first: SQL assembled
+    # from text, a file every account on the host can read, a cipher that
+    # has been broken. A reviewer reads a change once; this reads every one.
+    #
+    # A finding that is wrong at one line is silenced there with gosec's own
+    # comment, `#nosec G304 -- why`, and not with nolint. nolint names the
+    # linter, so it would also silence whatever every other rule here has to
+    # say about that line, such as the mode a file is made with.
+    - gosec
 
   settings:
+    gosec:
+      excludes:
+        # An unhandled error is errcheck's, with the exclusions below. Read
+        # here as well, the same calls are reported twice, under a rule that
+        # cannot be told which functions are exempt.
+        - G104
+
     revive:
       rules:
         - name: exported
@@ -61,6 +77,10 @@ linters:
         linters:
           # Tests report failures through t.Fatal, so a deferred Close has
           # nothing to report to, and a test helper is not part of any
-          # package's documented surface.
+          # package's documented surface. What gosec reports in a test is
+          # the test's own doing: a fixture written 0644, the line init
+          # printed handed to sh, the database URL docker-compose.yml gives
+          # it, password included. None of it ships.
           - errcheck
           - revive
+          - gosec

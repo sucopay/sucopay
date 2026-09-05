@@ -25,6 +25,7 @@ func Load(path string, env Lookup) (Resolved, error) {
 		return Resolved{}, fmt.Errorf("configuration document: %w: %d bytes, limit is %d",
 			ErrDocumentTooLarge, info.Size(), MaxDocumentBytes)
 	}
+	// #nosec G304 -- reading the document the operator named is what Load is for
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return Resolved{}, fmt.Errorf("configuration document: %w", err)

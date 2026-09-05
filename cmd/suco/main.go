@@ -107,6 +107,7 @@ func unimplementedError(document string, r config.Resolved) error {
 // random, so a file of that name already there is not one this run wrote;
 // and overwriting a document someone has edited is not recoverable.
 func writeNew(name string, contents []byte) error {
+	// #nosec G304 -- the name is SUCO_CONFIG or one suco made up; nothing a request carries reaches it
 	f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
