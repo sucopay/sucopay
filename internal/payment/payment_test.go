@@ -72,12 +72,12 @@ func payable(t *testing.T) *payment.Payment {
 	return p
 }
 
-// settling returns a payment that is no longer payable, which is where expiry
-// and a late arrival are decided.
-func settling(t *testing.T) *payment.Payment {
+// awaitingFinality returns a payment that is no longer payable, which is where
+// expiry and a late arrival are decided.
+func awaitingFinality(t *testing.T) *payment.Payment {
 	t.Helper()
 	p := payable(t)
-	if err := p.Settle(p.ExpiresAt()); err != nil {
+	if err := p.AwaitFinality(p.ExpiresAt()); err != nil {
 		t.Fatal(err)
 	}
 	return p
@@ -361,7 +361,7 @@ func TestPayment_MovesFromOpenedToPaid(t *testing.T) {
 	}
 	arrived(t, p)
 	if err := p.Succeed(); err != nil {
-		t.Fatalf("settling: %v", err)
+		t.Fatalf("succeed: %v", err)
 	}
 	if p.Status() != payment.Succeeded {
 		t.Errorf("status = %s, want %s", p.Status(), payment.Succeeded)
@@ -436,22 +436,22 @@ func TestPayment_RefusesToMoveOnFromAFinalStatus(t *testing.T) {
 	}
 }
 
-func TestSettle_RefusesToStopAcceptingPaymentEarly(t *testing.T) {
+func TestAwaitFinality_RefusesToStopAcceptingPaymentEarly(t *testing.T) {
 	t.Parallel()
 	p := payable(t)
 
-	if err := p.Settle(now); err == nil {
+	if err := p.AwaitFinality(now); err == nil {
 		t.Fatal("stopped accepting payment while a customer was still entitled to pay")
 	}
 	if p.Status() != payment.AwaitingPayment {
 		t.Errorf("status = %s, want it unchanged", p.Status())
 	}
 
-	if err := p.Settle(p.ExpiresAt()); err != nil {
+	if err := p.AwaitFinality(p.ExpiresAt()); err != nil {
 		t.Fatalf("refused to stop accepting payment at the deadline: %v", err)
 	}
-	if p.Status() != payment.Settling {
-		t.Errorf("status = %s, want %s", p.Status(), payment.Settling)
+	if p.Status() != payment.AwaitingFinality {
+		t.Errorf("status = %s, want %s", p.Status(), payment.AwaitingFinality)
 	}
 }
 
@@ -466,7 +466,7 @@ func TestExpire_OnlyOnceThePaymentStoppedBeingPayable(t *testing.T) {
 		t.Errorf("status = %s, want it unchanged", p.Status())
 	}
 
-	closed := settling(t)
+	closed := awaitingFinality(t)
 	if err := closed.Expire(); err != nil {
 		t.Fatalf("refused to expire a payment nobody could pay any more: %v", err)
 	}
@@ -477,7 +477,7 @@ func TestExpire_OnlyOnceThePaymentStoppedBeingPayable(t *testing.T) {
 
 func TestSucceed_AcceptsATransferThatLandedAfterTheDeadline(t *testing.T) {
 	t.Parallel()
-	p := settling(t)
+	p := awaitingFinality(t)
 	arrived(t, p)
 
 	if err := p.Succeed(); err != nil {
@@ -559,7 +559,7 @@ func TestExpire_StillExpiresAnUnderpaymentNobodyToppedUp(t *testing.T) {
 	// Underpayment is recorded, not handled: the shortfall stays visible and
 	// the payment still ends. A coverage check here, added by analogy with
 	// Succeed, would leave short payments open forever.
-	p := settling(t)
+	p := awaitingFinality(t)
 	short, err := payment.ParseMoney(p.Asset(), "1")
 	if err != nil {
 		t.Fatal(err)
@@ -594,7 +594,7 @@ func TestReceive_RefusesOnAPaymentNothingCanArriveFor(t *testing.T) {
 			return p
 		}},
 		{"already expired", func(t *testing.T) *payment.Payment {
-			p := settling(t)
+			p := awaitingFinality(t)
 			if err := p.Expire(); err != nil {
 				t.Fatal(err)
 			}
@@ -615,7 +615,7 @@ func TestReceive_RefusesOnAPaymentNothingCanArriveFor(t *testing.T) {
 	}
 }
 
-func TestRestore_RebuildsAPaymentStillSettlingOnAnUnderpayment(t *testing.T) {
+func TestRestore_RebuildsAPaymentStillAwaitingFinalityOnAnUnderpayment(t *testing.T) {
 	t.Parallel()
 	// A row can hold less than it billed for as long as it is not succeeded,
 	// which is where a recorded underpayment lives until somebody decides.
@@ -623,7 +623,7 @@ func TestRestore_RebuildsAPaymentStillSettlingOnAnUnderpayment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	row := stored(t, id, payment.Settling, now, now.Add(time.Hour))
+	row := stored(t, id, payment.AwaitingFinality, now, now.Add(time.Hour))
 	short, err := payment.ParseMoney(row.Amount.Asset(), "1")
 	if err != nil {
 		t.Fatal(err)
@@ -633,7 +633,7 @@ func TestRestore_RebuildsAPaymentStillSettlingOnAnUnderpayment(t *testing.T) {
 	back, err := payment.Restore(row)
 
 	if err != nil {
-		t.Fatalf("a settling payment holding an underpayment would not load: %v", err)
+		t.Fatalf("a payment awaiting finality that holds an underpayment would not load: %v", err)
 	}
 	if cmp, err := back.Received().Cmp(short); err != nil || cmp != 0 {
 		t.Errorf("received = %s, want %s (err %v)", back.Received(), short, err)

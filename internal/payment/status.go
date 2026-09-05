@@ -13,29 +13,30 @@ type Status string
 // The states a payment moves through. It is created, then it can be paid, then
 // it stops being payable, and then it has been paid or it has not.
 //
-// Settling is where a payment waits once it stops being payable. A transfer
-// authorised a moment before the deadline can still be arriving after it, and
-// without this state the only place to put one is a payment already called
-// expired, which is final.
+// AwaitingFinality is where a payment waits once it stops being payable. A
+// transfer authorised a moment before the deadline can still be arriving after
+// it, and without this state the only place to put one is a payment already
+// called expired, which is final.
 const (
-	Created         Status = "created"
-	AwaitingPayment Status = "awaiting_payment"
-	Settling        Status = "settling"
-	Succeeded       Status = "succeeded"
-	Failed          Status = "failed"
-	Expired         Status = "expired"
+	Created          Status = "created"
+	AwaitingPayment  Status = "awaiting_payment"
+	AwaitingFinality Status = "awaiting_finality"
+	Succeeded        Status = "succeeded"
+	Failed           Status = "failed"
+	Expired          Status = "expired"
 )
 
 // next is every move a payment may make. A status absent from this map is
 // final: nothing follows succeeded, failed or expired, and money that has
 // settled does not become money that has not.
 //
-// Expired follows settling rather than awaiting_payment, so that calling a
-// payment expired cannot take away a chance to pay that somebody still had.
+// Expired follows awaiting_finality rather than awaiting_payment, so that
+// calling a payment expired cannot take away a chance to pay that somebody
+// still had.
 var next = map[Status][]Status{
-	Created:         {AwaitingPayment},
-	AwaitingPayment: {Succeeded, Failed, Settling},
-	Settling:        {Succeeded, Expired},
+	Created:          {AwaitingPayment},
+	AwaitingPayment:  {Succeeded, Failed, AwaitingFinality},
+	AwaitingFinality: {Succeeded, Expired},
 }
 
 // Valid reports whether s is a status this package defines.

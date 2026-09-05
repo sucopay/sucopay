@@ -125,10 +125,10 @@ func (a Address) String() string { return string(a) }
 // One writer at a time. A payment is loaded, moved and saved inside one
 // database transaction, which is what decides between two moves racing for the
 // same payment; nothing here does, and two goroutines moving one Payment is a
-// data race. Settling lengthens the time in which that matters: a late transfer
-// confirming and a sweep giving up on the same payment are two writers, and the
-// one that loses has to load again and decide again rather than reapply what it
-// was going to do.
+// data race. Awaiting finality lengthens the time in which that matters: a
+// late transfer confirming and a sweep giving up on the same payment are two
+// writers, and the one that loses has to load again and decide again rather
+// than reapply what it was going to do.
 type Payment struct {
 	id          ID
 	amount      Money
@@ -347,12 +347,12 @@ func (p *Payment) Await() error { return p.moveTo(AwaitingPayment) }
 // not something this package does, so a second arrival is a payment matched
 // twice rather than a payment being topped up.
 //
-// Money can only land while the payment is payable or while it is settling.
+// Money can only land while the payment is payable or awaiting finality.
 // Recording an arrival on one that has finished would make what a final payment
 // says about itself change afterwards, which is the thing the lifecycle exists
 // to prevent.
 func (p *Payment) Receive(m Money) error {
-	if p.status != AwaitingPayment && p.status != Settling {
+	if p.status != AwaitingPayment && p.status != AwaitingFinality {
 		return Problems{{Field: "received", Message: fmt.Sprintf(
 			"payment is %s, which nothing can arrive for", p.status)}}
 	}
@@ -409,17 +409,17 @@ func (p *Payment) covered() error {
 	return nil
 }
 
-// Settle records that the payment is no longer payable and is waiting to learn
-// whether anything arrives.
+// AwaitFinality records that the payment is no longer payable and is waiting
+// to learn whether anything arrives.
 //
 // It refuses to do so early: a payment made unpayable before its own deadline is
 // one a customer was still entitled to pay.
-func (p *Payment) Settle(now time.Time) error {
+func (p *Payment) AwaitFinality(now time.Time) error {
 	if now.Before(p.expiresAt) {
 		return Problems{{Field: "expires_at", Message: fmt.Sprintf("%s is after %s",
 			p.expiresAt.Format(time.RFC3339), now.UTC().Format(time.RFC3339))}}
 	}
-	return p.moveTo(Settling)
+	return p.moveTo(AwaitingFinality)
 }
 
 // Fail records that the payment will not settle and that waiting longer will
@@ -428,10 +428,11 @@ func (p *Payment) Fail() error { return p.moveTo(Failed) }
 
 // Expire records that nothing arrived before the payment stopped being payable.
 //
-// It takes no deadline. Reaching it means passing through settling, which is
-// where the deadline is checked, so by now the authorization is dead and the
-// question is only whether anything was still in flight. How long to wait for
-// that is the network's confirmation policy, which this package does not know.
+// It takes no deadline. Reaching it means passing through awaiting_finality,
+// which is where the deadline is checked, so by now the authorization is dead
+// and the question is only whether anything was still in flight. How long to
+// wait for that is the network's confirmation policy, which this package does
+// not know.
 func (p *Payment) Expire() error { return p.moveTo(Expired) }
 
 func (p *Payment) moveTo(want Status) error {

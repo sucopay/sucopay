@@ -1,9 +1,9 @@
--- settling sits between "no longer payable" and "expired". Why it has to exist
--- is in internal/payment/status.go, beside the states themselves.
+-- awaiting_finality sits between "no longer payable" and "expired". Why it
+-- has to exist is in internal/payment/status.go, beside the states themselves.
 alter table payments
     drop constraint payments_status_is_one_of_the_lifecycle,
     add constraint payments_status_is_one_of_the_lifecycle check (
-        status in ('created', 'awaiting_payment', 'settling', 'succeeded', 'failed', 'expired')
+        status in ('created', 'awaiting_payment', 'awaiting_finality', 'succeeded', 'failed', 'expired')
     );
 
 -- What was asked for and what arrived are separate columns. Held in one, a
