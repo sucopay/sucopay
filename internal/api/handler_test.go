@@ -32,7 +32,7 @@ func TestHandler_AnswersOnlyTheRoutesItServes(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
 
-			api.Handler(quiet(), nil, nil).ServeHTTP(rec, httptest.NewRequest(c.method, c.path, nil))
+			api.Handler(quiet(), api.Dependencies{}).ServeHTTP(rec, httptest.NewRequest(c.method, c.path, nil))
 
 			if rec.Code != c.want {
 				t.Errorf("status = %d, want %d", rec.Code, c.want)
@@ -45,7 +45,7 @@ func TestHandler_HealthzReportsOKAsJSON(t *testing.T) {
 	t.Parallel()
 	rec := httptest.NewRecorder()
 
-	api.Handler(quiet(), nil, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	api.Handler(quiet(), api.Dependencies{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
 	if got := rec.Header().Get("Content-Type"); got != "application/json" {
 		t.Errorf("content-type = %q, want application/json", got)
@@ -66,7 +66,7 @@ func TestHandler_TellsBrowsersNotToSniffTheContentType(t *testing.T) {
 	t.Parallel()
 	rec := httptest.NewRecorder()
 
-	api.Handler(quiet(), nil, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	api.Handler(quiet(), api.Dependencies{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
 	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
@@ -110,7 +110,7 @@ func TestHandler_LooksUpNoTokenAProbePresents(t *testing.T) {
 					r.Header.Set("Authorization", "Bearer "+string(credential.New()))
 				}
 
-				api.Handler(quiet(), database, consulted{t}).ServeHTTP(rec, r)
+				api.Handler(quiet(), api.Dependencies{Database: database, Credentials: consulted{t}}).ServeHTTP(rec, r)
 
 				if rec.Code != http.StatusOK {
 					t.Errorf("%s, presenting a token: %v, with a database: %v: status = %d, want 200",
@@ -145,7 +145,7 @@ func TestReadyz_SaysWhatCredentialsAreInForceAndIsReadyEitherWay(t *testing.T) {
 	for _, what := range []credential.InForce{credential.NoneInForce, credential.ReadOnlyInForce, credential.ReadWriteInForce} {
 		rec := httptest.NewRecorder()
 
-		api.Handler(quiet(), reachable, inForce{what: what}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+		api.Handler(quiet(), api.Dependencies{Database: reachable, Credentials: inForce{what: what}}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 
 		if rec.Code != http.StatusOK {
 			t.Errorf("%s in force: /readyz = %d, want %d", what, rec.Code, http.StatusOK)
@@ -167,7 +167,7 @@ func TestReadyz_SaysNothingOfCredentialsWhereNoStoreWasBuilt(t *testing.T) {
 	reachable := func(context.Context) error { return nil }
 	rec := httptest.NewRecorder()
 
-	api.Handler(quiet(), reachable, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	api.Handler(quiet(), api.Dependencies{Database: reachable}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("/readyz = %d, want %d", rec.Code, http.StatusOK)
@@ -192,7 +192,7 @@ func TestReadyz_IsNotReadyWhenTheStoreCannotBeRead(t *testing.T) {
 	reachable := func(context.Context) error { return nil }
 	rec := httptest.NewRecorder()
 
-	api.Handler(log.logger(), reachable, inForce{err: errors.New("relation credentials does not exist")}).
+	api.Handler(log.logger(), api.Dependencies{Database: reachable, Credentials: inForce{err: errors.New("relation credentials does not exist")}}).
 		ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 
 	if rec.Code != http.StatusServiceUnavailable {

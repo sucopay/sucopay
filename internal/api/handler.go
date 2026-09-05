@@ -17,21 +17,27 @@ const maxErrorBytes = 512
 // to report rather than a failure.
 type Ready func(context.Context) error
 
+// Dependencies is everything a route may take from the instance serving it.
+//
+// Database may be nil, which is what an instance configured without one
+// passes. A function rather than an interface, so that "no database" is a
+// nil nobody can get wrong: a nil pointer in a non-nil interface would read
+// as configured and panic when asked. Credentials is nil in the same
+// instance, and [Credentials] says what that refuses.
+type Dependencies struct {
+	Database    Ready
+	Credentials Credentials
+}
+
 // Handler returns the routes an instance serves, each behind what it asks of
 // a caller.
-//
-// database may be nil, which is what an instance configured without one
-// passes. A function rather than an interface, so that "no database" is a nil
-// nobody can get wrong: a nil pointer in a non-nil interface would read as
-// configured and panic when asked. credentials is nil in the same instance,
-// and [Credentials] says what that refuses.
-func Handler(log *slog.Logger, database Ready, credentials Credentials) http.Handler {
+func Handler(log *slog.Logger, deps Dependencies) http.Handler {
 	mux := http.NewServeMux()
 	// TODO(1101hirokin): every route served is open, so no request reaches
 	// credentials through admit yet, and no test shows that this passes it
 	// on. The first route that asks for a credential will.
-	a := auth{log: log, credentials: credentials}
-	for _, r := range routes(log, database, credentials) {
+	a := auth{log: log, credentials: deps.Credentials}
+	for _, r := range routes(log, deps) {
 		mux.HandleFunc(r.pattern, a.admit(r.needs, r.handle))
 	}
 	return record(log, mux)

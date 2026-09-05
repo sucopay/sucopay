@@ -74,7 +74,8 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 
 	addr := net.JoinHostPort(cfg.Listen.Host, strconv.Itoa(cfg.Listen.Port))
-	server, err := api.Listen(addr, api.Handler(log, ready, credentials), log)
+	deps := api.Dependencies{Database: ready, Credentials: credentials}
+	server, err := api.Listen(addr, api.Handler(log, deps), log)
 	if err != nil {
 		return err
 	}

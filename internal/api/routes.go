@@ -35,12 +35,12 @@ type route struct {
 // patterns back for anything to notice afterwards. A test reads this package
 // and refuses a registrar anywhere but [Handler].
 //
-// A handler here closes over database and credentials rather than reaching
-// them. routes runs while an instance is still starting, and both are nil in
-// a deployment configured without a database.
-func routes(log *slog.Logger, database Ready, credentials Credentials) []route {
+// A handler here closes over the Database and Credentials it takes from deps
+// rather than reaching them. routes runs while an instance is still starting,
+// and both are nil in a deployment configured without a database.
+func routes(log *slog.Logger, deps Dependencies) []route {
 	return []route{
 		{pattern: "GET /healthz", needs: open, handle: alive},
-		{pattern: "GET /readyz", needs: open, handle: ready(log, database, credentials)},
+		{pattern: "GET /readyz", needs: open, handle: ready(log, deps.Database, deps.Credentials)},
 	}
 }
