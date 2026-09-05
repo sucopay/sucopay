@@ -100,6 +100,17 @@ Every setting has a default that works for the common case.
 - Ship the command that produces anything you require. `suco serve` requires `suco.yaml`, so
   `suco init` writes one.
 
+## Errors
+
+An error repeats nothing typed after `suco`. The word may be a token, from the file
+`credential new` wrote, when a script has lost the word before it; and an error is what a CI
+log keeps. Say what the command takes, and count what was surplus.
+
+```
+credential new takes --read-only or --read-write, got neither
+serve takes no arguments, got 1
+```
+
 ## Comments
 
 Follow the [Go doc comment conventions](https://go.dev/doc/comment). Every exported name gets a

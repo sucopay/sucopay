@@ -114,14 +114,26 @@ func main() {
 // errUsage reports that run wrote the usage text and the command should fail.
 var errUsage = errors.New("usage")
 
+// errUnknown refuses a word no command is named by, under suco or under a
+// group of commands, with the usage text written and the word not repeated.
+// Under a group it is wrapped with the group's name, which is the table's
+// word and never the typed one.
+//
+// No error repeats a word typed after suco. The word may be a token, from
+// the file credential new wrote into the working directory, when a script
+// has lost the word before it; and an error is what a CI log keeps, where
+// the line that was typed may have had its secrets masked and the output
+// has not. What the person typed is on their screen. The usage text says
+// what would have been taken.
+var errUnknown = errors.New("unknown command")
+
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	return dispatch(ctx, commands, "command", args, stdout, stderr)
+	return dispatch(ctx, commands, "", args, stdout, stderr)
 }
 
 // dispatch runs the one of cmds that args names, and goes one level down for
-// a group. what is what an unknown name is refused as: a command at the top,
-// and a credential command under credential.
-func dispatch(ctx context.Context, cmds []command, what string, args []string, stdout, stderr io.Writer) error {
+// a group. under is the group cmds is the table of, and "" at the top.
+func dispatch(ctx context.Context, cmds []command, under string, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		usage(stderr)
 		return errUsage
@@ -136,12 +148,15 @@ func dispatch(ctx context.Context, cmds []command, what string, args []string, s
 			continue
 		}
 		if c.sub != nil {
-			return dispatch(ctx, c.sub, c.name+" command", args[1:], stdout, stderr)
+			return dispatch(ctx, c.sub, c.name, args[1:], stdout, stderr)
 		}
 		return c.run(ctx, args[1:], stdout)
 	}
 	usage(stderr)
-	return fmt.Errorf("unknown %s %q", what, args[0])
+	if under == "" {
+		return errUnknown
+	}
+	return fmt.Errorf("%w under %s", errUnknown, under)
 }
 
 func usage(w io.Writer) {

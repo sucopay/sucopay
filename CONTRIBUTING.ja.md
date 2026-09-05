@@ -98,6 +98,17 @@ internal/payment/
 - 必須にするものには、それを生成するコマンドを用意してください。`suco serve` が
   `suco.yaml` を必須にするので、`suco init` がそれを書きます。
 
+## エラー
+
+`suco` の後ろに打たれた語を、エラーの文に繰り返しません。`credential new` はトークンをファイルに
+書きます。スクリプトが手前の語を落とすと、そのトークンが `suco` の後ろに来ることがあります。
+エラーの文は CI の記録に残ります。コマンドが取るものを言い、余分な語は数で挙げてください。
+
+```
+credential new takes --read-only or --read-write, got neither
+serve takes no arguments, got 1
+```
+
 ## コメント
 
 [Go の doc コメント規約](https://go.dev/doc/comment)に従います。エクスポートした名前にはすべて

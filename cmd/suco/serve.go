@@ -19,7 +19,9 @@ import (
 // init and doctor answer a person and keep printing.
 func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) > 0 {
-		return fmt.Errorf("serve takes no arguments, got %q", args[0])
+		// Counted: no error repeats a word typed after suco, for the reason
+		// at errUnknown.
+		return fmt.Errorf("serve takes no arguments, got %d", len(args))
 	}
 
 	resolved, document, err := load()

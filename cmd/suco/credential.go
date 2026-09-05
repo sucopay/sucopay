@@ -113,14 +113,12 @@ func credentialNew(ctx context.Context, args []string, stdout io.Writer) error {
 // of the two a credential may do is the operator's to choose, and a default
 // is what every credential made without a thought would have.
 //
-// No credential command repeats an argument in an error, where serve and
-// doctor name the one they were given. What is typed after these may be
-// the token, from the file new wrote into the working directory, and an
-// error is what a CI log keeps.
+// Surplus arguments are counted and an unknown one is "neither": no error
+// repeats a word typed after suco, for the reason at [errUnknown].
 func capabilityOf(args []string) (credential.Capability, error) {
 	switch {
 	case len(args) > 1:
-		return "", errors.New("credential new takes one of --read-only and --read-write, got more than one word")
+		return "", fmt.Errorf("credential new takes one of --read-only and --read-write, got %d arguments", len(args))
 	case len(args) == 0:
 		return "", errors.New("credential new takes --read-only or --read-write")
 	case args[0] == "--read-only":

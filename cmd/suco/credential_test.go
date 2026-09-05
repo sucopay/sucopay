@@ -553,37 +553,6 @@ func TestRun_CredentialListWithNothingInForceShowsTheHeaderAlone(t *testing.T) {
 	}
 }
 
-func TestRun_CredentialCommandsRepeatNothingTheyAreGiven(t *testing.T) {
-	// What is typed after a credential command may be the token, from the
-	// file new wrote into the working directory, and an error is what a CI
-	// log keeps. The document is absent: a refusal that came after reading
-	// it would name absent.yaml, which is how the test tells the order.
-	token := string(credential.New())
-	for _, args := range [][]string{
-		{"new", token},
-		{"new", "--read-only", token},
-		{"list", token},
-		{"revoke", token},
-		{"revoke", string(credential.NewID()), token},
-	} {
-		t.Run(strings.Join(args[:len(args)-1], " ")+" and then a token", func(t *testing.T) {
-			t.Setenv("SUCO_CONFIG", filepath.Join(t.TempDir(), "absent.yaml"))
-
-			_, _, err := runArgs(t, append([]string{"credential"}, args...)...)
-
-			if err == nil {
-				t.Fatal("want an error, got none")
-			}
-			if strings.Contains(err.Error(), "absent.yaml") {
-				t.Errorf("the document was read before the argument was refused: %v", err)
-			}
-			if strings.Contains(err.Error(), token[:16]) {
-				t.Errorf("the error repeats the token: %v", err)
-			}
-		})
-	}
-}
-
 func TestRun_CredentialRevokeRefusesAnythingButOneIDWithoutRepeatingIt(t *testing.T) {
 	id := credential.NewID()
 	token := string(credential.New())

@@ -12,7 +12,9 @@ import (
 
 func initialise(args []string, stdout io.Writer) error {
 	if len(args) > 0 {
-		return fmt.Errorf("init takes no arguments, got %q", args[0])
+		// Counted: no error repeats a word typed after suco, for the reason
+		// at errUnknown.
+		return fmt.Errorf("init takes no arguments, got %d", len(args))
 	}
 
 	document := config.Path(os.LookupEnv, defaultDocument)

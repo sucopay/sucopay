@@ -93,23 +93,41 @@ func TestRun_WithoutACommandWritesUsageAndFails(t *testing.T) {
 	}
 }
 
-func TestRun_UnknownCommandNamesIt(t *testing.T) {
+func TestRun_AnUnknownCommandIsRefusedWithTheUsageTextAndNothingOfTheWord(t *testing.T) {
 	t.Parallel()
-	for _, args := range [][]string{{"nope"}, {"credential", "nope"}} {
-		t.Run(strings.Join(args, " "), func(t *testing.T) {
+	// The word is a token. What is typed after suco may be one, from the
+	// file credential new wrote into the working directory, and an error is
+	// what a CI log keeps.
+	token := string(credential.New())
+	for _, args := range [][]string{{token}, {"credential", token}} {
+		t.Run(strings.Join(append([]string{"suco"}, args[:len(args)-1]...), " ")+" and then a token", func(t *testing.T) {
 			t.Parallel()
-			_, stderr, err := runArgs(t, args...)
+			stdout, stderr, err := runArgs(t, args...)
 
-			if err == nil {
-				t.Fatal("want an error, got none")
-			}
-			if !strings.Contains(err.Error(), `"nope"`) {
-				t.Errorf("error does not name the command: %v", err)
+			if !errors.Is(err, errUnknown) {
+				t.Fatalf("err = %v, want errUnknown", err)
 			}
 			if !strings.Contains(stderr, "suco serve") {
 				t.Errorf("stderr does not carry the usage text: %q", stderr)
 			}
+			for name, text := range map[string]string{"error": err.Error(), "stdout": stdout, "stderr": stderr} {
+				if strings.Contains(text, token[:16]) {
+					t.Errorf("%s repeats the word: %q", name, text)
+				}
+			}
 		})
+	}
+}
+
+func TestRun_AnUnknownWordUnderAGroupIsRefusedNamingTheGroup(t *testing.T) {
+	t.Parallel()
+	_, _, err := runArgs(t, "credential", "nope")
+
+	if !errors.Is(err, errUnknown) {
+		t.Fatalf("err = %v, want errUnknown", err)
+	}
+	if !strings.HasSuffix(err.Error(), "under credential") {
+		t.Errorf("error does not name the group: %v", err)
 	}
 }
 
@@ -154,21 +172,26 @@ func TestRun_WithoutADocumentNamesTheCommandThatWritesOne(t *testing.T) {
 	}
 }
 
-// paths is every command the table names, as the words that reach it: a
-// group of commands and each command under it.
+// paths is every command the table names, as the words that reach it. A
+// group of commands has no path of its own, as it has no line in the usage
+// text: it is dispatched when the commands under it are.
 func paths(cmds []command, under ...string) [][]string {
 	var all [][]string
 	for _, c := range cmds {
 		path := append(slices.Clone(under), c.name)
+		if c.sub != nil {
+			all = append(all, paths(c.sub, path...)...)
+			continue
+		}
 		all = append(all, path)
-		all = append(all, paths(c.sub, path...)...)
 	}
 	return all
 }
 
-func TestRun_EveryCommandRefusesAnArgumentItDoesNotTakeBeforeReadingTheDocument(t *testing.T) {
-	// What the commands taking an argument take, so that the one after it
-	// is the one not taken.
+func TestRun_EveryCommandRefusesWordsItDoesNotTakeByTheirCountBeforeReadingTheDocument(t *testing.T) {
+	// What the commands taking an argument take, so that the ones after it
+	// are the ones not taken. Two of them, so that a count that is always
+	// one is told from a count.
 	takes := map[string][]string{
 		"credential new":    {"--read-only"},
 		"credential revoke": {string(credential.NewID())},
@@ -177,20 +200,57 @@ func TestRun_EveryCommandRefusesAnArgumentItDoesNotTakeBeforeReadingTheDocument(
 		t.Run(strings.Join(path, " "), func(t *testing.T) {
 			t.Setenv("SUCO_CONFIG", filepath.Join(t.TempDir(), "absent.yaml"))
 			args := append(slices.Clone(path), takes[strings.Join(path, " ")]...)
+			args = append(args, "extra", "extra")
 
-			_, _, err := runArgs(t, append(args, "extra")...)
+			_, _, err := runArgs(t, args...)
 
 			if err == nil {
 				t.Fatal("want an error, got none")
 			}
 			if strings.Contains(err.Error(), "absent.yaml") {
-				t.Errorf("the document was read before the argument was refused: %v", err)
+				t.Errorf("the document was read before the words were refused: %v", err)
 			}
-			// The commands outside credential name the word. Those under it
-			// repeat nothing they were given, and have a test of their own
-			// for that.
-			if path[0] != "credential" && !strings.Contains(err.Error(), `"extra"`) {
-				t.Errorf("error does not name the argument: %v", err)
+			// The count is of the words after the command, the one it takes
+			// among them: what it got, against what it takes.
+			if want := fmt.Sprintf("got %d", len(args)-len(path)); !strings.Contains(err.Error(), want) {
+				t.Errorf("error does not say %q: %v", want, err)
+			}
+		})
+	}
+}
+
+func TestRun_NoCommandRepeatsAWordItRefuses(t *testing.T) {
+	// The word is a token, which any word typed after suco may be. Every
+	// command gets one after what it takes, and the commands that take a
+	// word get one in that word's place as well.
+	token := string(credential.New())
+	takes := map[string][]string{
+		"credential new":    {"--read-only"},
+		"credential revoke": {string(credential.NewID())},
+	}
+	var cases [][]string
+	for _, path := range paths(commands) {
+		cases = append(cases, append(append(slices.Clone(path), takes[strings.Join(path, " ")]...), token))
+	}
+	cases = append(cases,
+		[]string{token},
+		[]string{"credential", token},
+		[]string{"credential", "new", token},
+		[]string{"credential", "revoke", token},
+	)
+	for _, args := range cases {
+		t.Run(strings.Join(append([]string{"suco"}, args[:len(args)-1]...), " ")+" and then a token", func(t *testing.T) {
+			t.Setenv("SUCO_CONFIG", filepath.Join(t.TempDir(), "absent.yaml"))
+
+			stdout, stderr, err := runArgs(t, args...)
+
+			if err == nil {
+				t.Fatal("want an error, got none")
+			}
+			for name, text := range map[string]string{"error": err.Error(), "stdout": stdout, "stderr": stderr} {
+				if strings.Contains(text, token[:16]) {
+					t.Errorf("%s repeats the argument: %q", name, text)
+				}
 			}
 		})
 	}
@@ -246,8 +306,7 @@ func TestRun_DispatchesEveryCommandItNames(t *testing.T) {
 			if err == nil {
 				t.Fatal("want an error, got none")
 			}
-			// What an unknown command is refused with ends by naming it.
-			if strings.HasSuffix(err.Error(), fmt.Sprintf("command %q", path[len(path)-1])) {
+			if errors.Is(err, errUnknown) {
 				t.Errorf("%s is named in the usage text but not dispatched: %v", strings.Join(path, " "), err)
 			}
 		})

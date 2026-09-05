@@ -18,7 +18,9 @@ const maxDescription = 64
 
 func doctor(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) > 0 {
-		return fmt.Errorf("doctor takes no arguments, got %q", args[0])
+		// Counted: no error repeats a word typed after suco, for the reason
+		// at errUnknown.
+		return fmt.Errorf("doctor takes no arguments, got %d", len(args))
 	}
 
 	resolved, document, err := load()
