@@ -2,11 +2,13 @@ package payment
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
+	"net/http"
 	"slices"
 	"time"
 
@@ -241,4 +243,172 @@ func problemsJSON(problems Problems) []problemJSON {
 		})
 	}
 	return out
+}
+
+// Accepted says whether an account accepts payment in an asset, and where on
+// the asset's network a payment of it is paid to.
+type Accepted interface {
+	Destination(ctx context.Context, account AccountID, asset Asset) (Address, bool, error)
+}
+
+// MaxBodyBytes bounds the body of a request. A body carrying as much metadata
+// as a payment may hold fits in a quarter of it.
+const MaxBodyBytes = 64 << 10
+
+// HTTP serves payments over HTTP, one account's at a time: every method takes
+// the account the caller has authenticated, and answers for that account's
+// payments only.
+type HTTP struct {
+	service  *Service
+	assets   Assets
+	accepted Accepted
+}
+
+// NewHTTP serves the payments of service, naming assets from assets and
+// paying them to where accepted says.
+func NewHTTP(service *Service, assets Assets, accepted Accepted) *HTTP {
+	return &HTTP{service: service, assets: assets, accepted: accepted}
+}
+
+// Create opens a payment for account from the body of r and answers with it,
+// or answers with what was wrong with the body. The error is a dependency not
+// reached, with nothing written: the caller answers for that, in the one way
+// it answers for every dependency.
+func (h *HTTP) Create(w http.ResponseWriter, r *http.Request, account AccountID) error {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
+	var tooLarge *http.MaxBytesError
+	switch {
+	case errors.As(err, &tooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, "too_large", nil)
+		return nil
+	case err != nil:
+		writeError(w, http.StatusBadRequest, "invalid",
+			Problems{{Message: "the body ended before the request said it would"}})
+		return nil
+	}
+	req, problems := readRequest(body, h.assets)
+	if problems != nil {
+		writeError(w, http.StatusBadRequest, "invalid", problems)
+		return nil
+	}
+	destination, accepted, err := h.accepted.Destination(r.Context(), account, req.asset)
+	if err != nil {
+		return err
+	}
+	if !accepted {
+		writeError(w, http.StatusBadRequest, "invalid", Problems{{Field: "asset",
+			Message: "not accepted by this account: nothing says where a payment of it is paid to"}})
+		return nil
+	}
+	p, err := h.service.Open(r.Context(), account, Request{
+		Amount:      req.amount,
+		Destination: destination,
+		Metadata:    req.metadata,
+		ExpiresAt:   req.expiresAt,
+	})
+	var found Problems
+	if errors.As(err, &found) {
+		writeError(w, http.StatusBadRequest, "invalid", found)
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	w.Header().Set("Location", "/payments/"+p.ID().String())
+	writeJSON(w, http.StatusCreated, bodyJSON(p))
+	return nil
+}
+
+// Read answers with the payment of account the path's id names, or that
+// there is none. An identifier of another account's payment, of no payment,
+// and of no shape are answered alike, so that the answer says nothing about
+// what exists. The error is as for [HTTP.Create].
+func (h *HTTP) Read(w http.ResponseWriter, r *http.Request, account AccountID) error {
+	id, err := ParseID(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", nil)
+		return nil
+	}
+	p, err := h.service.Find(r.Context(), account, id)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		writeError(w, http.StatusNotFound, "not_found", nil)
+		return nil
+	case err != nil:
+		return err
+	}
+	writeJSON(w, http.StatusOK, bodyJSON(p))
+	return nil
+}
+
+// paymentJSON is a payment as a response writes it. The asset is written by
+// what identifies and describes it, without the name the document lists it
+// under: a payment keeps its network and reference when the document comes
+// to list the asset under another name, or not at all.
+type paymentJSON struct {
+	ID          ID                `json:"id"`
+	Status      Status            `json:"status"`
+	Asset       assetJSON         `json:"asset"`
+	Amount      string            `json:"amount"`
+	Received    *string           `json:"received"`
+	Destination Address           `json:"destination"`
+	Metadata    map[string]string `json:"metadata"`
+	ExpiresAt   time.Time         `json:"expires_at"`
+	CreatedAt   time.Time         `json:"created_at"`
+}
+
+// assetJSON is an asset as a response writes it.
+type assetJSON struct {
+	Network   Network `json:"network"`
+	Reference string  `json:"reference"`
+	Symbol    string  `json:"symbol"`
+	Decimals  uint8   `json:"decimals"`
+}
+
+// bodyJSON renders p as a response writes it. Amounts are in the asset's
+// units, as a request writes them; received is null until something arrives;
+// metadata a request left out is an empty object, so that a client reads one
+// shape.
+func bodyJSON(p *Payment) paymentJSON {
+	asset := p.Asset()
+	var received *string
+	if p.Received().IsSet() {
+		units := p.Received().Units()
+		received = &units
+	}
+	metadata := p.Metadata()
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	return paymentJSON{
+		ID:     p.ID(),
+		Status: p.Status(),
+		Asset: assetJSON{
+			Network:   asset.Network(),
+			Reference: asset.Reference(),
+			Symbol:    asset.Symbol(),
+			Decimals:  asset.Decimals(),
+		},
+		Amount:      p.Amount().Units(),
+		Received:    received,
+		Destination: p.Destination(),
+		Metadata:    metadata,
+		ExpiresAt:   p.ExpiresAt(),
+		CreatedAt:   p.CreatedAt(),
+	}
+}
+
+// writeError answers with the one shape every failure has: a word for what
+// went wrong, and for a body that was refused, what was wrong with it.
+func writeError(w http.ResponseWriter, status int, word string, problems Problems) {
+	writeJSON(w, status, errorJSON{Error: word, Problems: problemsJSON(problems)})
+}
+
+func writeJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(status)
+	// The status line is already written, so a failed encode cannot become an
+	// error response.
+	_ = json.NewEncoder(w).Encode(body) //nolint:errcheck // nothing to report it to
 }
