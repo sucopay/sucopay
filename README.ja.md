@@ -31,7 +31,7 @@ suco Pay は自社のインフラで動作します。資金は顧客のウォ�
 - [ ] Refund: 記録と送金指示の作成
 - [ ] 照合: 内部状態とチェーンの定期突合
 - [ ] Console: Payment と Transaction の照会、返金、Webhook 送信履歴
-- [x] CLI: `init` `serve` `doctor` `credential`
+- [x] CLI: `init` `serve` `doctor` `credential` `asset`
 
 ## インストール
 
@@ -54,6 +54,9 @@ export SUCO_CREDENTIALS_KEY="$(cat -- 'credentials-<key_id>.key')"
 データベースを設定した配備では、`suco credential new --read-only` か `--read-write` が API の
 資格情報を 1 本作り、トークンを所有者だけが読めるファイルへ書きます。`suco credential list` は
 有効な資格情報を最終使用の新しい順に表示し、`suco credential revoke <id>` は 1 本を失効させます。
+`suco asset accept <name> <address>` は、`suco.yaml` にその名前で載せた資産の支払いを受け取る
+アドレスを記録します。`suco asset list` は `suco.yaml` に載せた資産をすべて表示し、受け付けているものには
+アドレスを、まだのものには `not accepted` を添えます。
 
 インストールスクリプトとビルド済みバイナリは最初のリリースで用意します。上の一覧にある機能は
 まだありません。

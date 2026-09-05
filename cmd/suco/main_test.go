@@ -155,7 +155,7 @@ func TestRun_HelpWritesUsageToStdoutAndSucceeds(t *testing.T) {
 // Every command reading a document meets a missing one through load, so the
 // sentence it gives is asserted once rather than once per command.
 func TestRun_WithoutADocumentNamesTheCommandThatWritesOne(t *testing.T) {
-	for _, args := range append([][]string{{"serve"}, {"doctor"}}, credentialCommands()...) {
+	for _, args := range append([][]string{{"serve"}, {"doctor"}}, databaseCommands()...) {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			t.Setenv("SUCO_CONFIG", filepath.Join(t.TempDir(), "absent.yaml"))
 
@@ -197,6 +197,7 @@ func TestRun_EveryCommandRefusesWordsItDoesNotTakeByTheirCountBeforeReadingTheDo
 	takes := map[string][]string{
 		"credential new":    {"--read-only"},
 		"credential revoke": {string(credential.NewID())},
+		"asset accept":      {"jpyc", theAddress},
 	}
 	for _, path := range paths(commands) {
 		t.Run(strings.Join(path, " "), func(t *testing.T) {
@@ -229,6 +230,7 @@ func TestRun_NoCommandRepeatsAWordItRefuses(t *testing.T) {
 	takes := map[string][]string{
 		"credential new":    {"--read-only"},
 		"credential revoke": {string(credential.NewID())},
+		"asset accept":      {"jpyc", theAddress},
 	}
 	var cases [][]string
 	for _, path := range paths(commands) {
@@ -239,6 +241,8 @@ func TestRun_NoCommandRepeatsAWordItRefuses(t *testing.T) {
 		[]string{"credential", token},
 		[]string{"credential", "new", token},
 		[]string{"credential", "revoke", token},
+		[]string{"asset", token},
+		[]string{"asset", "accept", "jpyc", token},
 	)
 	for _, args := range cases {
 		t.Run(strings.Join(append([]string{"suco"}, args[:len(args)-1]...), " ")+" and then a token", func(t *testing.T) {

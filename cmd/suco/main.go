@@ -47,6 +47,10 @@ var commands = []command{
 		{name: "list", about: "show the credentials in force", run: credentialList},
 		{name: "revoke", about: "take one credential out of force", run: credentialRevoke},
 	}},
+	{name: "asset", sub: []command{
+		{name: "accept", about: "accept an asset the document lists, paid to an address", run: assetAccept},
+		{name: "list", about: "show the assets the document lists, and the address each is paid to", run: assetList},
+	}},
 }
 
 // load reads the configuration the way every command needing it does, so that

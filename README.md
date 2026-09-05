@@ -30,7 +30,7 @@ suco Pay runs on your own infrastructure. Funds go straight from the customer's 
 - [ ] Refunds: records and transfer intents
 - [ ] Reconciliation: periodic diff between internal state and the chain
 - [ ] Console: payments, transactions, refunds, webhook deliveries
-- [x] CLI: `init` `serve` `doctor` `credential`
+- [x] CLI: `init` `serve` `doctor` `credential` `asset`
 
 ## Getting started
 
@@ -54,6 +54,9 @@ it is doing to stdout. With a database
 configured, `suco credential new --read-only` or `--read-write` makes a credential for the API and
 writes its token to a file only its owner can read. `suco credential list` shows the credentials
 in force, the most recently used first, and `suco credential revoke <id>` takes one out of force.
+`suco asset accept <name> <address>` records the address a payment in the asset `suco.yaml` lists
+under that name is paid to, and `suco asset list` shows every asset the document lists, each with
+its address or `not accepted`.
 
 An install script and released binaries arrive with the first release. Everything in the list
 above is still to come.

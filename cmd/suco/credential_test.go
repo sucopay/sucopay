@@ -89,45 +89,47 @@ func TestRun_CredentialNewRefusesToChooseACapability(t *testing.T) {
 	}
 }
 
-// credentialCommands is every credential command with an argument it takes,
-// for the refusals all of them give alike.
-func credentialCommands() [][]string {
+// databaseCommands is every command that reads or writes the database, with
+// an argument it takes, for the refusals all of them give alike.
+func databaseCommands() [][]string {
 	return [][]string{
 		{"credential", "new", "--read-only"},
 		{"credential", "list"},
 		{"credential", "revoke", string(credential.NewID())},
+		{"asset", "accept", "jpyc", theAddress},
+		{"asset", "list"},
 	}
 }
 
-// TestRun_CredentialCommandsRefuseWhatServeRefuses checks the words, and not
+// TestRun_DatabaseCommandsRefuseWhatServeRefuses checks the words, and not
 // only that both fail: an operator meets the refusal at whichever command
 // they run first, and two sentences for one problem read as two problems.
-func TestRun_CredentialCommandsRefuseWhatServeRefuses(t *testing.T) {
+func TestRun_DatabaseCommandsRefuseWhatServeRefuses(t *testing.T) {
 	for _, c := range []struct {
 		name string
-		// What a credential command reads, and what serve reads, at the same
-		// path. serve serves /healthz with no database, so its refusal has
-		// to be asked for by name.
-		forCredential, forServe string
+		// What a command reads, and what serve reads, at the same path. serve
+		// serves /healthz with no database, so its refusal has to be asked
+		// for by name.
+		forCommand, forServe string
 	}{
 		{"a deployment with no database", "listen:\n  port: 9000\n", "database:\n  managed: true\n"},
 		{"a section nothing acts on", "networks:\n  local:\n    kind: simulated\n", "networks:\n  local:\n    kind: simulated\n"},
 	} {
-		for _, args := range credentialCommands() {
+		for _, args := range databaseCommands() {
 			t.Run(c.name+" met by "+strings.Join(args[:2], " "), func(t *testing.T) {
-				path := document(t, c.forCredential)
+				path := document(t, c.forCommand)
 
-				_, _, byCredential := runArgs(t, args...)
+				_, _, byCommand := runArgs(t, args...)
 
 				if err := os.WriteFile(path, []byte(c.forServe), 0o600); err != nil {
 					t.Fatal(err)
 				}
 				_, _, byServe := runArgs(t, "serve")
-				if byCredential == nil || byServe == nil {
-					t.Fatalf("%s: %v; serve: %v; want both to refuse", strings.Join(args, " "), byCredential, byServe)
+				if byCommand == nil || byServe == nil {
+					t.Fatalf("%s: %v; serve: %v; want both to refuse", strings.Join(args, " "), byCommand, byServe)
 				}
-				if byCredential.Error() != byServe.Error() {
-					t.Errorf("%s refuses with:\n  %v\nserve with:\n  %v", strings.Join(args, " "), byCredential, byServe)
+				if byCommand.Error() != byServe.Error() {
+					t.Errorf("%s refuses with:\n  %v\nserve with:\n  %v", strings.Join(args, " "), byCommand, byServe)
 				}
 			})
 		}
@@ -210,8 +212,8 @@ func TestRun_CredentialNewWritesATokenOnlyItsOwnerCanRead(t *testing.T) {
 	}
 }
 
-func TestRun_CredentialCommandsOnADatabaseWithoutTheSchemaNameWhatAppliesIt(t *testing.T) {
-	for _, args := range credentialCommands() {
+func TestRun_DatabaseCommandsOnADatabaseWithoutTheSchemaNameWhatAppliesIt(t *testing.T) {
+	for _, args := range databaseCommands() {
 		t.Run(strings.Join(args[:2], " "), func(t *testing.T) {
 			document(t, namingADatabase())
 			t.Setenv("SUCO_DATABASE_URL", postgrestest.Fresh(t))

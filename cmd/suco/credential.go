@@ -9,15 +9,20 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/sucopay/sucopay/internal/config"
 	"github.com/sucopay/sucopay/internal/credential"
 	"github.com/sucopay/sucopay/internal/invisible"
 	"github.com/sucopay/sucopay/internal/postgres"
 )
 
 // opened is what a command that reads or writes the database has once
-// [openStore] returns: the database the document names, and the store of
-// credentials over it.
+// [openStore] returns: the assets the document lists, the database it names,
+// and the store of credentials over it. The document's path is for a refusal
+// to name. The assets and not the whole configuration: the rest of it holds
+// the credential key, which no command has a use for once the store is open.
 type opened struct {
+	document    string
+	assets      config.Assets
 	db          *postgres.Pool
 	credentials *credential.Postgres
 }
@@ -65,6 +70,8 @@ func openStore(ctx context.Context) (opened, error) {
 		return opened{}, errors.New("the database has no schema. Run `suco serve` once to apply it")
 	}
 	return opened{
+		document:    document,
+		assets:      cfg.Assets,
 		db:          db,
 		credentials: credential.NewPostgres(db.Conns(), key, cfg.Credentials.KeyID),
 	}, nil
