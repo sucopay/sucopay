@@ -85,3 +85,14 @@ func (s *Service) Await(ctx context.Context, account AccountID, id ID) (*Payment
 	}
 	return p, nil
 }
+
+// Find reads one payment back, for whatever shows it. The revision stays
+// with the repository: a caller that would move the payment goes through
+// [Service.Await], which reads and saves it in one call.
+func (s *Service) Find(ctx context.Context, account AccountID, id ID) (*Payment, error) {
+	p, _, err := s.payments.Find(ctx, account, id)
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
+}

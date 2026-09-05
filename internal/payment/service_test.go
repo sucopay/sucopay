@@ -314,3 +314,55 @@ func TestService_ReportsADeadlineTooFarOffAlongWithTheOtherProblems(t *testing.T
 		t.Errorf("problem fields = %q, want exactly %q", got, "amount expires_at")
 	}
 }
+
+func TestService_FindsAPaymentItOpened(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := serving(t)
+	opened, err := svc.Open(t.Context(), first, request(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := svc.Find(t.Context(), first, opened.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if p.ID() != opened.ID() || p.Status() != opened.Status() {
+		t.Errorf("found %s %s, want %s %s", p.ID(), p.Status(), opened.ID(), opened.Status())
+	}
+}
+
+func TestService_FindsNoPaymentUnderAnotherAccountOrAnUnknownIdentifier(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := serving(t)
+	opened, err := svc.Open(t.Context(), first, request(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown, err := payment.NewID()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, c := range []struct {
+		name    string
+		account payment.AccountID
+		id      payment.ID
+	}{
+		{"another account", other, opened.ID()},
+		{"an unknown identifier", first, unknown},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			p, err := svc.Find(t.Context(), c.account, c.id)
+
+			if !errors.Is(err, payment.ErrNotFound) {
+				t.Errorf("err = %v, want ErrNotFound", err)
+			}
+			if p != nil {
+				t.Errorf("returned a payment as well as an error: %v", p)
+			}
+		})
+	}
+}
