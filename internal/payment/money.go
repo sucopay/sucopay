@@ -79,16 +79,9 @@ func ParseUnits(asset Asset, amount string) (Money, error) {
 // parseUnits reads amount, written with up to decimals places, as a count of
 // the smallest unit: the fraction is filled out to decimals places.
 func parseUnits(amount string, decimals uint8) (*big.Int, error) {
-	// Reading base ten costs more than linearly in the length of the input,
-	// and the string comes from whoever is asking for a payment. An amount of
-	// any asset fits in MaxAmountDigits digits and a point.
-	if len(amount) > MaxAmountDigits+1 {
-		return nil, fmt.Errorf("amount is %d characters, at most %d", len(amount), MaxAmountDigits+1)
-	}
-	whole, fraction, hasPoint := strings.Cut(amount, ".")
-	if !isDigits(whole) || hasPoint && !isDigits(fraction) {
-		return nil, fmt.Errorf("%q is not an amount: digits, and after a point up to %d more",
-			amount, decimals)
+	whole, fraction, err := splitUnits(amount)
+	if err != nil {
+		return nil, err
 	}
 	places := int(decimals)
 	if len(fraction) > places {
@@ -102,6 +95,24 @@ func parseUnits(amount string, decimals uint8) (*big.Int, error) {
 	// digits holds ASCII digits and nothing else, which SetString reads.
 	n, _ := new(big.Int).SetString(digits, 10)
 	return n, nil
+}
+
+// splitUnits reads amount as digits, and after a point more digits, and
+// returns the two. What it refuses is not an amount of any asset; how many
+// places the fraction may have is the asset's to say, and is [parseUnits]'s
+// to check.
+func splitUnits(amount string) (whole, fraction string, err error) {
+	// Reading base ten costs more than linearly in the length of the input,
+	// and the string comes from whoever is asking for a payment. An amount of
+	// any asset fits in MaxAmountDigits digits and a point.
+	if len(amount) > MaxAmountDigits+1 {
+		return "", "", fmt.Errorf("amount is %d characters, at most %d", len(amount), MaxAmountDigits+1)
+	}
+	whole, fraction, hasPoint := strings.Cut(amount, ".")
+	if !isDigits(whole) || hasPoint && !isDigits(fraction) {
+		return "", "", fmt.Errorf("%q is not an amount: digits, and after a point more digits", amount)
+	}
+	return whole, fraction, nil
 }
 
 // isDigits reports whether s is one or more ASCII digits.
