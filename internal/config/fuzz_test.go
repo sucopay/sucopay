@@ -113,6 +113,10 @@ func FuzzResolve(f *testing.F) {
 		// its own marker, since the fuzzer will move it to a path that is not
 		// secret, where quoting it back is right.
 		"database:\n  managed: false\n  url: [\"postgres://admin:" + written + "@db/x\"]\n",
+		// The rpc twice: a list is refused for its type and reaches a problem,
+		// a URL is accepted and reaches a report line.
+		"networks:\n  polygon:\n    chain_id: 137\n    rpc: [\"https://rpc/" + written + "\"]\n",
+		"networks:\n  polygon:\n    chain_id: 137\n    rpc: https://rpc/" + written + "\n",
 		// The credentials key cannot carry the marker: it has to decode as
 		// hexadecimal to reach a report at all. What this seed exercises is
 		// the other check, that a secret path reads as whether it is set.
@@ -146,13 +150,17 @@ func FuzzResolve(f *testing.F) {
 		// The paths are written out rather than taken from config.Secret: the
 		// report decides what to hide with that same function, and one list
 		// driving both sides would hide a change to it from both at once.
-		secretPaths := map[string]bool{"database.url": true, "credentials.key": true}
+		secretPath := func(path string) bool {
+			parts := strings.Split(path, ".")
+			return path == "database.url" || path == "credentials.key" ||
+				len(parts) == 3 && parts[0] == "networks" && parts[2] == "rpc"
+		}
 		if err != nil {
 			if leaked(err.Error()) {
 				t.Errorf("a problem carries the secret it was given: %v", err)
 			}
 			for _, p := range problems(t, err) {
-				if secretPaths[p.Path] && strings.Contains(p.Message, written) {
+				if secretPath(p.Path) && strings.Contains(p.Message, written) {
 					t.Errorf("a problem at a secret path carries what the document wrote there: %v", p)
 				}
 			}
@@ -170,7 +178,7 @@ func FuzzResolve(f *testing.F) {
 			if leaked(line.Value) {
 				t.Errorf("the report shows a secret setting's value: %v", line)
 			}
-			if secretPaths[line.Path] && line.Value != "set" && line.Value != "not set" {
+			if secretPath(line.Path) && line.Value != "set" && line.Value != "not set" {
 				t.Errorf("%s reads %q rather than whether it is set", line.Path, line.Value)
 			}
 			if invisibleIn(line.Path) || invisibleIn(line.Value) {
