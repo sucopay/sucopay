@@ -222,6 +222,7 @@ func TestResolve_RejectsABaseURLThatIsNotReachableOverHTTP(t *testing.T) {
 		{"no scheme", "localhost:7826", "scheme"},
 		{"unsupported scheme", "ftp://localhost:7826", "scheme"},
 		{"scheme with no host", "http://", "host"},
+		{"port with no host", "http://:7826", "host"},
 		{"not a URL at all", "://x", "not a URL"},
 	}
 	for _, c := range cases {

@@ -144,6 +144,7 @@ func TestResolve_AcceptsAnRPCOverHTTPSOrOverHTTPToThisMachine(t *testing.T) {
 		{"polygon.example", "https"},
 		{"", "https"},
 		{"https:///v2/key", "host"},
+		{"https://:8545/v2/key", "host"},
 		{"http://[::1]-not:8545", "not a URL"},
 	}
 	for _, c := range refused {

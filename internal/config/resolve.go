@@ -461,7 +461,7 @@ func (r *reader) validateRPC(path, raw string) {
 	case err != nil:
 		r.fail(path, "not a URL")
 	case u.Scheme == "https", u.Scheme == "http" && onThisMachine(u.Hostname()):
-		if u.Host == "" {
+		if !hasHost(u) {
 			r.fail(path, "has no host")
 		}
 	default:
@@ -477,6 +477,12 @@ func onThisMachine(host string) bool {
 	}
 	ip, err := netip.ParseAddr(host)
 	return err == nil && ip.IsLoopback()
+}
+
+// hasHost reports whether a URL names a machine. Hostname rather than Host:
+// https://:8545/ has a Host of ":8545" and names none.
+func hasHost(u *url.URL) bool {
+	return u.Hostname() != ""
 }
 
 // validateAssets refuses two names for one token. Which of the two is the
@@ -544,7 +550,7 @@ func (r *reader) validateBaseURL(raw string) {
 		r.fail(path, "not a URL: %v", shown(path, raw))
 	case u.Scheme != "http" && u.Scheme != "https":
 		r.fail(path, "needs an http or https scheme: %v", shown(path, raw))
-	case u.Host == "":
+	case !hasHost(u):
 		r.fail(path, "has no host: %v", shown(path, raw))
 	}
 }
