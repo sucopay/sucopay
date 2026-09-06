@@ -834,6 +834,23 @@ func TestRun_DoctorShowsTheAssetsOfADocumentItAccepts(t *testing.T) {
 	}
 }
 
+func TestRun_ServeRefusesTwoNamesForOneAsset(t *testing.T) {
+	document(t, anAssetOn("local", "")+
+		"  yen:\n    network: local\n    reference: \"0x0000000000000000000000000000000000000001\"\n"+
+		"    symbol: YEN\n    decimals: 6\n")
+
+	_, _, err := runArgs(t, "serve")
+
+	if err == nil {
+		t.Fatal("serve started over a document that names one asset twice")
+	}
+	for _, name := range []string{"jpyc", "yen"} {
+		if !strings.Contains(err.Error(), name) {
+			t.Errorf("error does not name %s: %v", name, err)
+		}
+	}
+}
+
 // TestRun_ServeRefusesANetworkNothingReads checks that a refusal names the
 // networks it is about and no other, in the order of their names, and that
 // doctor refuses in the same words: an operator meets the refusal at whichever
