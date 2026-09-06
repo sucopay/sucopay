@@ -459,6 +459,20 @@ func TestResolve_NeverPutsASecretInAProblem(t *testing.T) {
 			env: noEnv,
 		},
 		{
+			name: "an rpc that is not a URL",
+			doc: map[string]any{"networks": map[string]any{
+				"polygon": map[string]any{"chain_id": uint64(137), "rpc": "http://[::1]-not:8545/" + secret},
+			}},
+			env: noEnv,
+		},
+		{
+			name: "an rpc with no host",
+			doc: map[string]any{"networks": map[string]any{
+				"polygon": map[string]any{"chain_id": uint64(137), "rpc": "https:///" + secret},
+			}},
+			env: noEnv,
+		},
+		{
 			name: "an rpc on a kind that has no such setting",
 			doc: map[string]any{"networks": map[string]any{
 				"local": map[string]any{"kind": "simulated", "rpc": "https://rpc/" + secret},
