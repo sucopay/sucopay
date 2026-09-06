@@ -54,9 +54,26 @@ export SUCO_CREDENTIALS_KEY="$(cat -- 'credentials-<key_id>.key')"
 データベースを設定した配備では、`suco credential new --read-only` か `--read-write` が API の
 資格情報を 1 本作り、トークンを所有者だけが読めるファイルへ書きます。`suco credential list` は
 有効な資格情報を最終使用の新しい順に表示し、`suco credential revoke <id>` は 1 本を失効させます。
-`suco asset accept <name> <address>` は、`suco.yaml` にその名前で載せた資産の支払いを受け取る
-アドレスを記録します。`suco asset list` は `suco.yaml` に載せた資産をすべて表示し、受け付けているものには
-アドレスを、まだのものには `not accepted` を添えます。
+
+Payment を作るには、それが届くネットワークと、その資産を `suco.yaml` に載せてください。
+
+```yaml
+networks:
+  local:
+    kind: simulated
+assets:
+  jpyc:
+    network: local
+    reference: "0x0000000000000000000000000000000000000001"
+    symbol: JPYC
+    decimals: 18
+```
+
+ネットワークの `kind` は今のところ `simulated` だけを受け付けます。チェーンを見るものはまだ無いので、
+Payment は `created` のままです。`suco asset accept <name> <address>` は、`suco.yaml` にその名前で
+載せた資産の支払いを受け取るアドレスを記録します。`suco asset list` は `suco.yaml` に載せた資産を
+すべて表示し、受け付けているものにはアドレスを、まだのものには `not accepted` を添えます。加盟店の
+サーバは [docs/api.ja.md](docs/api.ja.md) の API で Payment を作り、読みます。
 
 インストールスクリプトとビルド済みバイナリは最初のリリースで用意します。上の一覧にある機能は
 まだありません。

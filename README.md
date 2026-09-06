@@ -54,9 +54,26 @@ it is doing to stdout. With a database
 configured, `suco credential new --read-only` or `--read-write` makes a credential for the API and
 writes its token to a file only its owner can read. `suco credential list` shows the credentials
 in force, the most recently used first, and `suco credential revoke <id>` takes one out of force.
-`suco asset accept <name> <address>` records the address a payment in the asset `suco.yaml` lists
-under that name is paid to, and `suco asset list` shows every asset the document lists, each with
-its address or `not accepted`.
+
+To open payments, list in `suco.yaml` the network they arrive on and the asset they are in:
+
+```yaml
+networks:
+  local:
+    kind: simulated
+assets:
+  jpyc:
+    network: local
+    reference: "0x0000000000000000000000000000000000000001"
+    symbol: JPYC
+    decimals: 18
+```
+
+`simulated` is the one kind of network accepted so far. Nothing observes a chain yet, so a payment
+stays `created`. `suco asset accept <name> <address>` records the address a payment in the asset
+`suco.yaml` lists under that name is paid to, and `suco asset list` shows every asset the document
+lists, each with its address or `not accepted`. A merchant's server opens payments and reads them
+back over the API in [docs/api.md](docs/api.md).
 
 An install script and released binaries arrive with the first release. Everything in the list
 above is still to come.
