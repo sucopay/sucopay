@@ -800,10 +800,20 @@ func TestRun_DoctorPrintsTheReportAndThenRefusesASectionNothingActsOn(t *testing
 // name given, with more written into the networks section after it: a
 // setting of that network at its indent, or another network at the section's.
 func anAssetOn(network, more string) string {
-	return "networks:\n  " + network + ":\n    kind: simulated\n" + more +
-		"assets:\n  jpyc:\n    network: " + network + "\n" +
+	return "networks:\n  " + network + ":\n    kind: simulated\n" + more + anAsset(network)
+}
+
+// anAsset is the assets section listing one asset on the network named.
+func anAsset(network string) string {
+	return "assets:\n  jpyc:\n    network: " + network + "\n" +
 		"    reference: \"0x0000000000000000000000000000000000000001\"\n" +
 		"    symbol: JPYC\n    decimals: 18\n"
+}
+
+// anEVMNetwork is the networks section declaring one network of the evm kind
+// with the settings that kind needs, the rpc on this machine.
+func anEVMNetwork(network string) string {
+	return "networks:\n  " + network + ":\n    kind: evm\n    chain_id: 1\n    rpc: http://127.0.0.1:1\n"
 }
 
 func TestRun_ServeStartsWithANetworkAnAssetRefersTo(t *testing.T) {
@@ -871,7 +881,7 @@ func TestRun_ServeRefusesANetworkNothingReads(t *testing.T) {
 		},
 		{
 			"one with an rpc, though an asset refers to it",
-			anAssetOn("local", "    rpc: http://127.0.0.1:1\n"),
+			anEVMNetwork("local") + anAsset("local"),
 			[]string{"networks.local.rpc"},
 		},
 		{
@@ -881,7 +891,7 @@ func TestRun_ServeRefusesANetworkNothingReads(t *testing.T) {
 		},
 		{
 			"one no asset refers to, with an rpc: both are said",
-			"networks:\n  local:\n    kind: simulated\n    rpc: http://127.0.0.1:1\n",
+			anEVMNetwork("local"),
 			[]string{"networks.local", "networks.local.rpc"},
 		},
 		{

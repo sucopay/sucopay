@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/sucopay/sucopay/internal/payment"
 	"github.com/sucopay/sucopay/internal/problem"
@@ -15,6 +16,22 @@ const (
 	// Reaching an instance from another machine is a deployment decision, so it
 	// is made in the document rather than assumed.
 	DefaultHost = "127.0.0.1"
+	// DefaultNetworkKind is the kind of a network whose document names none.
+	DefaultNetworkKind = "evm"
+	// DefaultPoll is how often a network is asked for new blocks when the
+	// document sets no poll.
+	DefaultPoll = 3 * time.Second
+	// DefaultWidth is the widest span, in blocks, one request for logs is
+	// given when the document sets no width. Providers cap the span, each at
+	// its own value: between 50 and 10000 blocks on the public endpoints
+	// measured.
+	DefaultWidth = 1000
+	// MinWidth is the narrowest span a document may set, a fifth of the
+	// smallest cap measured.
+	MinWidth = 10
+	// MaxWidth is the widest span a document may set, the largest cap
+	// measured.
+	MaxWidth = 10000
 )
 
 // Origin says where a resolved value came from.
@@ -124,11 +141,17 @@ type Credentials struct {
 	KeyID string
 }
 
-// Network is one chain the instance can observe. Kind names how to reach it;
-// only "simulated", a chain that runs inside the server, is accepted so far.
+// Network is one chain the instance can observe. Kind names how to reach it:
+// "evm", a chain spoken to over JSON-RPC at RPC, whose eth_chainId has to be
+// ChainID; or "simulated", a chain that runs inside the server and has
+// neither. Poll is how often the chain is asked for new blocks and Width the
+// widest span, in blocks, one request for logs is given.
 type Network struct {
-	Kind string
-	RPC  string
+	Kind    string
+	ChainID uint64
+	RPC     string
+	Poll    time.Duration
+	Width   int
 }
 
 // Assets are the tokens the instance accepts payment in, keyed by the name a

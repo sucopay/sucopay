@@ -262,14 +262,19 @@ func TestResolve_RequiresAURLWhenTheDatabaseIsNotManaged(t *testing.T) {
 func TestResolve_RejectsAnUnknownNetworkKind(t *testing.T) {
 	t.Parallel()
 	doc := map[string]any{"networks": map[string]any{
-		"local": map[string]any{"kind": "evm"},
+		"local": map[string]any{"kind": "carrier-pigeon"},
 	}}
 
 	_, err := config.Resolve(doc, noEnv)
 
 	p := wantProblemAt(t, err, "networks.local.kind")
-	if !strings.Contains(p.Message, "simulated") {
-		t.Errorf("message %q does not name the kinds that are accepted", p.Message)
+	for _, kind := range []string{"evm", "simulated"} {
+		if !strings.Contains(p.Message, kind) {
+			t.Errorf("message %q does not name %s among the kinds that are accepted", p.Message, kind)
+		}
+	}
+	if got := problems(t, err); len(got) != 1 {
+		t.Errorf("got %d problems, want the kind alone: %v", len(got), got)
 	}
 }
 
@@ -369,7 +374,9 @@ func TestResolve_AcceptsADocumentWhereEveryKeyIsRead(t *testing.T) {
 	doc := map[string]any{
 		"listen":   map[string]any{"host": "0.0.0.0", "port": uint64(9000), "base_url": "https://pay.example"},
 		"database": map[string]any{"managed": true},
-		"networks": map[string]any{"local": map[string]any{"kind": "simulated", "rpc": ""}},
+		"networks": map[string]any{"polygon": map[string]any{
+			"kind": "evm", "chain_id": uint64(137), "rpc": "https://polygon.example/", "poll": "3s", "width": uint64(1000),
+		}},
 	}
 
 	got := mustResolve(t, doc, noEnv)
@@ -377,7 +384,8 @@ func TestResolve_AcceptsADocumentWhereEveryKeyIsRead(t *testing.T) {
 	for _, path := range []string{
 		"listen.host", "listen.port", "listen.base_url",
 		"database.managed", "database.url",
-		"networks.local.kind", "networks.local.rpc",
+		"networks.polygon.kind", "networks.polygon.chain_id", "networks.polygon.rpc",
+		"networks.polygon.poll", "networks.polygon.width",
 	} {
 		if _, ok := got.Sources[path]; !ok {
 			t.Errorf("no source recorded for %s", path)
@@ -439,7 +447,21 @@ func TestResolve_NeverPutsASecretInAProblem(t *testing.T) {
 		{
 			name: "a reference mixed with literal text at networks rpc",
 			doc: map[string]any{"networks": map[string]any{
-				"local": map[string]any{"kind": "simulated", "rpc": "https://rpc/" + secret + "${X}"},
+				"polygon": map[string]any{"chain_id": uint64(137), "rpc": "https://rpc/" + secret + "${X}"},
+			}},
+			env: noEnv,
+		},
+		{
+			name: "an rpc the URL rule refuses",
+			doc: map[string]any{"networks": map[string]any{
+				"polygon": map[string]any{"chain_id": uint64(137), "rpc": "http://user:" + secret + "@rpc.example/"},
+			}},
+			env: noEnv,
+		},
+		{
+			name: "an rpc on a kind that has no such setting",
+			doc: map[string]any{"networks": map[string]any{
+				"local": map[string]any{"kind": "simulated", "rpc": "https://rpc/" + secret},
 			}},
 			env: noEnv,
 		},

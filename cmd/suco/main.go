@@ -91,7 +91,7 @@ const (
 // one declares that nothing is observed, which is what this build does; so
 // such a network is accepted. One no asset refers to is refused, and so is an
 // rpc on any network, since nothing reads the URL. The kind is not looked at
-// here: simulated is the one kind config admits.
+// here: an evm network has an rpc, so refusing the rpc refuses the kind.
 func unimplementedError(document string, r config.Resolved) error {
 	var refusals []string
 	if source, ok := r.SourceOf("database.managed"); r.Config.Database.Managed &&

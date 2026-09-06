@@ -43,8 +43,16 @@ func (r Resolved) Report() []ReportLine {
 		"credentials.key_id": r.Config.Credentials.KeyID,
 	}
 	for name, n := range r.Config.Networks {
-		values["networks."+name+".kind"] = n.Kind
-		values["networks."+name+".rpc"] = n.RPC
+		path := "networks." + name
+		values[path+".kind"] = n.Kind
+		values[path+".poll"] = n.Poll.String()
+		values[path+".width"] = strconv.Itoa(n.Width)
+		if takes(n.Kind, "chain_id") {
+			values[path+".chain_id"] = strconv.FormatUint(n.ChainID, 10)
+		}
+		if takes(n.Kind, "rpc") {
+			values[path+".rpc"] = n.RPC
+		}
 	}
 	for name, a := range r.Config.Assets {
 		values["assets."+name+".network"] = string(a.Network())

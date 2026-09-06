@@ -101,7 +101,7 @@ func FuzzResolve(f *testing.F) {
 	for _, seed := range []string{
 		"listen:\n  port: ${PORT}\n",
 		"database:\n  managed: false\n  url: ${SECRET}\n",
-		"networks:\n  local:\n    kind: simulated\n    rpc: ${SECRET}\n",
+		"networks:\n  polygon:\n    chain_id: 137\n    rpc: ${SECRET}\n",
 		"networks:\n  local:\n    kind: simulated\nassets:\n  jpyc:\n    network: local\n    reference: \"0x1\"\n    symbol: JPYC\n    decimals: 18\n",
 		"listen:\n  host: ${SECRET}\n",
 		"listen:\n  host: [\"a\\nb\"]\n",

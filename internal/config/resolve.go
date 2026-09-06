@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/netip"
 	"net/url"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sucopay/sucopay/internal/invisible"
 	"github.com/sucopay/sucopay/internal/payment"
@@ -19,11 +21,33 @@ import (
 // It has the signature of os.LookupEnv.
 type Lookup func(name string) (string, bool)
 
-// knownNetworkKinds are the kinds a network may declare.
-//
-// Not accepting an evm kind yet: no adapter observes one, so a document naming
-// it would start a server that silently ignores the network.
-var knownNetworkKinds = []string{"simulated"}
+// networkKinds are the kinds a network may declare, each with the settings
+// that kind alone has. A setting listed under a kind is required by it and
+// refused under a kind that does not list it. Poll and width, which every
+// kind has, are not listed.
+var networkKinds = map[string][]string{
+	"evm":       {"chain_id", "rpc"},
+	"simulated": nil,
+}
+
+// NetworkKinds are the kinds a network may declare, in name order.
+func NetworkKinds() []string {
+	kinds := make([]string, 0, len(networkKinds))
+	for kind := range networkKinds {
+		kinds = append(kinds, kind)
+	}
+	slices.Sort(kinds)
+	return kinds
+}
+
+// takes reports whether a network of the kind has the setting.
+func takes(kind, key string) bool {
+	return slices.Contains(networkKinds[kind], key)
+}
+
+// minPoll is the shortest poll a document may set. A shorter one is spent
+// asking a provider about blocks that have not been produced.
+const minPoll = time.Second
 
 // Resolve builds a [Config] from a decoded configuration document and the
 // environment. It reports every problem it finds as one [Problems] error.
@@ -199,6 +223,27 @@ func (r *reader) integer(path string, def int) int {
 	return n
 }
 
+// duration reads a value written with its unit, such as 3s. A bare number is
+// refused rather than given a unit: 3 could as well have been meant as
+// milliseconds or minutes.
+func (r *reader) duration(path string, def time.Duration) time.Duration {
+	v, ok := r.raw(path)
+	if !ok {
+		return def
+	}
+	s, isString := v.(string)
+	if !isString {
+		r.fail(path, "want a duration such as 3s, got %s: %v", kindOf(v), shown(path, v))
+		return def
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		r.fail(path, "want a duration such as 3s: %v%s", shown(path, v), suppliedBy(r.sources[path]))
+		return def
+	}
+	return d
+}
+
 func (r *reader) boolean(path string, def bool) bool {
 	v, ok := r.raw(path)
 	if !ok {
@@ -261,12 +306,29 @@ func (r *reader) section(section, what string) []string {
 func (r *reader) networks() map[string]Network {
 	out := map[string]Network{}
 	for _, name := range r.section("networks", "network") {
+		path := "networks." + name
 		out[name] = Network{
-			Kind: r.text("networks."+name+".kind", ""),
-			RPC:  r.text("networks."+name+".rpc", ""),
+			Kind:    r.text(path+".kind", DefaultNetworkKind),
+			ChainID: r.chainID(path + ".chain_id"),
+			RPC:     r.text(path+".rpc", ""),
+			Poll:    r.duration(path+".poll", DefaultPoll),
+			Width:   r.integer(path+".width", DefaultWidth),
 		}
 	}
 	return out
+}
+
+// chainID reads a chain id, which is 1 or more. Zero stands for none, and
+// whether none is allowed is the kind's to say.
+func (r *reader) chainID(path string) uint64 {
+	n := r.integer(path, 0)
+	if n > 0 {
+		return uint64(n)
+	}
+	if r.sources[path].Origin != FromDefault && !r.failed(path) {
+		r.fail(path, "want 1 or more: %d", n)
+	}
+	return 0
 }
 
 func (r *reader) assets(networks map[string]Network) Assets {
@@ -349,12 +411,72 @@ func (r *reader) validate(cfg Config) {
 	}
 	r.validateLog(cfg.Log)
 	for name, n := range cfg.Networks {
-		path := "networks." + name + ".kind"
-		if !r.failed(path) && !slices.Contains(knownNetworkKinds, n.Kind) {
-			r.fail(path, "unknown kind %v, want one of %s", shown(path, n.Kind), strings.Join(knownNetworkKinds, ", "))
-		}
+		r.validateNetwork("networks."+name, n)
 	}
 	r.validateAssets(cfg.Assets)
+}
+
+// validateNetwork holds a network's settings to its kind. An unknown kind is
+// said on its own: which settings such a network has is unknown too.
+func (r *reader) validateNetwork(path string, n Network) {
+	if !r.failed(path+".poll") && n.Poll < minPoll {
+		r.fail(path+".poll", "below %s: %s", minPoll, n.Poll)
+	}
+	if !r.failed(path+".width") && (n.Width < MinWidth || n.Width > MaxWidth) {
+		r.fail(path+".width", "outside %d-%d: %d", MinWidth, MaxWidth, n.Width)
+	}
+	if r.failed(path + ".kind") {
+		return
+	}
+	if _, known := networkKinds[n.Kind]; !known {
+		r.fail(path+".kind", "unknown kind %v, want one of %s",
+			shown(path+".kind", n.Kind), strings.Join(NetworkKinds(), ", "))
+		return
+	}
+	for _, key := range []string{"chain_id", "rpc"} {
+		p := path + "." + key
+		if r.failed(p) {
+			continue
+		}
+		set := r.sources[p].Origin != FromDefault
+		switch {
+		case takes(n.Kind, key) && !set:
+			r.fail(p, "required when kind is %s", n.Kind)
+		case !takes(n.Kind, key) && set:
+			r.fail(p, "not a setting when kind is %s", n.Kind)
+		case key == "rpc" && set:
+			r.validateRPC(p, n.RPC)
+		}
+	}
+}
+
+// validateRPC holds an endpoint to https, or to http on this machine: a key on
+// the URL travels in the clear over http. The host is taken as written, the
+// way the database URL's is, so "localhost" and a loopback address pass and a
+// name that resolves to one does not. The endpoint is a secret, so no message
+// carries it.
+func (r *reader) validateRPC(path, raw string) {
+	u, err := url.Parse(raw)
+	switch {
+	case err != nil:
+		r.fail(path, "not a URL")
+	case u.Scheme == "https", u.Scheme == "http" && onThisMachine(u.Hostname()):
+		if u.Host == "" {
+			r.fail(path, "has no host")
+		}
+	default:
+		r.fail(path, "want https, or http to localhost or a loopback address")
+	}
+}
+
+// onThisMachine is the check postgres makes on the database URL's host,
+// repeated rather than imported: this package reaches nothing outside itself.
+func onThisMachine(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip, err := netip.ParseAddr(host)
+	return err == nil && ip.IsLoopback()
 }
 
 // validateAssets refuses two names for one token. Which of the two is the
