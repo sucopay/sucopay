@@ -68,8 +68,8 @@ internal/payment/
 
 | DDD | suco Pay |
 |---|---|
-| 集約ルート | `Payment`（attempt を保持）、`Refund` |
-| エンティティ | `Payment`、`Refund`、`Transaction`、`Attempt`（payment に対する 1 回の送金。固有の identity を持つ） |
+| 集約ルート | `Payment`、`Attempt`（payment を指す 1 回の支払いの試み）、`Refund` |
+| エンティティ | `Payment`、`Refund`、`Transaction`、`Attempt` |
 | 値オブジェクト | `Money`、`Address`、`Network`、`Status`、`Nonce`、`ConfirmationPolicy` |
 | リポジトリ | 集約ルートごとに 1 つ |
 | ドメインサービス | 確定判定 |

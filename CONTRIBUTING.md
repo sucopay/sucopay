@@ -67,8 +67,8 @@ Domain-Driven Design (DDD) concepts map onto suco Pay as follows.
 
 | DDD | suco Pay |
 |---|---|
-| Aggregate root | `Payment` (owns its attempts), `Refund` |
-| Entity | `Payment`, `Refund`, `Transaction`, `Attempt` (one transfer against a payment, with its own identity) |
+| Aggregate root | `Payment`, `Attempt` (one go at paying a payment, pointing to it), `Refund` |
+| Entity | `Payment`, `Refund`, `Transaction`, `Attempt` |
 | Value object | `Money`, `Address`, `Network`, `Status`, `Nonce`, `ConfirmationPolicy` |
 | Repository | one per aggregate root |
 | Domain service | finality evaluation |
