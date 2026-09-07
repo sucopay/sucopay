@@ -7,12 +7,13 @@ import (
 	"slices"
 
 	"github.com/sucopay/sucopay/internal/adapter/chain"
+	"github.com/sucopay/sucopay/internal/adapter/chain/simulated"
 )
 
 // all are the kinds this build can open, read through [Lookup] and [Names].
 // Every kind the configuration accepts belongs here, and a test checks that
 // what is here is one the configuration accepts.
-var all []chain.Kind
+var all = []chain.Kind{simulated.Kind}
 
 // Lookup finds the kind registered under a name, spelt as the kind spells it.
 func Lookup(name string) (chain.Kind, bool) {
