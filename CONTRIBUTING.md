@@ -50,7 +50,9 @@ internal/payment/
   `config` is one.
 - `api` holds the server and the routing that mounts contexts. A context's own handlers live
   with it, in `internal/<context>/http.go`.
-- Declare interfaces in the package that calls them, next to the caller.
+- Declare interfaces in the package that calls them, next to the caller. An interface that
+  more than one caller uses and every adapter implements goes in a package of its own,
+  where all of them can import it. `internal/adapter/chain` is one.
 - Wire dependencies in `main` only.
 - Keep a context's internals inside it. Cross-context work goes through domain events or an
   exported service, never through another context's repository.
