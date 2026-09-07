@@ -243,7 +243,7 @@ func TestServe_AnswersUnavailableWhenThePaymentsTableIsGoneAndLogsWhy(t *testing
 	// serve's pool cannot be closed from here, so the database is taken away
 	// from under it. credentials stay, so the request is admitted and it is
 	// the payment that cannot be served.
-	if _, err := s.pool.Conns().Exec(t.Context(), `drop table payments`); err != nil {
+	if _, err := s.pool.Conns().Exec(t.Context(), `drop table payments cascade`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -298,7 +298,7 @@ func TestServe_KeepsMetadataOutOfTheLog(t *testing.T) {
 
 	created := s.ask(t, http.MethodPost, "/payments", writes, carrying("1000"))
 	refused := s.ask(t, http.MethodPost, "/payments", writes, carrying("-1"))
-	if _, err := s.pool.Conns().Exec(t.Context(), `drop table payments`); err != nil {
+	if _, err := s.pool.Conns().Exec(t.Context(), `drop table payments cascade`); err != nil {
 		t.Fatal(err)
 	}
 	failed := s.ask(t, http.MethodPost, "/payments", writes, carrying("1000"))

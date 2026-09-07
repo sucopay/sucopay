@@ -2,6 +2,8 @@ package postgres_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -78,7 +80,10 @@ func TestMigrate_LeavesTablesAnOperatorCanRead(t *testing.T) {
 		t.Error("applied nothing to an empty database")
 	}
 	got := tables(t, dsn)
-	for _, want := range []string{"accepted_assets", "accounts", "credentials", "payments", "schema_migrations"} {
+	for _, want := range []string{
+		"accepted_assets", "accounts", "attempts", "credentials", "leases",
+		"observation_cursors", "observations", "payments", "schema_migrations",
+	} {
 		if !contains(got, want) {
 			t.Errorf("the database has no %s table, only %v", want, got)
 		}
@@ -257,5 +262,33 @@ func record(t *testing.T, dsn, version, checksum string) {
 		`insert into schema_migrations (version, checksum) values ($1, $2)`,
 		version, checksum); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The schema holds payments, not chains. A column or a comment naming one kind
+// of chain would mean a deployment that observes another needs a migration,
+// which is the coupling the adapter boundary exists to prevent.
+func TestMigrations_NameNoKindOfChain(t *testing.T) {
+	t.Parallel()
+	names, err := filepath.Glob(filepath.Join("migrations", "*.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) == 0 {
+		t.Fatal("found no migration to read")
+	}
+	for _, name := range names {
+		t.Run(filepath.Base(name), func(t *testing.T) {
+			body, err := os.ReadFile(filepath.Clean(name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := strings.ToLower(string(body))
+			for _, word := range []string{"evm", "simulated"} {
+				if strings.Contains(text, word) {
+					t.Errorf("holds %q, which is the name of one kind of chain", word)
+				}
+			}
+		})
 	}
 }

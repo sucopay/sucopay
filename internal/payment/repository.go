@@ -16,30 +16,45 @@ type AccountID string
 func (a AccountID) String() string { return string(a) }
 
 var (
-	// ErrNotFound reports that no payment was stored under that account and
-	// identifier. It is not a problem with what the caller asked for.
+	// ErrNotFound reports that no payment or attempt was stored under that
+	// account and identifier. It is not a problem with what the caller asked
+	// for.
 	ErrNotFound = errors.New("payment: no such payment")
 
-	// ErrStale reports that the payment changed after it was read, so the
-	// write was refused rather than laid over what the other writer left. A
-	// caller that sees this reads the payment again and decides again, rather
-	// than reapplying the move it was going to make.
+	// ErrStale reports that the row changed after it was read, so the write
+	// was refused rather than laid over what the other writer left. A caller
+	// that sees this reads the row again and decides again, rather than
+	// reapplying the move it was going to make.
 	ErrStale = errors.New("payment: changed since it was read")
+
+	// ErrKeyTaken reports that an attempt on that network already holds the
+	// key. A transfer names its key and nothing else, so a key held twice
+	// would be a transfer belonging to two payments.
+	ErrKeyTaken = errors.New("payment: the key is another attempt's")
+
+	// ErrAttemptLive reports that the payment already has an attempt that
+	// could still be paid. A second one would be a second key a payer could
+	// spend against one payment.
+	ErrAttemptLive = errors.New("payment: the payment has an attempt already")
 )
 
-// Revision is a payment as its row stood when it was read.
+// Revision is a row as it stood when it was read.
 //
-// It is not a fact about the payment, it is a fact about the row, which is why
-// it is not on the aggregate: a Payment that was never stored has no revision,
-// and a field holding one would need a value meaning "not stored yet" that
-// nothing could tell from a real first revision.
+// It is not a fact about what the row holds, it is a fact about the row, which
+// is why it is not on the aggregate: a payment or an attempt that was never
+// stored has no revision, and a field holding one would need a value meaning
+// "not stored yet" that nothing could tell from a real first revision.
 //
 // It carries the identifier it was read under. Version numbers are small and
-// dense, and every payment starts at the same one, so a caller working through
-// several payments could hand one payment's revision to another's save and have
-// it match by coincidence. Saving checks that it did not.
+// dense, and every row starts at the same one, so a caller working through
+// several rows could hand one row's revision to another's save and have it
+// match by coincidence. Saving checks that it did not.
+//
+// One type for payments and attempts. A revision is a fact about a row, and
+// the two rows resolve concurrent updates the same way; the identifier it
+// carries is what keeps a payment's revision from saving an attempt.
 type Revision struct {
-	id ID
+	id string
 	at int64
 }
 
@@ -61,4 +76,34 @@ type Repository interface {
 	// Save writes back a payment that was read, and reports [ErrStale] if
 	// anything wrote to it in between.
 	Save(ctx context.Context, account AccountID, p *Payment, at Revision) error
+}
+
+// Attempts stores attempts.
+//
+// An attempt is stored under the account of the payment it is against, and
+// every method here takes that account. A transfer seen on a chain names a
+// network and a key and nothing about an account, so reading by those belongs
+// with the observation of a chain rather than here.
+//
+// Issue and SaveAttempt each own a transaction, for the reason [Repository]
+// gives.
+type Attempts interface {
+	// Issue stores an attempt nothing has stored before. It reports
+	// [ErrKeyTaken] when another attempt on the network holds the same key,
+	// and [ErrAttemptLive] when the payment has an attempt that could still be
+	// paid.
+	Issue(ctx context.Context, account AccountID, a *Attempt) error
+
+	// FindAttempt reads one attempt of a payment, and the revision it was read
+	// at. It reports [ErrNotFound] when that account has no such attempt,
+	// which includes the case of another account having it.
+	FindAttempt(ctx context.Context, account AccountID, payment ID, id AttemptID) (*Attempt, Revision, error)
+
+	// Live reads the attempt of a payment that could still be paid, and
+	// reports whether there is one. A payment has at most one.
+	Live(ctx context.Context, account AccountID, payment ID) (*Attempt, Revision, bool, error)
+
+	// SaveAttempt writes back an attempt that was read, and reports [ErrStale]
+	// if anything wrote to it in between.
+	SaveAttempt(ctx context.Context, account AccountID, a *Attempt, at Revision) error
 }

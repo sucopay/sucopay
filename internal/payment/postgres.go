@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sucopay/sucopay/internal/postgres"
 )
 
 // storeTimeout bounds one statement. A repository call that hangs holds a
@@ -131,7 +133,7 @@ func (s *Postgres) Find(ctx context.Context, account AccountID, id ID) (*Payment
 	if err != nil {
 		return nil, Revision{}, fmt.Errorf("payment %s: %w", id, err)
 	}
-	return p, Revision{id: id, at: version}, nil
+	return p, Revision{id: string(id), at: version}, nil
 }
 
 // Save writes back a payment that was read.
@@ -146,7 +148,7 @@ func (s *Postgres) Save(ctx context.Context, account AccountID, p *Payment, at R
 	// Two zero values pass this, because an empty identifier equals an empty
 	// identifier. The where clause below is what refuses them: no row carries
 	// an empty id.
-	if at.id != p.ID() {
+	if at.id != string(p.ID()) {
 		return fmt.Errorf("payment %s: %w, which belongs to %s", p.ID(), ErrStale, at.id)
 	}
 	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
@@ -200,4 +202,165 @@ func (s *Postgres) Save(ctx context.Context, account AccountID, p *Payment, at R
 		return fmt.Errorf("payment %s: %w", p.ID(), err)
 	}
 	return nil
+}
+
+// attemptColumns are what a row holds of an attempt, in the order the reads
+// below scan them.
+const attemptColumns = `id, scheme, network, key, authorizer, valid_before,
+                        status, created_at, revision`
+
+// Issue stores an attempt nothing has stored before.
+func (s *Postgres) Issue(ctx context.Context, account AccountID, a *Attempt) (err error) {
+	if a == nil {
+		return errors.New("payment: nothing to issue")
+	}
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("attempt %s: %w", a.ID(), err)
+	}
+	defer func() {
+		unwind, stop := context.WithTimeout(context.WithoutCancel(ctx), storeTimeout)
+		defer stop()
+		rollback := tx.Rollback(unwind)
+		if rollback != nil && !errors.Is(rollback, pgx.ErrTxClosed) && err == nil {
+			err = fmt.Errorf("attempt %s: %w", a.ID(), rollback)
+		}
+	}()
+
+	_, err = tx.Exec(ctx, `
+		insert into attempts (
+			account_id, payment_id, id, scheme, network, key, authorizer,
+			valid_before, status, created_at
+		) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		account, a.PaymentID(), a.ID(), a.Scheme(), a.Network(), a.Key(),
+		a.Authorizer(), a.ValidBefore(), a.Status(), a.CreatedAt())
+	if err != nil {
+		// Constrained first, and on the way out as well as on the way into the
+		// switch: what the driver raises holds the values that clashed, one of
+		// which is the key this attempt was issued to spend.
+		refused := postgres.Constrained(err)
+		var broken postgres.Constraint
+		if errors.As(refused, &broken) {
+			switch broken.Name {
+			case "attempts_network_key_key":
+				return fmt.Errorf("attempt %s: %w", a.ID(), ErrKeyTaken)
+			case "attempts_one_live_per_payment":
+				return fmt.Errorf("attempt %s: %w", a.ID(), ErrAttemptLive)
+			}
+		}
+		return fmt.Errorf("attempt %s: %w", a.ID(), refused)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("attempt %s: %w", a.ID(), err)
+	}
+	return nil
+}
+
+// FindAttempt reads one attempt of a payment, and the revision it was read at.
+func (s *Postgres) FindAttempt(ctx context.Context, account AccountID, payment ID, id AttemptID) (*Attempt, Revision, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	// Filtered on the account for the reason Find is: an attempt of another
+	// account is not found rather than found and refused.
+	row := s.pool.QueryRow(ctx, `
+		select `+attemptColumns+`
+		  from attempts
+		 where account_id = $1 and payment_id = $2 and id = $3`, account, payment, id)
+	return scanAttempt(row, payment)
+}
+
+// Live reads the attempt of a payment that could still be paid.
+func (s *Postgres) Live(ctx context.Context, account AccountID, payment ID) (*Attempt, Revision, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	// The statuses are the ones attempts_one_live_per_payment is over, so at
+	// most one row can match, and a status added to one belongs in the other.
+	row := s.pool.QueryRow(ctx, `
+		select `+attemptColumns+`
+		  from attempts
+		 where account_id = $1 and payment_id = $2
+		   and status in ('issued', 'confirming')`, account, payment)
+	a, at, err := scanAttempt(row, payment)
+	if errors.Is(err, ErrNotFound) {
+		return nil, Revision{}, false, nil
+	}
+	if err != nil {
+		return nil, Revision{}, false, err
+	}
+	return a, at, true, nil
+}
+
+// SaveAttempt writes back an attempt that was read.
+//
+// Status and authorizer are the only columns it writes, because they are the
+// only fields a move changes. A test holds the two lists together.
+func (s *Postgres) SaveAttempt(ctx context.Context, account AccountID, a *Attempt, at Revision) (err error) {
+	if a == nil {
+		return errors.New("payment: nothing to save")
+	}
+	if at.id != string(a.ID()) {
+		return fmt.Errorf("attempt %s: %w, which belongs to %s", a.ID(), ErrStale, at.id)
+	}
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("attempt %s: %w", a.ID(), err)
+	}
+	defer func() {
+		unwind, stop := context.WithTimeout(context.WithoutCancel(ctx), storeTimeout)
+		defer stop()
+		rollback := tx.Rollback(unwind)
+		if rollback != nil && !errors.Is(rollback, pgx.ErrTxClosed) && err == nil {
+			err = fmt.Errorf("attempt %s: %w", a.ID(), rollback)
+		}
+	}()
+
+	tag, err := tx.Exec(ctx, `
+		update attempts
+		   set status = $5, authorizer = $6, revision = revision + 1
+		 where account_id = $1 and payment_id = $2 and id = $3 and revision = $4`,
+		account, a.PaymentID(), a.ID(), at.at, a.Status(), a.Authorizer())
+	if err != nil {
+		return fmt.Errorf("attempt %s: %w", a.ID(), err)
+	}
+	// Nothing matched: the revision moved, or the account is not the one the
+	// attempt belongs to. One answer for both, for the reason Save gives.
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("attempt %s: %w", a.ID(), ErrStale)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("attempt %s: %w", a.ID(), err)
+	}
+	return nil
+}
+
+// scanAttempt reads one row of attemptColumns and rebuilds the attempt.
+func scanAttempt(row pgx.Row, payment ID) (*Attempt, Revision, error) {
+	var (
+		stored   StoredAttempt
+		revision int64
+	)
+	err := row.Scan(&stored.ID, &stored.Scheme, &stored.Network, &stored.Key,
+		&stored.Authorizer, &stored.ValidBefore, &stored.Status, &stored.CreatedAt,
+		&revision)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, Revision{}, fmt.Errorf("%s: %w", payment, ErrNotFound)
+	}
+	if err != nil {
+		return nil, Revision{}, fmt.Errorf("attempt of %s: %w", payment, err)
+	}
+	stored.PaymentID = payment
+
+	a, err := RestoreAttempt(stored)
+	if err != nil {
+		return nil, Revision{}, fmt.Errorf("attempt %s: %w", stored.ID, err)
+	}
+	return a, Revision{id: string(stored.ID), at: revision}, nil
 }

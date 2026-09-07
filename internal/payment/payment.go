@@ -72,20 +72,29 @@ func NewID() (ID, error) {
 // ParseID reads an identifier, refusing anything that is not the shape
 // [NewID] produces.
 func ParseID(s string) (ID, error) {
-	if len(s) != 32 {
-		return "", fmt.Errorf("payment id: want 32 characters, got %d", len(s))
-	}
-	if _, err := hex.DecodeString(s); err != nil {
-		return "", errors.New("payment id: not hexadecimal")
-	}
-	if strings.ToLower(s) != s {
-		return "", errors.New("payment id: not lowercase")
+	if err := hexOfLength(s, 32); err != nil {
+		return "", fmt.Errorf("payment id: %w", err)
 	}
 	return ID(s), nil
 }
 
 // String returns the identifier as written.
 func (id ID) String() string { return string(id) }
+
+// hexOfLength refuses anything that is not n lowercase hexadecimal characters.
+// Identifiers and the key an attempt holds are all written this way.
+func hexOfLength(s string, n int) error {
+	if len(s) != n {
+		return fmt.Errorf("want %d characters, got %d", n, len(s))
+	}
+	if _, err := hex.DecodeString(s); err != nil {
+		return errors.New("not hexadecimal")
+	}
+	if strings.ToLower(s) != s {
+		return errors.New("not lowercase")
+	}
+	return nil
+}
 
 // Address is where funds are sent, as the network writes an account.
 //

@@ -16,7 +16,8 @@ import (
 // the list below. repository.go does: a driver type reaching the interface is
 // how the shape of a database gets into everything that stores a payment.
 var domainFiles = []string{
-	"asset.go", "money.go", "payment.go", "repository.go", "service.go", "status.go",
+	"asset.go", "attempt.go", "money.go", "payment.go", "repository.go",
+	"service.go", "status.go",
 }
 
 // allowed is everything those files may import. An allow list rather than a

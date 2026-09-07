@@ -2,6 +2,7 @@ package payment_test
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -311,6 +312,352 @@ func TestRepository_EveryFieldOfAPaymentIsAccountedFor(t *testing.T) {
 	for field, column := range moved {
 		if !strings.Contains(set, column+" =") {
 			t.Errorf("Payment.%s is listed as changing, but Save does not set %s", field, column)
+		}
+	}
+}
+
+// payableKept stores a payment a payer could pay: an attempt is only made
+// against one of those.
+func payableKept(t *testing.T, s *payment.Postgres, account payment.AccountID) *payment.Payment {
+	t.Helper()
+	p := kept(t, s, account)
+	_, at, err := s.Find(t.Context(), account, p.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Await(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(t.Context(), account, p, at); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// attempted stores an attempt at paying p and hands back what a caller would
+// hold after doing so.
+func attempted(t *testing.T, s *payment.Postgres, account payment.AccountID, p *payment.Payment) *payment.Attempt {
+	t.Helper()
+	a, err := payment.NewAttempt(p, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Issue(t.Context(), account, a); err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+func TestIssue_ReadsBackEverythingItWasGiven(t *testing.T) {
+	t.Parallel()
+	s, _ := store(t)
+	p := payableKept(t, s, first)
+	a := attempted(t, s, first, p)
+
+	read, at, err := s.FindAttempt(t.Context(), first, p.ID(), a.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read.ID() != a.ID() || read.PaymentID() != p.ID() {
+		t.Errorf("read back attempt %s of %s, want %s of %s", read.ID(), read.PaymentID(), a.ID(), p.ID())
+	}
+	if read.Key() != a.Key() || read.Scheme() != a.Scheme() || read.Network() != a.Network() {
+		t.Errorf("read back %s %s %q, want %s %s %q",
+			read.Scheme(), read.Network(), read.Key(), a.Scheme(), a.Network(), a.Key())
+	}
+	if !read.ValidBefore().Equal(a.ValidBefore()) {
+		t.Errorf("ValidBefore is %s, want %s", read.ValidBefore(), a.ValidBefore())
+	}
+	if !read.CreatedAt().Equal(a.CreatedAt()) {
+		t.Errorf("CreatedAt is %s, want %s", read.CreatedAt(), a.CreatedAt())
+	}
+	if read.Status() != payment.Issued || read.Authorizer() != "" {
+		t.Errorf("read back %s signed by %q, want issued and nobody", read.Status(), read.Authorizer())
+	}
+	if err := s.SaveAttempt(t.Context(), first, read, at); err != nil {
+		t.Errorf("the revision it was read at did not save: %v", err)
+	}
+}
+
+func TestIssue_RefusesASecondAttemptHoldingOneKey(t *testing.T) {
+	t.Parallel()
+	s, _ := store(t)
+	held := attempted(t, s, first, payableKept(t, s, first))
+	elsewhere := payableKept(t, s, other)
+
+	same, err := payment.RestoreAttempt(payment.StoredAttempt{
+		ID:          "0123456789abcdef0123456789abcdef",
+		PaymentID:   elsewhere.ID(),
+		Scheme:      held.Scheme(),
+		Network:     held.Network(),
+		Key:         held.Key(),
+		ValidBefore: held.ValidBefore(),
+		Status:      payment.Issued,
+		CreatedAt:   time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The other account's, so that the key is what refuses the write rather
+	// than anything the two payments share.
+	err = s.Issue(t.Context(), other, same)
+	if !errors.Is(err, payment.ErrKeyTaken) {
+		t.Fatalf("Issue gave %v, want %v", err, payment.ErrKeyTaken)
+	}
+	for _, rendered := range []string{err.Error(), fmt.Sprintf("%v", err), fmt.Sprintf("%+v", err)} {
+		if strings.Contains(rendered, held.Key()) {
+			t.Errorf("the error carries the key another payer is about to spend: %s", rendered)
+		}
+	}
+}
+
+func TestIssue_RefusesASecondAttemptThatCouldStillBePaid(t *testing.T) {
+	t.Parallel()
+	s, _ := store(t)
+	p := payableKept(t, s, first)
+	attempted(t, s, first, p)
+
+	second, err := payment.NewAttempt(p, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Issue(t.Context(), first, second); !errors.Is(err, payment.ErrAttemptLive) {
+		t.Fatalf("Issue gave %v, want %v", err, payment.ErrAttemptLive)
+	}
+}
+
+func TestIssue_RefusesAnAttemptAtAnotherAccountsPayment(t *testing.T) {
+	t.Parallel()
+	s, _ := store(t)
+	p := payableKept(t, s, first)
+
+	a, err := payment.NewAttempt(p, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Issue(t.Context(), other, a); err == nil {
+		t.Error("an attempt was stored against another account's payment")
+	}
+}
+
+func TestFindAttempt_HidesWhatBelongsToAnotherAccount(t *testing.T) {
+	t.Parallel()
+	s, _ := store(t)
+	p := payableKept(t, s, first)
+	a := attempted(t, s, first, p)
+
+	if _, _, err := s.FindAttempt(t.Context(), other, p.ID(), a.ID()); !errors.Is(err, payment.ErrNotFound) {
+		t.Errorf("FindAttempt gave %v, want %v", err, payment.ErrNotFound)
+	}
+	if _, _, err := s.FindAttempt(t.Context(), first, p.ID(), "0123456789abcdef0123456789abcdef"); !errors.Is(err, payment.ErrNotFound) {
+		t.Errorf("FindAttempt of an attempt nobody stored gave %v, want %v", err, payment.ErrNotFound)
+	}
+}
+
+func TestLive_FindsTheAttemptThatCouldStillBePaid(t *testing.T) {
+	t.Parallel()
+	s, _ := store(t)
+	p := payableKept(t, s, first)
+
+	if _, _, live, err := s.Live(t.Context(), first, p.ID()); err != nil || live {
+		t.Fatalf("Live on a payment nobody attempted = %v, %v", live, err)
+	}
+	a := attempted(t, s, first, p)
+	read, _, live, err := s.Live(t.Context(), first, p.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !live || read.ID() != a.ID() {
+		t.Errorf("Live = %v, %v; want the attempt %s", read, live, a.ID())
+	}
+	if _, _, live, err := s.Live(t.Context(), other, p.ID()); err != nil || live {
+		t.Errorf("Live under another account = %v, %v", live, err)
+	}
+}
+
+func TestSaveAttempt_WritesTheConfirmationAndMovesTheRevision(t *testing.T) {
+	t.Parallel()
+	s, _ := store(t)
+	p := payableKept(t, s, first)
+	a := attempted(t, s, first, p)
+
+	read, at, err := s.FindAttempt(t.Context(), first, p.ID(), a.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := read.Confirm("0xpayer"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveAttempt(t.Context(), first, read, at); err != nil {
+		t.Fatal(err)
+	}
+	again, next, err := s.FindAttempt(t.Context(), first, p.ID(), a.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Status() != payment.Confirming || again.Authorizer() != "0xpayer" {
+		t.Errorf("read back %s signed by %q", again.Status(), again.Authorizer())
+	}
+	if err := s.SaveAttempt(t.Context(), first, again, at); !errors.Is(err, payment.ErrStale) {
+		t.Errorf("saving at the revision already used gave %v, want %v", err, payment.ErrStale)
+	}
+	if err := s.SaveAttempt(t.Context(), first, again, next); err != nil {
+		t.Errorf("saving at the revision just read gave %v", err)
+	}
+}
+
+func TestSaveAttempt_MovesTheRowsRevisionOnEverySave(t *testing.T) {
+	t.Parallel()
+	s, conns := store(t)
+	p := payableKept(t, s, first)
+	a := attempted(t, s, first, p)
+
+	revision := func(t *testing.T) int64 {
+		t.Helper()
+		var at int64
+		if err := conns.QueryRow(t.Context(),
+			`select revision from attempts where id = $1`, a.ID()).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		return at
+	}
+	before := revision(t)
+	read, at, err := s.FindAttempt(t.Context(), first, p.ID(), a.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := read.Confirm("0xpayer"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveAttempt(t.Context(), first, read, at); err != nil {
+		t.Fatal(err)
+	}
+	if after := revision(t); after != before+1 {
+		t.Errorf("the row is at revision %d, want %d", after, before+1)
+	}
+}
+
+// A revision is a fact about a row, and one type carries both a payment's and
+// an attempt's. What keeps the two apart is the identifier it was read under.
+func TestSaveAttempt_RefusesARevisionReadForAPayment(t *testing.T) {
+	t.Parallel()
+	s, _ := store(t)
+	p := payableKept(t, s, first)
+	a := attempted(t, s, first, p)
+
+	// Both rows are moved to the same number first, so that what refuses the
+	// save is the identifier the revision carries rather than a version that
+	// happens not to match.
+	read, at, err := s.FindAttempt(t.Context(), first, p.ID(), a.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := read.Confirm("0xpayer"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveAttempt(t.Context(), first, read, at); err != nil {
+		t.Fatal(err)
+	}
+	_, ofPayment, err := s.Find(t.Context(), first, p.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, ofAttempt, err := s.FindAttempt(t.Context(), first, p.ID(), a.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ofPayment == ofAttempt {
+		t.Fatal("the two revisions are the same value, so this test proves nothing")
+	}
+	if err := s.SaveAttempt(t.Context(), first, read, ofPayment); !errors.Is(err, payment.ErrStale) {
+		t.Errorf("saving an attempt at its payment's revision gave %v, want %v", err, payment.ErrStale)
+	}
+	if err := s.Save(t.Context(), first, p, ofAttempt); !errors.Is(err, payment.ErrStale) {
+		t.Errorf("saving a payment at its attempt's revision gave %v, want %v", err, payment.ErrStale)
+	}
+}
+
+func TestSaveAttempt_RefusesARevisionReadForAnotherAttempt(t *testing.T) {
+	t.Parallel()
+	s, _ := store(t)
+	one := payableKept(t, s, first)
+	two := payableKept(t, s, first)
+	first_, second := attempted(t, s, first, one), attempted(t, s, first, two)
+
+	_, at, err := s.FindAttempt(t.Context(), first, one.ID(), first_.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, _, err := s.FindAttempt(t.Context(), first, two.ID(), second.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveAttempt(t.Context(), first, read, at); !errors.Is(err, payment.ErrStale) {
+		t.Errorf("saving one attempt at another's revision gave %v, want %v", err, payment.ErrStale)
+	}
+}
+
+func TestSaveAttempt_DoesNotSaveOverAnAttemptAnotherAccountStored(t *testing.T) {
+	t.Parallel()
+	s, _ := store(t)
+	p := payableKept(t, s, first)
+	a := attempted(t, s, first, p)
+
+	read, at, err := s.FindAttempt(t.Context(), first, p.ID(), a.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := read.Confirm("0xpayer"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveAttempt(t.Context(), other, read, at); !errors.Is(err, payment.ErrStale) {
+		t.Fatalf("SaveAttempt under another account gave %v, want %v", err, payment.ErrStale)
+	}
+	again, _, err := s.FindAttempt(t.Context(), first, p.ID(), a.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Status() != payment.Issued || again.Authorizer() != "" {
+		t.Errorf("the row is %s signed by %q after a save from another account", again.Status(), again.Authorizer())
+	}
+}
+
+func TestSaveAttempt_EveryFieldOfAnAttemptIsAccountedFor(t *testing.T) {
+	t.Parallel()
+	// The same division as a payment's: what a move changes, and what Issue
+	// writes once. A field in neither list is one SaveAttempt drops.
+	moved := map[string]string{"status": "status", "authorizer": "authorizer"}
+	fixed := map[string]bool{
+		"id": true, "paymentID": true, "scheme": true, "network": true,
+		"key": true, "validBefore": true, "createdAt": true,
+	}
+
+	fields := reflect.TypeOf(payment.Attempt{})
+	for i := range fields.NumField() {
+		name := fields.Field(i).Name
+		if _, ok := moved[name]; !ok && !fixed[name] {
+			t.Errorf("Attempt.%s is in neither list: does SaveAttempt have to write it?", name)
+		}
+	}
+	if got, want := fields.NumField(), len(moved)+len(fixed); got != want {
+		t.Errorf("Attempt has %d fields and the lists name %d", got, want)
+	}
+
+	source, err := os.ReadFile("postgres.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, update, ok := strings.Cut(string(source), "update attempts")
+	if !ok {
+		t.Fatal("no update statement in postgres.go: this test no longer checks anything")
+	}
+	set, _, ok := strings.Cut(update, "where")
+	if !ok {
+		t.Fatal("the update statement has no where clause")
+	}
+	for field, column := range moved {
+		if !strings.Contains(set, column+" =") {
+			t.Errorf("Attempt.%s is listed as changing, but SaveAttempt does not set %s", field, column)
 		}
 	}
 }

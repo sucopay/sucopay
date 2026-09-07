@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sucopay/sucopay/internal/payment"
 	"github.com/sucopay/sucopay/internal/postgres"
 	"github.com/sucopay/sucopay/internal/postgres/postgrestest"
 )
@@ -116,6 +117,58 @@ func TestSchema_RefusesASucceededRowOnLessThanItBilled(t *testing.T) {
 	t.Run("an open payment may hold less than it billed", func(t *testing.T) {
 		if err := insert(t, fmt.Sprintf("%032d", 99), "awaiting_payment", 1); err != nil {
 			t.Errorf("the schema refused to record an underpayment: %v", err)
+		}
+	})
+}
+
+// everyAttemptStatus is the list the domain defines. The schema constrains the
+// column to the same one, and this is what keeps the two together.
+var everyAttemptStatus = []payment.AttemptStatus{payment.Issued, payment.Confirming}
+
+func TestSchema_AcceptsEveryAttemptStatusTheDomainDefinesAndNoOther(t *testing.T) {
+	t.Parallel()
+	conn := migrated(t)
+
+	if _, err := conn.Exec(t.Context(), `
+		insert into payments (
+			id, account_id, asset_network, asset_reference, asset_symbol,
+			asset_decimals, amount, destination, status, created_at, expires_at
+		) values ('00000000000000000000000000000001',
+			'00000000-0000-0000-0000-000000000001', 'polygon', 'r', 'JPYC',
+			18, 1, '0xabc', 'awaiting_payment', now(), now() + interval '1 hour')`); err != nil {
+		t.Fatal(err)
+	}
+	insert := func(t *testing.T, id, status string) error {
+		t.Helper()
+		_, err := conn.Exec(t.Context(), `
+			insert into attempts (
+				account_id, payment_id, id, scheme, network, key, valid_before,
+				status, created_at
+			) values ('00000000-0000-0000-0000-000000000001',
+				'00000000000000000000000000000001', $1, 'eip3009', 'polygon', $1,
+				now() + interval '1 hour', $2, now())`, id, status)
+		return err
+	}
+
+	// One row per status, and a live attempt is unique per payment, so the
+	// rows that are not under test are moved out of the way by leaving only
+	// the one being inserted live: each subtest deletes what came before it.
+	for i, status := range everyAttemptStatus {
+		t.Run(status.String(), func(t *testing.T) {
+			if _, err := conn.Exec(t.Context(), `delete from attempts`); err != nil {
+				t.Fatal(err)
+			}
+			if err := insert(t, fmt.Sprintf("%032d", i), status.String()); err != nil {
+				t.Errorf("the schema refused %s, which the domain defines: %v", status, err)
+			}
+		})
+	}
+	t.Run("submitted, which only submission will add", func(t *testing.T) {
+		if _, err := conn.Exec(t.Context(), `delete from attempts`); err != nil {
+			t.Fatal(err)
+		}
+		if err := insert(t, fmt.Sprintf("%032d", len(everyAttemptStatus)), "submitted"); err == nil {
+			t.Error("the schema accepted a status the domain does not define")
 		}
 	})
 }
