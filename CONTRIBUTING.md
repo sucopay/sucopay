@@ -56,8 +56,8 @@ internal/payment/
   exported service, never through another context's repository.
 
 Check the direction with a test that reads a package's imports and fails on anything the
-inner files are not allowed. `internal/adapter/chain`, `internal/config`, `internal/credential`,
-`internal/payment` and `internal/postgres` each have one.
+inner files are not allowed. `internal/accepted`, `internal/adapter/chain`, `internal/config`,
+`internal/credential`, `internal/payment` and `internal/postgres` each have one.
 
 ## Domain model
 
