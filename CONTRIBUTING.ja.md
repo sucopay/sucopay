@@ -59,8 +59,8 @@ internal/payment/
 
 向きはテストで確かめます。パッケージ内のファイルの import を読み、内側のファイルに許して
 いないものがあれば失敗するテストです。`internal/accepted`、`internal/adapter/chain`、
-`internal/config`、`internal/credential`、`internal/observe`、`internal/payment`、
-`internal/postgres` にそれぞれあります。
+`internal/adapter/chain/evm`、`internal/config`、`internal/credential`、`internal/observe`、
+`internal/payment`、`internal/postgres` にそれぞれあります。
 
 ## ドメインモデル
 
@@ -159,7 +159,9 @@ func TestObserver_SameTransactionObservedTwiceCreatesOneRow(t *testing.T)
 - 環境変数を設定しないテストには `t.Parallel()` を入れてください。他のテストが残したものに
   依存しているテストが、黙って通らずに落ちるようになります。
 - データベースが要るテストは `postgrestest.Fresh` で自分専用のものを取ってください。無いときに
-  スキップはしません。スキップしたテストは、走っていないのに成功として数えられます。
+  スキップはしません。スキップしたテストは、走っていないのに成功として数えられます。他人が
+  動かしているチェーンを読むテストだけは例外です。こちらで起動できないので、エンドポイントを
+  環境変数から取り、名前が無ければスキップします。
 
 ### ファジング
 

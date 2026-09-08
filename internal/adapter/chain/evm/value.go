@@ -110,13 +110,21 @@ func (t *topics) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// unmarshalBytes reads a value of a fixed width, written as 0x and twice as
-// many hexadecimal digits.
+// unmarshalBytes reads a value of a fixed width out of the string a chain
+// writes it as.
 func unmarshalBytes(what string, b []byte, into []byte) error {
 	text, err := unquote(b)
 	if err != nil {
 		return fmt.Errorf("%s: %w", what, err)
 	}
+	return decodeHex(what, text, into)
+}
+
+// decodeHex reads a value of a fixed width, written as 0x and twice as many
+// hexadecimal digits. The digits are read in either case, because the case of
+// a digit is not part of the value; the prefix is not, because everything
+// that writes one writes it in lower case.
+func decodeHex(what, text string, into []byte) error {
 	digits, found := strings.CutPrefix(text, "0x")
 	if !found {
 		return fmt.Errorf("%s: %q does not start with 0x", what, cut(text))

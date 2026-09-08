@@ -58,9 +58,9 @@ internal/payment/
   exported service, never through another context's repository.
 
 Check the direction with a test that reads a package's imports and fails on anything the
-inner files are not allowed. `internal/accepted`, `internal/adapter/chain`, `internal/config`,
-`internal/credential`, `internal/observe`, `internal/payment` and `internal/postgres` each have
-one.
+inner files are not allowed. `internal/accepted`, `internal/adapter/chain`,
+`internal/adapter/chain/evm`, `internal/config`, `internal/credential`, `internal/observe`,
+`internal/payment` and `internal/postgres` each have one.
 
 ## Domain model
 
@@ -158,7 +158,9 @@ func TestObserver_SameTransactionObservedTwiceCreatesOneRow(t *testing.T)
 - `t.Parallel()` in every test that does not set an environment variable, so that a test
   depending on another one's leftovers fails rather than passes quietly.
 - A test needing a database gets one of its own from `postgrestest.Fresh`, and does not skip
-  when there is none: a skipped test reports success without having run.
+  when there is none: a skipped test reports success without having run. A test that reads a
+  chain somebody else runs is the exception, because nothing here can start one. It takes the
+  endpoint from the environment and skips when none is named.
 
 ### Fuzzing
 
