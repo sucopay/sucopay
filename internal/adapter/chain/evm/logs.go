@@ -29,6 +29,17 @@ const (
 // by spending a key.
 const scheme = "eip3009"
 
+// maxLogs is the most a receipt may carry. Pairing looks behind each
+// authorisation for a transfer, so the work is the square of what a receipt
+// holds: ten thousand logs is eight seconds, which outlives the term of the
+// lease the reader holds. The bound on an answer counts what an array holds
+// and a receipt is an object, so its logs are counted here instead.
+//
+// A transaction nobody could pay the gas for is where the line goes, and a
+// batch of payments comes to a handful. One that really did carry more would
+// be refused every round it was read, and never recorded.
+const maxLogs = 1000
+
 // Keys are the keys the assets consumed in a span of blocks, with the
 // transaction that consumed each, and the assets whose code changed in that
 // span. One request answers both: the two events sit on the same contracts,
@@ -147,6 +158,9 @@ type receipt struct {
 // twice gives the same pairs in the same order, because the order is the logs'
 // own.
 func (r *receipt) transfers(tx string) ([]chain.Transfer, error) {
+	if len(r.Logs) > maxLogs {
+		return nil, fmt.Errorf("a receipt of %d logs is more than one transaction writes", len(r.Logs))
+	}
 	var made []chain.Transfer
 	// One transfer answers for one authorisation. Two authorisations reading
 	// the same transfer would put one payer's payment down against the other's

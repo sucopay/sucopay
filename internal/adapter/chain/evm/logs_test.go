@@ -265,6 +265,30 @@ func TestReceipt_RefusesABlockThatIsNoLongerTheOneTheReceiptNames(t *testing.T) 
 	}
 }
 
+// Pairing looks behind each authorisation, so what a receipt carries decides
+// the work twice over. A receipt of more logs than a transaction could pay for
+// is one this reads no further into.
+func TestReceipt_RefusesMoreLogsThanOneTransactionWrites(t *testing.T) {
+	t.Parallel()
+	for _, count := range []int{maxLogs, maxLogs + 1} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			logs := make([]string, count)
+			for i := range logs {
+				logs[i] = used(asset, authorizer, spent, tx)
+			}
+			evm, _ := opening(t, map[string]string{
+				"eth_getTransactionReceipt": answered(receiptOf(tx, 0x89, logs...)),
+			})
+
+			transfers, err := evm.Receipt(t.Context(), tx)
+
+			if refused := err != nil; refused != (count > maxLogs) {
+				t.Errorf("%d logs read as %+v, %v", count, transfers, err)
+			}
+		})
+	}
+}
+
 // A receipt is asked for by name. One naming another transaction is not an
 // answer to what was asked, and its transfers would be written down under the
 // name that was.
