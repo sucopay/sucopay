@@ -188,6 +188,22 @@ func (a *Attempt) Confirm(authorizer Address) error {
 	return nil
 }
 
+// Unconfirm takes an attempt back to issued, for a transfer that was seen and
+// is no longer on the chain. Who signed it goes with it: nothing has been seen
+// against this attempt any more.
+//
+// Only a confirming attempt can be taken back. One that was issued never moved,
+// and what follows confirming belongs to submission and to finality, which do
+// not undo their moves this way.
+func (a *Attempt) Unconfirm() error {
+	if a.status != Confirming {
+		return Problems{{Field: "status", Message: "attempt is " + a.status.String() + ", not " + Confirming.String()}}
+	}
+	a.authorizer = ""
+	a.status = Issued
+	return nil
+}
+
 // ID returns the attempt's identifier.
 func (a *Attempt) ID() AttemptID { return a.id }
 

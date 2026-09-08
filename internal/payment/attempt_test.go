@@ -258,3 +258,41 @@ func TestConfirm_RefusesAnAuthorizerNoAddressCouldBe(t *testing.T) {
 		})
 	}
 }
+
+func TestUnconfirm_TakesAConfirmingAttemptBackAndForgetsWhoSigned(t *testing.T) {
+	t.Parallel()
+	p := awaiting(t, time.Now().Add(time.Hour))
+	a, err := payment.NewAttempt(p, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Confirm("0xpayer"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := a.Unconfirm(); err != nil {
+		t.Fatal(err)
+	}
+	if a.Status() != payment.Issued {
+		t.Errorf("the attempt is %s, want %s", a.Status(), payment.Issued)
+	}
+	if a.Authorizer() != "" {
+		t.Errorf("the authorizer is %q, and nothing has been seen against this attempt", a.Authorizer())
+	}
+}
+
+func TestUnconfirm_RefusesAnAttemptThatWasNeverConfirmed(t *testing.T) {
+	t.Parallel()
+	p := awaiting(t, time.Now().Add(time.Hour))
+	a, err := payment.NewAttempt(p, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := a.Unconfirm(); err == nil {
+		t.Error("an issued attempt was taken back")
+	}
+	if a.Status() != payment.Issued {
+		t.Errorf("the refused move left the attempt %s", a.Status())
+	}
+}

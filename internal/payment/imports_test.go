@@ -2,6 +2,7 @@ package payment_test
 
 import (
 	"go/parser"
+	"go/printer"
 	"go/token"
 	"os"
 	"path/filepath"
@@ -16,8 +17,8 @@ import (
 // the list below. repository.go does: a driver type reaching the interface is
 // how the shape of a database gets into everything that stores a payment.
 var domainFiles = []string{
-	"asset.go", "attempt.go", "money.go", "payment.go", "repository.go",
-	"service.go", "status.go",
+	"asset.go", "attempt.go", "evidence.go", "money.go", "payment.go",
+	"repository.go", "service.go", "status.go",
 }
 
 // allowed is everything those files may import. An allow list rather than a
@@ -58,5 +59,46 @@ func TestImports_TheDomainReachesNothingOutsideItself(t *testing.T) {
 	}
 	if seen != len(domainFiles) {
 		t.Errorf("checked %d files, want %d; the list in this test is stale", seen, len(domainFiles))
+	}
+}
+
+// The rules read what a chain said, and a chain says it in its own words. A
+// word of one chain in the code here would be a rule that only holds on that
+// chain, and the next adapter would have to be written around it.
+//
+// The code, and not the comments: one of them names the chain shapes this
+// package refuses to know, which is the rule holding rather than breaking.
+func TestSource_HoldsNoWordOfAKindOfChain(t *testing.T) {
+	t.Parallel()
+	names, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := 0
+	for _, name := range names {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		read++
+		t.Run(name, func(t *testing.T) {
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, filepath.Clean(name), nil, parser.SkipObjectResolution)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var code strings.Builder
+			if err := printer.Fprint(&code, fset, file); err != nil {
+				t.Fatal(err)
+			}
+			text := strings.ToLower(code.String())
+			for _, word := range []string{"evm", "simulated"} {
+				if strings.Contains(text, word) {
+					t.Errorf("holds %q, which is the name of one kind of chain", word)
+				}
+			}
+		})
+	}
+	if read == 0 {
+		t.Fatal("found no source file to read")
 	}
 }
