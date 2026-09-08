@@ -22,21 +22,14 @@ func TestLookup_RefusesANameNobodyRegistered(t *testing.T) {
 	}
 }
 
-// A kind registered here and unknown to the configuration could never be
-// opened, because no document could declare it. The other direction, a kind
-// the configuration accepts and nobody registered, holds once every adapter
-// is in.
-func TestNames_AreKindsTheConfigurationKnows(t *testing.T) {
+// The two lists are one list written twice. A kind registered here and unknown
+// to the configuration could never be opened, because no document could
+// declare it; a kind the configuration accepts and nobody registered would be
+// declared and then not found.
+func TestNames_AreEveryKindTheConfigurationKnowsAndNoOther(t *testing.T) {
 	t.Parallel()
-	known := config.NetworkKinds()
-	names := kinds.Names()
-	if !slices.IsSorted(names) {
-		t.Errorf("Names() = %q, want name order", names)
-	}
-	for _, name := range names {
-		if !slices.Contains(known, name) {
-			t.Errorf("%q is registered, and the configuration knows no such kind", name)
-		}
+	if names, known := kinds.Names(), config.NetworkKinds(); !slices.Equal(names, known) {
+		t.Errorf("Names() = %q, and the configuration accepts %q", names, known)
 	}
 }
 
@@ -71,5 +64,28 @@ func TestLookup_FindsSimulatedWithBothOfItsFunctions(t *testing.T) {
 	}
 	if identity != kind.Name {
 		t.Errorf("the chain calls itself %q, and the kind is %q", identity, kind.Name)
+	}
+}
+
+// The adapter of a chain that is reached over a network needs an endpoint to
+// reach it at, and a reference on it is an address.
+func TestLookup_FindsEVMWithBothOfItsFunctions(t *testing.T) {
+	t.Parallel()
+	kind, ok := kinds.Lookup("evm")
+	if !ok {
+		t.Fatal(`Lookup("evm") found nothing`)
+	}
+	if kind.Normalize == nil || kind.Open == nil {
+		t.Fatal("the kind is missing one of its functions")
+	}
+	reference, err := kind.Normalize("0xE7C3D8C9a439feDe00D2600032D5dB0Be71C3c29")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "0xe7c3d8c9a439fede00d2600032d5db0be71c3c29"; reference != want {
+		t.Errorf("Normalize gave %q, want %q", reference, want)
+	}
+	if _, err := kind.Open(chain.Settings{Name: "polygon", ChainID: "137"}); err == nil {
+		t.Error("Open made a chain out of settings naming no endpoint")
 	}
 }
