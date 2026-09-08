@@ -831,3 +831,34 @@ func (s *standing) Implementation(context.Context, string) (string, error) {
 	s.calls++
 	return s.code, nil
 }
+
+// A key claimed spent in two transactions comes to one receipt read and one row
+// written, against the transaction the scan named first.
+func TestTick_ReadsOneTransactionForOneKey(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	w.round(t)
+	w.chain.Send(w.sending(w.attempt.Key()))
+	w.chain.Send(w.sending(w.attempt.Key()))
+	w.chain.Finalize(w.chain.Mine())
+
+	w.round(t)
+
+	if called := w.chain.Calls()["Receipt"]; called != 1 {
+		t.Errorf("the chain was asked for %d receipts, and one key was spent", called)
+	}
+	rows := w.rows(t)
+	if len(rows) != 1 {
+		t.Fatalf("the round wrote %+v", rows)
+	}
+	// The first the scan named is the one read. Which of them is the real one
+	// is not something the scan says, and a provider willing to name a wrong
+	// transaction first could answer the receipt with anything at all.
+	scan, err := w.chain.Keys(t.Context(), 1, 1, []string{w.asset.Reference()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows[0].Tx != scan.Consumed[0].Tx {
+		t.Errorf("the round read %s, and the scan named %s first", rows[0].Tx, scan.Consumed[0].Tx)
+	}
+}

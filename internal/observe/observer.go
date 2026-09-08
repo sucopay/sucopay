@@ -400,15 +400,25 @@ func keys(consumed []chain.Consumed) []string {
 }
 
 // transactions are the transactions a scan found that spent a key some attempt
-// holds, each once and in the order the scan found them.
+// holds: one to a key, each once, and in the order the scan found them.
+//
+// A key is spent once, so a scan naming one in two transactions is naming a
+// transaction that is not on the chain, and reading it costs a receipt and a
+// row: the rows are kept by key and transaction together, so a scan of ten
+// thousand of them would leave ten thousand rows against one key.
 func transactions(consumed []chain.Consumed, against map[string]payment.Hit) []string {
-	seen := make(map[string]bool, len(consumed))
+	spent := make(map[string]bool, len(consumed))
+	read := make(map[string]bool, len(consumed))
 	var out []string
 	for _, one := range consumed {
-		if _, ok := against[one.Key]; !ok || seen[one.Tx] {
+		if _, ok := against[one.Key]; !ok || spent[one.Key] {
 			continue
 		}
-		seen[one.Tx] = true
+		spent[one.Key] = true
+		if read[one.Tx] {
+			continue
+		}
+		read[one.Tx] = true
 		out = append(out, one.Tx)
 	}
 	return out
