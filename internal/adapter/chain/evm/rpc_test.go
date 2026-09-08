@@ -401,6 +401,36 @@ func TestNewClient_TakesOnlyAnEndpointNobodyOnTheWayCanRead(t *testing.T) {
 	}
 }
 
+// A provider answering with somewhere else to go is answering something the
+// call did not ask, and the somewhere else could be anything else listening on
+// this machine.
+func TestCall_DoesNotFollowAProviderSomewhereElse(t *testing.T) {
+	t.Parallel()
+	var asked atomic.Int64
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		asked.Add(1)
+		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
+	}))
+	t.Cleanup(elsewhere.Close)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, elsewhere.URL, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(server.Close)
+
+	var result quantity
+	err := opened(t, server.URL).call(t.Context(), "eth_chainId", nil, &result)
+
+	if err == nil {
+		t.Fatal("the call followed the provider somewhere else")
+	}
+	if went := asked.Load(); went != 0 {
+		t.Errorf("the other server was asked %d times", went)
+	}
+	if strings.Contains(err.Error(), server.Listener.Addr().String()) {
+		t.Errorf("the refusal carries the endpoint: %v", err)
+	}
+}
+
 func TestCall_RefusesACertificateNobodyIssued(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

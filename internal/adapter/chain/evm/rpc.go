@@ -85,10 +85,18 @@ func newClient(endpoint string) (*client, error) {
 	}
 	return &client{
 		endpoint: endpoint,
-		http:     &http.Client{},
-		timeout:  callTimeout,
-		maxBody:  maxBody,
-		hide:     hiding(u),
+		http: &http.Client{
+			// A provider that answers with somewhere else to go is answering
+			// something this did not ask. Following one would send the call to
+			// a host the operator never named, which on this machine is
+			// whatever else is listening.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return errors.New("the provider answered with a redirect")
+			},
+		},
+		timeout: callTimeout,
+		maxBody: maxBody,
+		hide:    hiding(u),
 	}, nil
 }
 
