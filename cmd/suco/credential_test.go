@@ -98,6 +98,7 @@ func databaseCommands() [][]string {
 		{"credential", "revoke", string(credential.NewID())},
 		{"asset", "accept", "jpyc", theAddress},
 		{"asset", "list"},
+		{"payment", "await", "0123456789abcdef0123456789abcdef"},
 	}
 }
 

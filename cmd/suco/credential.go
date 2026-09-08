@@ -23,6 +23,7 @@ import (
 type opened struct {
 	document    string
 	assets      config.Assets
+	networks    map[string]config.Network
 	db          *postgres.Pool
 	credentials *credential.Postgres
 }
@@ -72,6 +73,7 @@ func openStore(ctx context.Context) (opened, error) {
 	return opened{
 		document:    document,
 		assets:      cfg.Assets,
+		networks:    cfg.Networks,
 		db:          db,
 		credentials: credential.NewPostgres(db.Conns(), key, cfg.Credentials.KeyID),
 	}, nil

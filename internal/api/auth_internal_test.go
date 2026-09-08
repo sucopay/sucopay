@@ -114,7 +114,9 @@ func (f *fixture) serve(credentials Credentials) {
 	log := slog.New(slog.NewTextHandler(&f.log, nil))
 	f.logger = log
 	a := auth{log: log, credentials: credentials}
-	service := payment.NewService(f.payments, func() time.Time { return now })
+	// No attempts and no positions: the routes these tests admit or refuse
+	// open, read and await payments, and none of them issues.
+	service := payment.NewService(f.payments, nil, nil, func() time.Time { return now })
 	mux := http.NewServeMux()
 	for _, r := range []route{
 		{pattern: "POST /payments", needs: write, handle: f.opening(service)},

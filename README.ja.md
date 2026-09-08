@@ -31,7 +31,7 @@ suco Pay は自社のインフラで動作します。資金は顧客のウォ�
 - [ ] Refund: 記録と送金指示の作成
 - [ ] 照合: 内部状態とチェーンの定期突合
 - [ ] Console: Payment と Transaction の照会、返金、Webhook 送信履歴
-- [x] CLI: `init` `serve` `doctor` `credential` `asset`
+- [x] CLI: `init` `serve` `doctor` `credential` `asset` `payment`
 
 ## インストール
 
@@ -70,10 +70,12 @@ assets:
 ```
 
 ネットワークの `kind` は今のところ `simulated` だけを受け付けます。チェーンを見るものはまだ無いので、
-Payment は `created` のままです。`suco asset accept <name> <address>` は、`suco.yaml` にその名前で
-載せた資産の支払いを受け取るアドレスを記録します。`suco asset list` は `suco.yaml` に載せた資産を
-すべて表示し、受け付けているものにはアドレスを、まだのものには `not accepted` を添えます。加盟店の
-サーバは [docs/api.ja.md](docs/api.ja.md) の API で Payment を作り、読みます。
+Payment が `succeeded` になることはありません。`suco asset accept <name> <address>` は、`suco.yaml` に
+その名前で載せた資産の支払いを受け取るアドレスを記録します。`suco asset list` は `suco.yaml` に載せた
+資産をすべて表示し、受け付けているものにはアドレスを、まだのものには `not accepted` を添えます。
+`suco payment await <id>` は Payment を支払える状態にし、支払者が署名する 7 つの値を出します。
+支払い画面ができるまでの手段で、出力は実行した端末にとどめてください。加盟店のサーバは
+[docs/api.ja.md](docs/api.ja.md) の API で Payment を作り、読みます。
 
 インストールスクリプトとビルド済みバイナリは最初のリリースで用意します。上の一覧にある機能は
 まだありません。

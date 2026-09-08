@@ -11,17 +11,20 @@ import (
 // own: everything it decides from is either passed in or read back out of the
 // repository, so two instances running it are the same instance.
 type Service struct {
-	payments Repository
-	now      func() time.Time
+	payments  Repository
+	attempts  Attempts
+	positions Positions
+	now       func() time.Time
 }
 
-// NewService returns a service over payments, reading the time from now.
+// NewService returns a service over payments and the attempts at paying them,
+// reading the time from now and asking positions which networks are read.
 //
 // The clock comes in rather than being read from the package. A payment's
 // deadline is decided against a moment, and whoever cannot choose that moment
 // has to wait for it to arrive.
-func NewService(payments Repository, now func() time.Time) *Service {
-	return &Service{payments: payments, now: now}
+func NewService(payments Repository, attempts Attempts, positions Positions, now func() time.Time) *Service {
+	return &Service{payments: payments, attempts: attempts, positions: positions, now: now}
 }
 
 // DefaultExpiry is how long a payment stays payable when the request names no
@@ -95,4 +98,68 @@ func (s *Service) Find(ctx context.Context, account AccountID, id ID) (*Payment,
 		return nil, err
 	}
 	return p, nil
+}
+
+// Positions reports whether a network is being read. It is what stops a key
+// being handed out for a chain nothing is watching: the payer would sign, the
+// transfer would land, and nobody would look.
+type Positions interface {
+	// Has reports whether the network is one this deployment reads.
+	Has(ctx context.Context, network Network) (bool, error)
+}
+
+// ErrNotAwaiting reports that the payment is not open for payment, so nothing
+// can be issued against it. A caller that opened the payment calls
+// [Service.Await] first.
+var ErrNotAwaiting = errors.New("payment: the payment is not awaiting payment")
+
+// NoPosition reports that nothing has read the network the payment is on, so a
+// transfer against it would not be seen.
+type NoPosition struct {
+	// Network is the network with no position.
+	Network Network
+}
+
+// Error names the network nothing is reading.
+func (e NoPosition) Error() string { return "payment: no position on " + string(e.Network) }
+
+// Issue gives a payer something to sign: an attempt holding a key that the
+// chain lets be spent once. It returns the attempt and the payment it is
+// against.
+//
+// A payment can only be attempted while it is open for payment, while nothing
+// else is attempting it, and while its network is being read. The three are
+// checked in that order, so a caller is told what the payment is doing before
+// it is told about the chain.
+func (s *Service) Issue(ctx context.Context, account AccountID, id ID) (*Attempt, *Payment, error) {
+	p, _, err := s.payments.Find(ctx, account, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	if p.Status() != AwaitingPayment {
+		return nil, nil, fmt.Errorf("%s: %w, it is %s", id, ErrNotAwaiting, p.Status())
+	}
+	_, _, live, err := s.attempts.Live(ctx, account, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	if live {
+		return nil, nil, fmt.Errorf("%s: %w", id, ErrAttemptLive)
+	}
+	watched, err := s.positions.Has(ctx, p.Network())
+	if err != nil {
+		return nil, nil, err
+	}
+	if !watched {
+		return nil, nil, NoPosition{Network: p.Network()}
+	}
+
+	a, err := NewAttempt(p, s.now())
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := s.attempts.Issue(ctx, account, a); err != nil {
+		return nil, nil, err
+	}
+	return a, p, nil
 }

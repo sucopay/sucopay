@@ -13,6 +13,7 @@ import (
 	"github.com/sucopay/sucopay/internal/api"
 	"github.com/sucopay/sucopay/internal/credential"
 	"github.com/sucopay/sucopay/internal/invisible"
+	"github.com/sucopay/sucopay/internal/observe"
 	"github.com/sucopay/sucopay/internal/payment"
 	"github.com/sucopay/sucopay/internal/postgres"
 )
@@ -59,8 +60,9 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 		credentials = credential.NewPostgres(db.Conns(), key, cfg.Credentials.KeyID)
+		store := payment.NewPostgres(db.Conns())
 		payments = payment.NewHTTP(
-			payment.NewService(payment.NewPostgres(db.Conns()), time.Now),
+			payment.NewService(store, store, observe.NewCursors(db.Conns()), time.Now),
 			cfg.Assets, accepted.NewPostgres(db.Conns()))
 
 		// Applied at every start rather than by a command an operator has to

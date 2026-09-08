@@ -11,12 +11,22 @@ import (
 	"github.com/sucopay/sucopay/internal/payment"
 )
 
+// watching is every network being read, which is what a test that is not
+// about positions wants. unwatched is none of them.
+type watching struct{}
+
+func (watching) Has(context.Context, payment.Network) (bool, error) { return true, nil }
+
+type unwatched struct{}
+
+func (unwatched) Has(context.Context, payment.Network) (bool, error) { return false, nil }
+
 // serving returns a service over a fresh database, reading a clock the test
 // controls.
 func serving(t *testing.T) (*payment.Service, *payment.Postgres, *pgxpool.Pool) {
 	t.Helper()
 	s, pool := store(t)
-	return payment.NewService(s, func() time.Time { return now }), s, pool
+	return payment.NewService(s, s, watching{}, func() time.Time { return now }), s, pool
 }
 
 func TestService_OpensAPaymentNothingCanPayYet(t *testing.T) {
@@ -46,7 +56,7 @@ func TestService_ReadsTheClockItWasGiven(t *testing.T) {
 	t.Parallel()
 	at := now.Add(72 * time.Hour)
 	s, _ := store(t)
-	svc := payment.NewService(s, func() time.Time { return at })
+	svc := payment.NewService(s, s, watching{}, func() time.Time { return at })
 	r := request(t)
 	r.ExpiresAt = at.Add(time.Hour)
 
@@ -143,12 +153,12 @@ func TestService_PassesOnAPaymentThatMovedUnderneathIt(t *testing.T) {
 	// Reported in a form errors.Is reads, so that a caller can tell this from a
 	// move the aggregate refused and from a payment that was never there.
 	s, _ := store(t)
-	svc := payment.NewService(s, func() time.Time { return now })
+	svc := payment.NewService(s, s, watching{}, func() time.Time { return now })
 	opened, err := svc.Open(t.Context(), first, request(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	losing := payment.NewService(staleOnSave{s}, func() time.Time { return now })
+	losing := payment.NewService(staleOnSave{s}, s, watching{}, func() time.Time { return now })
 
 	_, err = losing.Await(t.Context(), first, opened.ID())
 
@@ -364,5 +374,141 @@ func TestService_FindsNoPaymentUnderAnotherAccountOrAnUnknownIdentifier(t *testi
 				t.Errorf("returned a payment as well as an error: %v", p)
 			}
 		})
+	}
+}
+
+// payable opens a payment and makes it payable, which is where an attempt can
+// be issued from.
+func payableFor(t *testing.T, svc *payment.Service) *payment.Payment {
+	t.Helper()
+	p, err := svc.Open(t.Context(), first, request(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Await(t.Context(), first, p.ID()); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestService_IssuesTheKeyAPayerSigns(t *testing.T) {
+	t.Parallel()
+	svc, s, _ := serving(t)
+	opened := payableFor(t, svc)
+
+	a, p, err := svc.Issue(t.Context(), first, opened.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.ID() != opened.ID() || p.Status() != payment.AwaitingPayment {
+		t.Errorf("Issue gave payment %s, %s", p.ID(), p.Status())
+	}
+	if a.PaymentID() != opened.ID() || a.Network() != opened.Network() {
+		t.Errorf("the attempt is against %s on %s", a.PaymentID(), a.Network())
+	}
+	stored, _, err := s.FindAttempt(t.Context(), first, opened.ID(), a.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Key() != a.Key() {
+		t.Errorf("the stored attempt holds %q, and the caller was given %q", stored.Key(), a.Key())
+	}
+}
+
+func TestService_IssuesNothingAgainstAPaymentNotOpenForPayment(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := serving(t)
+	opened, err := svc.Open(t.Context(), first, request(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := svc.Issue(t.Context(), first, opened.ID()); !errors.Is(err, payment.ErrNotAwaiting) {
+		t.Errorf("Issue on a %s payment gave %v, want %v", opened.Status(), err, payment.ErrNotAwaiting)
+	}
+}
+
+func TestService_IssuesNoSecondKeyWhileOneCouldStillBeSpent(t *testing.T) {
+	t.Parallel()
+	svc, s, _ := serving(t)
+	opened := payableFor(t, svc)
+	first_, _, err := svc.Issue(t.Context(), first, opened.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := svc.Issue(t.Context(), first, opened.ID()); !errors.Is(err, payment.ErrAttemptLive) {
+		t.Fatalf("the second Issue gave %v, want %v", err, payment.ErrAttemptLive)
+	}
+	live, _, ok, err := s.Live(t.Context(), first, opened.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || live.ID() != first_.ID() {
+		t.Errorf("the live attempt is %v, %v; want the first one", live, ok)
+	}
+}
+
+// alwaysLive says a payment already has an attempt, and stores whatever it is
+// given. What refuses the second key is then the service asking, rather than
+// the schema catching it.
+type alwaysLive struct{ *payment.Postgres }
+
+func (alwaysLive) Live(context.Context, payment.AccountID, payment.ID) (*payment.Attempt, payment.Revision, bool, error) {
+	return nil, payment.Revision{}, true, nil
+}
+
+func TestService_AsksWhetherAnAttemptIsLiveBeforeItMintsAKey(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	svc := payment.NewService(s, alwaysLive{s}, watching{}, func() time.Time { return now })
+	opened := payableFor(t, svc)
+
+	if _, _, err := svc.Issue(t.Context(), first, opened.ID()); !errors.Is(err, payment.ErrAttemptLive) {
+		t.Fatalf("Issue gave %v, want %v", err, payment.ErrAttemptLive)
+	}
+	var rows int
+	if err := pool.QueryRow(t.Context(), `select count(*) from attempts`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Errorf("%d attempts were stored for a payment that already had one", rows)
+	}
+}
+
+func TestService_IssuesNothingOnANetworkNothingIsReading(t *testing.T) {
+	t.Parallel()
+	s, _ := store(t)
+	svc := payment.NewService(s, s, unwatched{}, func() time.Time { return now })
+	opened := payableFor(t, svc)
+
+	_, _, err := svc.Issue(t.Context(), first, opened.ID())
+	var none payment.NoPosition
+	if !errors.As(err, &none) {
+		t.Fatalf("Issue on a network nobody reads gave %v, want a NoPosition", err)
+	}
+	if none.Network != opened.Network() {
+		t.Errorf("NoPosition names %q, want %q", none.Network, opened.Network())
+	}
+	if !strings.Contains(err.Error(), string(opened.Network())) {
+		t.Errorf("the error reads %q, and does not name the network", err)
+	}
+	if _, _, live, err := s.Live(t.Context(), first, opened.ID()); err != nil || live {
+		t.Errorf("a key was stored for a network nobody reads: %v, %v", live, err)
+	}
+}
+
+func TestService_IssuesNothingAgainstAnotherAccountsPayment(t *testing.T) {
+	t.Parallel()
+	svc, s, _ := serving(t)
+	opened := payableFor(t, svc)
+
+	_, _, err := svc.Issue(t.Context(), other, opened.ID())
+
+	if !errors.Is(err, payment.ErrNotFound) {
+		t.Fatalf("Issue under another account gave %v, want %v", err, payment.ErrNotFound)
+	}
+	if _, _, live, err := s.Live(t.Context(), first, opened.ID()); err != nil || live {
+		t.Errorf("a key was issued to another account's caller: %v, %v", live, err)
 	}
 }

@@ -30,7 +30,7 @@ suco Pay runs on your own infrastructure. Funds go straight from the customer's 
 - [ ] Refunds: records and transfer intents
 - [ ] Reconciliation: periodic diff between internal state and the chain
 - [ ] Console: payments, transactions, refunds, webhook deliveries
-- [x] CLI: `init` `serve` `doctor` `credential` `asset`
+- [x] CLI: `init` `serve` `doctor` `credential` `asset` `payment`
 
 ## Getting started
 
@@ -69,11 +69,13 @@ assets:
     decimals: 18
 ```
 
-`simulated` is the one kind of network accepted so far. Nothing observes a chain yet, so a payment
-stays `created`. `suco asset accept <name> <address>` records the address a payment in the asset
+`simulated` is the one kind of network accepted so far. Nothing observes a chain yet, so no payment
+reaches `succeeded`. `suco asset accept <name> <address>` records the address a payment in the asset
 `suco.yaml` lists under that name is paid to, and `suco asset list` shows every asset the document
-lists, each with its address or `not accepted`. A merchant's server opens payments and reads them
-back over the API in [docs/api.md](docs/api.md).
+lists, each with its address or `not accepted`. `suco payment await <id>` makes one payment payable
+and prints the seven values a payer signs to pay it, which is what Checkout will do once there is a
+Checkout; what it prints stays on the terminal that asked for it. A merchant's server opens payments
+and reads them back over the API in [docs/api.md](docs/api.md).
 
 An install script and released binaries arrive with the first release. Everything in the list
 above is still to come.
