@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -39,6 +40,10 @@ const (
 	maxItems = 10000
 	// maxMessage is how much of a provider's own words are kept.
 	maxMessage = 256
+	// maxWait is the longest a provider may ask to be left alone for. It is
+	// what a duration holds: more than that multiplies out into a negative
+	// wait, which is a call made at once.
+	maxWait = math.MaxInt64 / int64(time.Second)
 	// userAgent names this process to whoever is asked.
 	userAgent = "suco"
 	// hidden is what the endpoint's own parts read as, wherever they turn up.
@@ -258,9 +263,13 @@ func (e *rpcError) tooWide() bool {
 // seconds reads a Retry-After of whole seconds. A date is how the header may
 // also be written, and reading one would be trusting the provider's clock
 // against this one.
+//
+// A number past [maxWait] reads as no wait at all. How long a wait is worth
+// taking is the reader's to decide, not the provider's, and it decides on the
+// value this gives it.
 func seconds(header string) time.Duration {
 	wait, err := strconv.Atoi(header)
-	if err != nil || wait < 0 {
+	if err != nil || wait < 0 || int64(wait) > maxWait {
 		return 0
 	}
 	return time.Duration(wait) * time.Second

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -137,6 +138,9 @@ func TestCall_ReadsRetryAfterOnlyWhenItIsAWholeNumberOfSeconds(t *testing.T) {
 		{"Wed, 21 Oct 2026 07:28:00 GMT", 0},
 		{"", 0},
 		{"-1", 0},
+		{strconv.FormatInt(maxWait, 10), time.Duration(maxWait) * time.Second},
+		{strconv.FormatInt(maxWait+1, 10), 0},
+		{"9223372036854775807", 0},
 	}
 	for _, c := range cases {
 		t.Run("Retry-After: "+c.header, func(t *testing.T) {
