@@ -3,6 +3,7 @@ package observe_test
 import (
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -15,8 +16,9 @@ import (
 // and writes rows, and a chain's own library reaching it would put the shape
 // of one chain into what every network is read with.
 var allowed = []string{
-	"context", "crypto/rand", "encoding/hex", "errors", "fmt", "math", "time",
+	"context", "crypto/rand", "encoding/hex", "errors", "fmt", "log/slog", "math", "time",
 	"github.com/jackc/pgx/v5", "github.com/jackc/pgx/v5/pgxpool",
+	"github.com/sucopay/sucopay/internal/adapter/chain",
 	"github.com/sucopay/sucopay/internal/payment",
 }
 
@@ -47,5 +49,35 @@ func TestImports_ReachTheDomainAndTheDriverAndNothingElse(t *testing.T) {
 	}
 	if sources == 0 {
 		t.Fatal("found no source file to check")
+	}
+}
+
+// A chain is read through the boundary, and which kind of chain is behind it
+// is not something this package is written against. The kinds are named here
+// only to be looked for.
+func TestSource_NamesNoKindOfChain(t *testing.T) {
+	t.Parallel()
+	names, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) == 0 {
+		t.Fatal("no files to check, so this test is checking nothing")
+	}
+	for _, name := range names {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		t.Run(name, func(t *testing.T) {
+			source, err := os.ReadFile(filepath.Clean(name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, kind := range []string{"evm", "simulated"} {
+				if strings.Contains(strings.ToLower(string(source)), kind) {
+					t.Errorf("names %q, and a kind of chain is what the boundary keeps out of here", kind)
+				}
+			}
+		})
 	}
 }

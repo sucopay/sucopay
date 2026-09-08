@@ -338,3 +338,25 @@ func refuses(t *testing.T, call func()) {
 	}()
 	call()
 }
+
+// A round reads the same method more than once, and a test is usually about
+// one of those reads rather than the first.
+func TestFailAt_IsSpentOnTheCallItWasHeldFor(t *testing.T) {
+	t.Parallel()
+	c := simulated.New()
+	refused := errors.New("too wide")
+	c.FailAt("Keys", 2, refused)
+
+	if _, err := c.Keys(t.Context(), 0, 0, nil); err != nil {
+		t.Fatalf("the first call gave %v, and the second is the one held for", err)
+	}
+	if _, err := c.Head(t.Context()); err != nil {
+		t.Fatalf("a call to another method gave %v", err)
+	}
+	if _, err := c.Keys(t.Context(), 0, 0, nil); !errors.Is(err, refused) {
+		t.Fatalf("the second call gave %v, want %v", err, refused)
+	}
+	if _, err := c.Keys(t.Context(), 0, 0, nil); err != nil {
+		t.Errorf("the third call gave %v, and the failure was spent", err)
+	}
+}

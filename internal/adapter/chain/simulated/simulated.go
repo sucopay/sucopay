@@ -43,10 +43,18 @@ type Chain struct {
 	made int
 	// sent counts the transfers ever sent, for their transaction references.
 	sent int
-	// pending is what the next call fails with.
-	pending error
+	// pending is what a call fails with, and which call it waits for.
+	pending failure
 	// calls counts the calls to each method of the interface, by name.
 	calls map[string]int
+}
+
+// failure is a call made to fail. An empty method is the next call whatever it
+// is; a method waits for that method's own count to reach at.
+type failure struct {
+	method string
+	at     int
+	err    error
 }
 
 // block is one block and what it carries.
@@ -136,7 +144,16 @@ func (c *Chain) Reorg(from uint64, keep ...string) {
 func (c *Chain) Fail(err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.pending = err
+	c.pending = failure{err: err}
+}
+
+// FailAt makes one method's nth call fail, counting that method's calls from
+// now. A caller that reads a chain calls some methods more than once in a row,
+// and which of those fails is what the reading is being tested on.
+func (c *Chain) FailAt(method string, nth int, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pending = failure{method: method, at: c.calls[method] + nth, err: err}
 }
 
 // Calls are how many times each method of the interface has been called, by
@@ -240,9 +257,15 @@ func (c *Chain) Implementation(_ context.Context, _ string) (string, error) {
 // caller holds the lock.
 func (c *Chain) enter(method string) error {
 	c.calls[method]++
-	err := c.pending
-	c.pending = nil
-	return err
+	waiting := c.pending
+	if waiting.err == nil {
+		return nil
+	}
+	if waiting.method != "" && (waiting.method != method || c.calls[method] != waiting.at) {
+		return nil
+	}
+	c.pending = failure{}
+	return waiting.err
 }
 
 // mine adds a block holding the transfers, and returns its height. The caller
