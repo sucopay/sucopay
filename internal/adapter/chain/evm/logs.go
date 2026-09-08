@@ -71,7 +71,7 @@ func (n *network) Keys(ctx context.Context, first, last uint64, assets []string)
 		case authorizationUsed:
 			key, err := entry.key()
 			if err != nil {
-				return chain.Scan{}, err
+				return chain.Scan{}, fmt.Errorf("eth_getLogs: %w", err)
 			}
 			scan.Consumed = append(scan.Consumed, chain.Consumed{Key: key, Tx: entry.TxHash.String()})
 		case upgraded:
@@ -106,7 +106,7 @@ func (n *network) Receipt(ctx context.Context, tx string) ([]chain.Transfer, err
 	}
 	transfers, err := read.transfers(id.String())
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("eth_getTransactionReceipt: %w", err)
 	}
 	// The block is read for the moment it stamps a transfer with. A receipt
 	// with no transfer in it needs none.
@@ -246,7 +246,7 @@ func (l *logEntry) topic() string {
 // keys it issues: the digits alone, in lower case.
 func (l *logEntry) key() (string, error) {
 	if len(l.Topics) != 3 {
-		return "", fmt.Errorf("eth_getLogs: an authorisation indexes %d values, want 3", len(l.Topics))
+		return "", fmt.Errorf("an authorisation indexes %d values, want 3", len(l.Topics))
 	}
 	return hex.EncodeToString(l.Topics[2][:]), nil
 }
