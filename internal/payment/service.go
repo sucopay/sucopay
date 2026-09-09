@@ -29,7 +29,11 @@ func NewService(payments Repository, attempts Attempts, positions Positions, now
 
 // DefaultExpiry is how long a payment stays payable when the request names no
 // deadline. It is one value for every account.
-const DefaultExpiry = time.Hour
+//
+// The deadline is what a payer signs against, and what they sign stands until
+// it passes: an authorisation handed over at noon can still be spent at the
+// end of it. A request that wants longer asks for it.
+const DefaultExpiry = 15 * time.Minute
 
 // MaxExpiry is the furthest off a request may put a deadline. It too is one
 // value for every account.

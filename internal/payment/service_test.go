@@ -241,7 +241,7 @@ func TestService_DoesNotReachAPaymentAnotherAccountOpened(t *testing.T) {
 	}
 }
 
-func TestService_GivesAPaymentAnHourWhenTheRequestNamesNoDeadline(t *testing.T) {
+func TestService_GivesAPaymentAQuarterOfAnHourWhenTheRequestNamesNoDeadline(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := serving(t)
 	r := request(t)
@@ -252,8 +252,8 @@ func TestService_GivesAPaymentAnHourWhenTheRequestNamesNoDeadline(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	if want := p.CreatedAt().Add(time.Hour); !p.ExpiresAt().Equal(want) {
-		t.Errorf("expires_at = %s, want %s, an hour after it was created", p.ExpiresAt(), want)
+	if want := p.CreatedAt().Add(15 * time.Minute); !p.ExpiresAt().Equal(want) {
+		t.Errorf("expires_at = %s, want %s, a quarter of an hour after it was created", p.ExpiresAt(), want)
 	}
 }
 

@@ -36,7 +36,7 @@ Content-Type: application/json
 |---|---|---|
 | `asset` | required | The name `suco.yaml` lists the asset under. The account has to accept it, which `suco asset accept <name> <address>` records along with where a payment of it is paid to. |
 | `amount` | required | A number in the asset's units, written as a string: `"1000"` is 1000 JPYC. Digits, and after a point more digits; no sign, no exponent. At most as many places after the point as the asset has decimals, and at most 78 digits once written in the asset's smallest unit. `0` is not a payment. |
-| `expires_at` | optional | An RFC 3339 time, after now and at most 30 days ahead. One hour ahead when left out. |
+| `expires_at` | optional | An RFC 3339 time, after now and at most 30 days ahead. Fifteen minutes ahead when left out. |
 | `metadata` | optional | Strings under string keys: up to 20 entries, keys up to 64 bytes, values up to 512 bytes. Returned as sent, `{}` when left out, and kept out of suco's log. |
 
 Any other key is refused. The body is at most 64 KiB.

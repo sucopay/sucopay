@@ -206,8 +206,8 @@ func TestHTTP_FillsInWhatTheBodyLeavesOut(t *testing.T) {
 		t.Fatalf("answered %d, %v:\n%s", w.Code, err, w.Body)
 	}
 	got := decoded(t, w)
-	if got["expires_at"] != "2026-09-01T13:00:00Z" {
-		t.Errorf("expires_at = %v, want an hour after created_at", got["expires_at"])
+	if got["expires_at"] != "2026-09-01T12:15:00Z" {
+		t.Errorf("expires_at = %v, want a quarter of an hour after created_at", got["expires_at"])
 	}
 	if !reflect.DeepEqual(got["metadata"], map[string]any{}) {
 		t.Errorf("metadata = %v, want an empty object", got["metadata"])
