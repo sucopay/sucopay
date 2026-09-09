@@ -42,6 +42,12 @@ func Quote(s string) string {
 // right-to-left override through as the bytes it was given: only its text
 // handler escapes them, and JSON is what a deployment writes.
 func Shown(s string, max int) string {
+	// A bound below nothing is nothing. Cutting to it would run off the front
+	// of the string rather than shorten it, which is a caller's arithmetic
+	// ending the process rather than shortening a line.
+	if max < 0 {
+		max = 0
+	}
 	if len(s) > max {
 		cut := max
 		for cut > 0 && !utf8.RuneStart(s[cut]) {

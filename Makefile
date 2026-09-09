@@ -10,7 +10,7 @@ FUZZ = ./internal/adapter/chain/evm:FuzzNormalize \
        ./internal/adapter/chain/evm:FuzzReadReceipt \
        ./internal/config:FuzzDecode ./internal/config:FuzzResolve \
        ./internal/credential:FuzzParseKey ./internal/credential:FuzzParseID \
-       ./internal/invisible:FuzzQuote \
+       ./internal/invisible:FuzzQuote ./internal/invisible:FuzzShown \
        ./internal/payment:FuzzParseMoney ./internal/payment:FuzzParseUnits \
        ./internal/payment:FuzzMetadata ./internal/payment:FuzzParseAddress \
        ./internal/payment:FuzzReadRequest

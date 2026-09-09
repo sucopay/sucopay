@@ -70,3 +70,38 @@ func FuzzQuote(f *testing.F) {
 		}
 	})
 }
+
+// Shown is what puts somebody else's writing in front of a person: a
+// provider's words, a server's, the path a request asked for. What it hands
+// back holds nothing a terminal would act on, whatever it was given and
+// whatever bound it was given.
+func FuzzShown(f *testing.F) {
+	for _, seed := range []struct {
+		s   string
+		max int
+	}{
+		{"", 0}, {"listen.port", 4}, {"あいう", 4}, {"a\u202eb", 8},
+		{"a", -1}, {"", -1}, {strings.Repeat("あ", 100), 7},
+		{"\xff\xfe", 1}, {strings.Repeat("a", 1000), 512},
+	} {
+		f.Add(seed.s, seed.max)
+	}
+
+	f.Fuzz(func(t *testing.T, s string, max int) {
+		got := invisible.Shown(s, max)
+
+		// Written out here rather than asked of Has, for the reason FuzzQuote
+		// gives: one decision answering for both would drop a character from
+		// each at once.
+		for _, r := range got {
+			switch {
+			case r < 0x20, r == 0x7f, r >= 0x80 && r <= 0x9f,
+				r == 0x00a0, r == 0x2060, r == 0xfeff,
+				r >= 0x200b && r <= 0x200f,
+				r >= 0x2028 && r <= 0x202e,
+				r >= 0x2066 && r <= 0x2069:
+				t.Errorf("Shown(%q, %d) = %q, which still holds %U", s, max, got, r)
+			}
+		}
+	})
+}
