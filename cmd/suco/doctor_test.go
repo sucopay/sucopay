@@ -39,3 +39,20 @@ func TestDescribeVersion_LeavesAnOrdinaryVersionAlone(t *testing.T) {
 		t.Errorf("describeVersion(17.11) = %q, want it unchanged", got)
 	}
 }
+
+// A document is read into the form the chain compares, so that a reference
+// written the way a block explorer shows one is the same asset as the one a
+// transfer names.
+func TestRun_DoctorShowsAReferenceTheWayTheChainWritesIt(t *testing.T) {
+	document(t, anEVMAssetOn("local"))
+
+	stdout, _, err := runArgs(t, "doctor")
+
+	if err != nil {
+		t.Fatalf("err = %v, want none", err)
+	}
+	line := reportLine(t, stdout, "assets.jpyc.reference")
+	if !strings.Contains(line, strings.ToLower(theChecksummed)) {
+		t.Errorf("assets.jpyc.reference reads %q, want it in lower case", line)
+	}
+}

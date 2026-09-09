@@ -1066,6 +1066,52 @@ func TestRun_ServePutsDownTheLeaseOfEveryNetworkItRead(t *testing.T) {
 	}
 }
 
+// A reference that is not one on its network's kind stops the instance, and
+// says which asset it is about. A chain does not give funds back, so the last
+// moment to catch a mistyped one is before anything is paid to it.
+func TestRun_ServeRefusesAReferenceThatIsNotOneOnItsChain(t *testing.T) {
+	document(t, strings.Replace(anEVMAssetOn("local"), theChecksummed,
+		"0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAeD", 1))
+
+	_, _, byServe := runArgs(t, "serve")
+	_, _, byDoctor := runArgs(t, "doctor")
+
+	if byServe == nil || byDoctor == nil {
+		t.Fatalf("serve: %v; doctor: %v; want both to refuse", byServe, byDoctor)
+	}
+	if byServe.Error() != byDoctor.Error() {
+		t.Errorf("serve refuses with:\n  %v\ndoctor with:\n  %v", byServe, byDoctor)
+	}
+	if !strings.Contains(byServe.Error(), "assets.jpyc.reference") {
+		t.Errorf("the refusal does not name the asset it is about: %v", byServe)
+	}
+}
+
+// A document wrong in two of its assets is refused for both at once, so that
+// an operator fixing a list of them does not meet one refusal per run.
+func TestRun_ServeRefusesEveryReferenceThatIsNotOneAtOnce(t *testing.T) {
+	// Two references, wrong in two ways, so that neither is refused for being
+	// the other.
+	document(t, anEVMNetwork("local")+
+		"assets:\n  jpyc:\n    network: local\n"+
+		"    reference: \"0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAeD\"\n"+
+		"    symbol: JPYC\n    decimals: 18\n"+
+		"  usdc:\n    network: local\n"+
+		"    reference: \"0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d36\"\n"+
+		"    symbol: USDC\n    decimals: 6\n")
+
+	_, _, err := runArgs(t, "serve")
+
+	if err == nil {
+		t.Fatal("a document wrong in two of its assets started")
+	}
+	for _, name := range []string{"assets.jpyc.reference", "assets.usdc.reference"} {
+		if !strings.Contains(err.Error(), name) {
+			t.Errorf("the refusal does not name %s: %v", name, err)
+		}
+	}
+}
+
 // failingWriter stands in for a full disk or a closed pipe.
 type failingWriter struct{}
 

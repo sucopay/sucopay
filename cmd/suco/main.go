@@ -18,6 +18,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/sucopay/sucopay/internal/config"
+	"github.com/sucopay/sucopay/internal/payment"
 	"github.com/sucopay/sucopay/internal/problem"
 )
 
@@ -63,7 +64,49 @@ func load() (config.Resolved, string, error) {
 		return config.Resolved{}, document,
 			fmt.Errorf("no configuration at %s. Run `suco init` to write one", document)
 	}
-	return resolved, document, err
+	if err != nil {
+		return config.Resolved{}, document, err
+	}
+	if err := normalized(document, resolved.Config); err != nil {
+		return config.Resolved{}, document, err
+	}
+	return resolved, document, nil
+}
+
+// normalized puts every asset's reference into the form its network's kind
+// compares, in place, and refuses one that is not a reference on that kind.
+//
+// Here rather than in the configuration: which form a chain compares in is the
+// adapter's to say, and the configuration reaches no adapter. It is also the
+// last moment a mistyped reference can be caught, since what comes after is a
+// payment quoting it to whoever is about to pay.
+//
+// Every asset is looked at, so that a document wrong in two of them is refused
+// for both at once. A network the document does not declare is one the
+// configuration has already refused the asset for, so it cannot be met here.
+func normalized(document string, cfg config.Config) error {
+	var refusals []string
+	for _, name := range slices.Sorted(maps.Keys(cfg.Assets)) {
+		asset := cfg.Assets[name]
+		reference, err := normalize(cfg.Networks[string(asset.Network())], asset.Reference())
+		if err != nil {
+			refusals = append(refusals, problem.Line("assets."+name+".reference", err.Error()))
+			continue
+		}
+		if reference == asset.Reference() {
+			continue
+		}
+		read, err := payment.NewAsset(asset.Network(), reference, asset.Symbol(), asset.Decimals())
+		if err != nil {
+			refusals = append(refusals, problem.Line("assets."+name+".reference", err.Error()))
+			continue
+		}
+		cfg.Assets[name] = read
+	}
+	if len(refusals) == 0 {
+		return nil
+	}
+	return errors.New(problem.List(document, refusals))
 }
 
 // ownDatabase is the refusal of a database suco would run itself: what a

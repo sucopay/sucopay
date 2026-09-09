@@ -215,3 +215,38 @@ func TestRun_AssetCommandsRefuseToChooseAmongTwoAccountsAsCredentialNewDoes(t *t
 		t.Errorf("%d rows were written, want none", n)
 	}
 }
+
+// The address an operator types is compared with what a chain writes, and a
+// block explorer hands them the mixed-case form to copy.
+func TestRun_AssetAcceptStoresAnAddressTheWayTheChainWritesIt(t *testing.T) {
+	deployed(t)
+	document(t, namingADatabase()+anEVMAssetOn("local"))
+
+	if _, _, err := runArgs(t, "asset", "accept", "jpyc", theChecksummed); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, err := runArgs(t, "asset", "list")
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout, strings.ToLower(theChecksummed)) {
+		t.Errorf("the list does not show the address in lower case:\n%s", stdout)
+	}
+	if strings.Contains(stdout, theChecksummed) {
+		t.Errorf("the list shows the address as it was typed:\n%s", stdout)
+	}
+}
+
+// An address that is not one on the asset's chain is refused before anything
+// is paid to it.
+func TestRun_AssetAcceptRefusesAnAddressThatIsNotOneOnItsChain(t *testing.T) {
+	deployed(t)
+	document(t, namingADatabase()+anEVMAssetOn("local"))
+
+	_, _, err := runArgs(t, "asset", "accept", "jpyc", "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAeD")
+
+	if err == nil {
+		t.Fatal("an address whose checksum does not hold was accepted")
+	}
+}

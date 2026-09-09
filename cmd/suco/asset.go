@@ -41,6 +41,15 @@ func assetAccept(ctx context.Context, args []string, stdout io.Writer) error {
 	if !ok {
 		return fmt.Errorf("%s lists no asset under that name. Run `suco asset list` for the names", o.document)
 	}
+	// What a transfer says it went to is compared with this as text, so the
+	// address is stored the way the asset's chain writes one. A block explorer
+	// hands an operator the mixed-case form to copy, and that form carries the
+	// checksum that catches a digit typed wrong.
+	written, err := normalize(o.networks[string(asset.Network())], string(destination))
+	if err != nil {
+		return err
+	}
+	destination = payment.Address(written)
 	account, err := oneAccount(ctx, o.credentials)
 	if err != nil {
 		return err

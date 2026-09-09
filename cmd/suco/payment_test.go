@@ -15,7 +15,14 @@ import (
 // issuing a key needs.
 func awaiting(t *testing.T, d deployment) *payment.Payment {
 	t.Helper()
-	amount, err := payment.ParseMoney(jpyc(t), "1000")
+	return awaitingIn(t, d, jpyc(t))
+}
+
+// awaitingIn is that payment in an asset the caller names, for a document
+// whose asset is not the one every other case here uses.
+func awaitingIn(t *testing.T, d deployment, asset payment.Asset) *payment.Payment {
+	t.Helper()
+	amount, err := payment.ParseMoney(asset, "1000")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,5 +189,36 @@ func TestRun_PaymentAwaitPrintsTheChainTheDocumentNames(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "chainId 1\n") {
 		t.Errorf("the authorisation names no chain the document declared:\n%s", stdout)
+	}
+}
+
+// What a payer signs names the contract, and a signature binds to the bytes it
+// was shown. It is written the way the chain writes one, so that what the
+// payer authorises is what a transfer will be compared against.
+//
+// The destination comes from the row asset accept wrote, which is written the
+// same way and checked where that command is.
+func TestRun_PaymentAwaitPrintsTheContractTheChainCompares(t *testing.T) {
+	d := deployed(t)
+	document(t, namingADatabase()+anEVMAssetOn("local"))
+	if _, _, err := runArgs(t, "asset", "accept", "jpyc", theChecksummed); err != nil {
+		t.Fatal(err)
+	}
+	asset, err := payment.NewAsset("local", strings.ToLower(theChecksummed), "JPYC", 18)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := awaitingIn(t, d, asset)
+
+	stdout, _, err := runArgs(t, "payment", "await", p.ID().String())
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "contract " + strings.ToLower(theChecksummed); !strings.Contains(stdout, want+"\n") {
+		t.Errorf("what a payer signs has no line %q:\n%s", want, stdout)
+	}
+	if strings.Contains(stdout, theChecksummed) {
+		t.Errorf("what a payer signs holds the form the operator typed:\n%s", stdout)
 	}
 }

@@ -67,7 +67,7 @@ linters:
 
   exclusions:
     rules:
-      - path: cmd/suco/(main|credential|asset|payment|payments)_test\.go$
+      - path: cmd/suco/(main|credential|asset|payment|payments|doctor)_test\.go$
         linters:
           # The CLI reads the real environment, so its tests set one, and Go
           # refuses to run a test that does both.
