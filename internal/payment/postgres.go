@@ -108,16 +108,7 @@ func (s *Postgres) Find(ctx context.Context, account AccountID, id ID) (*Payment
 	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
 	defer cancel()
 
-	var (
-		stored             Stored
-		network, reference string
-		symbol             string
-		decimals           uint8
-		amount             string
-		received           *string
-		metadata           []byte
-		version            int64
-	)
+	var row payer
 	// Filtered on the account as well as the identifier. A payment belonging
 	// to somebody else is not found rather than found and refused, so a caller
 	// that forgot to check cannot tell one from a payment that never existed.
@@ -127,38 +118,17 @@ func (s *Postgres) Find(ctx context.Context, account AccountID, id ID) (*Payment
 		       created_at, expires_at, version
 		  from payments
 		 where account_id = $1 and id = $2`, account, id).
-		Scan(&network, &reference, &symbol, &decimals, &amount, &received,
-			&stored.Destination, &stored.Status, &metadata,
-			&stored.CreatedAt, &stored.ExpiresAt, &version)
+		Scan(&row.network, &row.reference, &row.symbol, &row.decimals, &row.amount,
+			&row.received, &row.stored.Destination, &row.stored.Status, &row.metadata,
+			&row.stored.CreatedAt, &row.stored.ExpiresAt, &row.version)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, Revision{}, fmt.Errorf("%s: %w", id, ErrNotFound)
 	}
 	if err != nil {
 		return nil, Revision{}, fmt.Errorf("payment %s: %w", id, err)
 	}
-
-	asset, err := NewAsset(Network(network), reference, symbol, decimals)
-	if err != nil {
-		return nil, Revision{}, fmt.Errorf("payment %s: %w", id, err)
-	}
-	if stored.Amount, err = ParseMoney(asset, amount); err != nil {
-		return nil, Revision{}, fmt.Errorf("payment %s: %w", id, err)
-	}
-	if received != nil {
-		if stored.Received, err = ParseMoney(asset, *received); err != nil {
-			return nil, Revision{}, fmt.Errorf("payment %s: %w", id, err)
-		}
-	}
-	if err := json.Unmarshal(metadata, &stored.Metadata); err != nil {
-		return nil, Revision{}, fmt.Errorf("payment %s: metadata: %w", id, err)
-	}
-	stored.ID = id
-
-	p, err := Restore(stored)
-	if err != nil {
-		return nil, Revision{}, fmt.Errorf("payment %s: %w", id, err)
-	}
-	return p, Revision{id: string(id), at: version}, nil
+	row.stored.ID = id
+	return row.payment()
 }
 
 // Save writes back a payment that was read.
