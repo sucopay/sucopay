@@ -1524,3 +1524,169 @@ func TestProbe_ReportsWhatItCouldNotRead(t *testing.T) {
 		})
 	}
 }
+
+// The loop reads round after round for as long as it is left to, and puts the
+// lease down on the way out so that nothing waits out its term for a network
+// nobody is reading.
+func TestRun_ReadsUntilItIsStoppedAndPutsTheLeaseDown(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	w.observer.network.Poll, w.observer.interval = time.Millisecond, time.Millisecond
+	ctx, stop := context.WithCancel(t.Context())
+
+	done := make(chan error, 1)
+	go func() { done <- w.observer.Run(ctx) }()
+	// The round that takes the position reads nothing below it, so the payer
+	// arrives after it.
+	waitFor(t, func() bool {
+		had, err := w.observer.cursors.Has(t.Context(), payment.Network(w.observer.network.Name))
+		return err == nil && had
+	})
+	w.paid(t, w.attempt.Key())
+	waitFor(t, func() bool { return w.status(t) == payment.Confirming })
+	stop()
+
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	taken, err := NewLeases(w.pool).Acquire(t.Context(), w.observer.network.Name)
+	if err != nil || !taken {
+		t.Errorf("the lease was still held: %v, %v", taken, err)
+	}
+}
+
+// One network is read by one instance. The one that cannot take the lease says
+// what it can tell from how long ago the position was written.
+func TestRun_SaysWhatItCanWhereAnotherInstanceHoldsTheNetwork(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	w.tick(t)
+	held := New(w.observer.network, w.pool, w.store, slog.New(slog.DiscardHandler), time.Now)
+
+	held.round(t.Context())
+
+	if held.said() != observing {
+		t.Errorf("the instance without the lease says %q, want %q", held.said(), observing)
+	}
+	// A network somebody else holds and nobody has read yet is one nothing can
+	// be said about beyond that.
+	if taken, err := NewLeases(w.pool).Acquire(t.Context(), "nowhere"); err != nil || !taken {
+		t.Fatal(taken, err)
+	}
+	nowhere := New(Network{Name: "nowhere", Chain: w.chain, Poll: time.Second, Width: 50},
+		w.pool, w.store, slog.New(slog.DiscardHandler), time.Now)
+	nowhere.round(t.Context())
+	if nowhere.said() != noPosition {
+		t.Errorf("a network nobody has read says %q, want %q", nowhere.said(), noPosition)
+	}
+	if called := w.chain.Calls()["Keys"]; called != 0 {
+		t.Errorf("the instance without the lease read %d spans", called)
+	}
+
+	// Whoever holds it stops writing the position, and after a while that is
+	// what the other instance says.
+	held.now = func() time.Time { return time.Now().Add(Stale + time.Second) }
+	held.round(t.Context())
+	if held.said() != stalled {
+		t.Errorf("the instance without the lease says %q, want %q", held.said(), stalled)
+	}
+}
+
+// A network that could not be read at all is one to keep asking about, and to
+// say so about meanwhile.
+func TestRun_SaysWhyTheFirstReadFailedAndCarriesOn(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	w.chain.FailAt("Head", 1, chain.ErrNoFinal)
+
+	w.observer.start(t.Context())
+
+	if w.observer.said() != noFinalized {
+		t.Errorf("the network is %q, want %q", w.observer.said(), noFinalized)
+	}
+	w.tick(t)
+	if w.observer.said() != noPosition {
+		t.Errorf("the network is %q after a round that went through", w.observer.said())
+	}
+}
+
+// A proxy upgraded without a block saying so is what the slot is read for. A
+// minute is what it takes to notice, which is the price of not asking every
+// round.
+func TestRun_ReadsWhatIsBehindAnAssetAgainAfterAWhile(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	behind := &standing{Chain: w.chain, code: "0xone"}
+	w.observer.network.Chain = behind
+	w.observer.start(t.Context())
+
+	w.observer.round(t.Context())
+	if behind.calls != 2 {
+		t.Errorf("the chain was asked %d times what is behind its assets, and the round is not due to ask", behind.calls)
+	}
+
+	behind.code = "0xtwo"
+	w.observer.now = func() time.Time { return time.Now().Add(ReadImplementationEvery) }
+	w.observer.round(t.Context())
+
+	_, assets := w.observer.Words()
+	if want := map[string]string{"jpyc": changed, "other": changed}; !reflect.DeepEqual(assets, want) {
+		t.Errorf("the assets are %v, want %v", assets, want)
+	}
+}
+
+// What a chain calls itself is asked on the same footing: once at the start,
+// and once a minute after that.
+func TestTick_AsksWhatTheChainIsOnceAMinute(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	w.observer.start(t.Context())
+	asked := w.chain.Calls()["Identity"]
+
+	w.tick(t)
+	w.tick(t)
+
+	if now := w.chain.Calls()["Identity"]; now != asked {
+		t.Errorf("the chain was asked what it is %d more times", now-asked)
+	}
+	w.observer.now = func() time.Time { return time.Now().Add(ReadImplementationEvery) }
+	w.tick(t)
+	if now := w.chain.Calls()["Identity"]; now != asked+1 {
+		t.Errorf("the chain was asked what it is %d times, want one more", now)
+	}
+}
+
+// waitFor gives a loop running in another goroutine a moment to get somewhere.
+func waitFor(t *testing.T, done func() bool) {
+	t.Helper()
+	for range 200 {
+		if done() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("the loop did not get there")
+}
+
+// An instance that dies holds its lease until the term runs out, and then
+// another takes the network over and reads on from where the position is.
+func TestRun_TakesOverANetworkWhoseLeaseHasLapsed(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	w.tick(t)
+	w.paid(t, w.attempt.Key())
+	expire(t, w.pool, w.observer.network.Name)
+
+	next := New(w.observer.network, w.pool, w.store, slog.New(slog.DiscardHandler), time.Now)
+	next.round(t.Context())
+
+	if next.said() != observing {
+		t.Errorf("the instance that took over says %q", next.said())
+	}
+	if got := w.status(t); got != payment.Confirming {
+		t.Errorf("the attempt is %s, and the instance that took over read the block it was paid in", got)
+	}
+	if rows := w.rows(t); len(rows) != 1 {
+		t.Errorf("the rounds wrote %+v", rows)
+	}
+}

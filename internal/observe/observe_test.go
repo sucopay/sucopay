@@ -520,3 +520,32 @@ func expire(t *testing.T, pool *pgxpool.Pool, name string) {
 		t.Fatal(err)
 	}
 }
+
+// Whoever is not reading a network reads when its position was last written to
+// tell whether anybody is.
+func TestTouched_IsWhenThePositionWasLastWritten(t *testing.T) {
+	t.Parallel()
+	pool := store(t)
+	cursors := observe.NewCursors(pool)
+
+	if _, found, err := cursors.Touched(t.Context(), "polygon"); err != nil || found {
+		t.Fatalf("a network nobody has read reads as written at: %v, %v", found, err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if err := cursors.Init(t.Context(), "polygon", at(7, "0xabc"), now); err != nil {
+		t.Fatal(err)
+	}
+
+	touched, found, err := cursors.Touched(t.Context(), "polygon")
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("the network reads as one nobody has read")
+	}
+	if !touched.Equal(now) {
+		t.Errorf("the position was last written at %s, want %s", touched, now)
+	}
+}

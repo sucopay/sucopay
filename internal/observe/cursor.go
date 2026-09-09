@@ -76,6 +76,29 @@ func (c *Cursors) Has(ctx context.Context, network payment.Network) (bool, error
 	return ok, err
 }
 
+// Touched is when the position of a network was last written, and whether the
+// network has one at all.
+//
+// A round writes the position every time it goes round, whether or not the
+// position moved, so this is when the network was last read rather than when
+// it last moved. An instance that cannot take the lease reads it to say
+// whether whoever holds the lease is still getting anywhere.
+func (c *Cursors) Touched(ctx context.Context, network payment.Network) (time.Time, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	var at time.Time
+	err := c.pool.QueryRow(ctx,
+		`select updated_at from observation_cursors where network = $1`, network).Scan(&at)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return time.Time{}, false, nil
+	case err != nil:
+		return time.Time{}, false, fmt.Errorf("position of %s: %w", network, err)
+	}
+	return at, true, nil
+}
+
 // Init gives a network its first position. A network that already has one
 // keeps it, so an instance starting up does not pull the position back to
 // wherever it would have begun.

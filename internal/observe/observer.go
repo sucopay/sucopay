@@ -31,6 +31,9 @@ const (
 	// The word is spelt the way the tag it comes from is spelt, because it is
 	// that tag going unanswered that this says.
 	noFinalized = "no-finalized"
+	// stalled is a network whose position nobody has written for [Stale],
+	// which is a reader that stopped rather than a chain that is quiet.
+	stalled = "stalled"
 	// chainMismatch is a chain that is not the one the document names.
 	chainMismatch = "chain-mismatch"
 	// finalizedBehind is a provider whose final block is below the position,
@@ -57,6 +60,17 @@ const MaxInterval = 300 * time.Second
 // back up. A provider that refused a span once tends to refuse it again, so
 // the way back is slow.
 const RecoverAfter = 100
+
+// Stale is how long a network may go without a round before an instance that
+// cannot take the lease says nobody is reading it. It is twice the term of a
+// lease, which leaves whoever takes over time to finish a round of their own.
+const Stale = 2 * LeaseTTL
+
+// ReadImplementationEvery is how often the code behind an asset is read where
+// no block said it changed, and how often the chain is asked what it is. Both
+// are insurance: an upgrade that emits nothing, and an endpoint pointed at
+// another chain. A minute comes to 1440 calls a day, each.
+const ReadImplementationEvery = time.Minute
 
 // minWidth is the narrowest span a round asks for. Narrower than this and a
 // round stops keeping up with a chain that makes a block every two seconds,
@@ -167,6 +181,15 @@ type Observer struct {
 	width    int
 	interval time.Duration
 	passed   int
+	// identified and looked are when the chain was last asked what it is and
+	// what is behind its assets. Neither changes without somebody doing
+	// something, so neither is asked every round.
+	identified time.Time
+	looked     time.Time
+	// started is what was behind each asset when this instance began reading,
+	// by the name the document gives it. What is behind one now is compared
+	// with this.
+	started map[string]string
 	// held is when the lease was last taken or put out again, by this
 	// process's clock. What decides that a lease has lapsed is the database's
 	// clock, so this is read to renew early and to decide nothing. Only the
@@ -329,6 +352,123 @@ func Probe(ctx context.Context, n Network, cursors *Cursors) (Report, error) {
 	return report, nil
 }
 
+// Run reads the network until ctx is done.
+//
+// One instance reads a network at a time, which is what the lease settles. An
+// instance that cannot take it waits and asks again, and says meanwhile
+// whether whoever holds it is still getting anywhere.
+func (o *Observer) Run(ctx context.Context) error {
+	o.start(ctx)
+	defer func() {
+		// The lease is put down on the way out so that another instance does
+		// not wait out its term for a network nobody is reading.
+		release, stop := context.WithTimeout(context.WithoutCancel(ctx), storeTimeout)
+		defer stop()
+		if err := o.leases.Release(release, o.network.Name); err != nil {
+			o.log.Warn("the lease was not put down", "network", o.network.Name, "error", err.Error())
+		}
+	}()
+
+	for {
+		o.round(ctx)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(o.interval):
+		}
+	}
+}
+
+// start reads what the network says about itself and puts the word it comes to
+// where it can be read. A network that cannot be read at all is one this waits
+// on rather than one it gives up on: the rounds keep asking.
+func (o *Observer) start(ctx context.Context) {
+	report, err := Probe(ctx, o.network, o.cursors)
+	if err != nil {
+		o.says(unreachable)
+		if errors.Is(err, chain.ErrNoFinal) {
+			o.says(noFinalized)
+		}
+		o.log.Warn("the network could not be read into", "network", o.network.Name, "error", err.Error())
+		return
+	}
+	o.identified, o.looked = o.now(), o.now()
+	o.started = report.Behind
+	if o.network.Want != "" && report.Identity != o.network.Want {
+		o.says(chainMismatch)
+		return
+	}
+	o.says(noPosition)
+}
+
+// round is one turn of the loop: read where the lease allows it, and say what
+// somebody else is doing where it does not.
+func (o *Observer) round(ctx context.Context) {
+	held, err := o.leases.Acquire(ctx, o.network.Name)
+	if err != nil {
+		o.log.Warn("the lease could not be asked for", "network", o.network.Name, "error", err.Error())
+		return
+	}
+	if !held {
+		o.waiting(ctx)
+		return
+	}
+	o.held = o.now()
+	err = o.tick(ctx)
+	if err != nil {
+		o.log.Warn("the round did not finish", "network", o.network.Name, "error", err.Error())
+	}
+	o.after(err)
+	if err == nil {
+		o.looking(ctx)
+	}
+}
+
+// waiting says what an instance that is not reading this network can tell
+// about it: whoever holds the lease writes the position every round, so when
+// it was last written is whether they are still getting anywhere.
+func (o *Observer) waiting(ctx context.Context) {
+	touched, found, err := o.cursors.Touched(ctx, payment.Network(o.network.Name))
+	switch {
+	case err != nil:
+		o.log.Warn("the position could not be read", "network", o.network.Name, "error", err.Error())
+	case !found:
+		o.says(noPosition)
+	case o.now().Sub(touched) > Stale:
+		o.says(stalled)
+	default:
+		o.says(observing)
+	}
+}
+
+// looking reads what is behind each asset where it is time to look again. A
+// proxy upgraded without saying so in a block is what this catches.
+func (o *Observer) looking(ctx context.Context) {
+	if o.now().Sub(o.looked) < ReadImplementationEvery {
+		return
+	}
+	// Looked at the moment of looking, not once every asset has answered. An
+	// asset whose slot cannot be read would otherwise put every asset back on
+	// every round, which is the opposite of what asking once a minute is for.
+	o.looked = o.now()
+	for name, asset := range o.network.Assets {
+		if err := o.keep(ctx); err != nil {
+			return
+		}
+		code, err := o.network.Chain.Implementation(ctx, asset.Reference())
+		if err != nil {
+			o.log.Warn("what is behind an asset could not be read",
+				"network", o.network.Name, "asset", name, "error", err.Error())
+			return
+		}
+		if was, ok := o.started[name]; ok && was != code {
+			o.replaced([]string{asset.Reference()})
+			o.log.Warn("the code behind an asset is not the code that was behind it",
+				"network", o.network.Name, "asset", name)
+		}
+	}
+}
+
 // tick is one round.
 //
 // What the chain says it is and where it stands comes first, then the blocks
@@ -422,17 +562,25 @@ func (o *Observer) standing(ctx context.Context) (chain.Head, error) {
 	if err := o.keep(ctx); err != nil {
 		return chain.Head{}, err
 	}
-	identity, err := o.network.Chain.Identity(ctx)
-	if err != nil {
-		o.says(unreachable)
-		return chain.Head{}, err
-	}
-	// A chain that is not the one the document names is one whose blocks say
-	// nothing about these payments, so nothing of it is read or written.
-	if o.network.Want != "" && identity != o.network.Want {
-		o.says(chainMismatch)
-		return chain.Head{}, fmt.Errorf("the chain calls itself %s, and the document names %s",
-			identity, o.network.Want)
+	// What a chain calls itself changes when somebody points the endpoint at
+	// another chain, and not otherwise, so it is asked on the same footing as
+	// what is behind an asset. Until the next asking, a chain that was swapped
+	// answers for blocks whose hashes do not match the position.
+	if o.now().Sub(o.identified) >= ReadImplementationEvery {
+		identity, err := o.network.Chain.Identity(ctx)
+		if err != nil {
+			o.says(unreachable)
+			return chain.Head{}, err
+		}
+		o.identified = o.now()
+		// A chain that is not the one the document names is one whose blocks
+		// say nothing about these payments, so nothing of it is read or
+		// written.
+		if o.network.Want != "" && identity != o.network.Want {
+			o.says(chainMismatch)
+			return chain.Head{}, fmt.Errorf("the chain calls itself %s, and the document names %s",
+				identity, o.network.Want)
+		}
 	}
 	head, err := o.network.Chain.Head(ctx)
 	if err != nil {
