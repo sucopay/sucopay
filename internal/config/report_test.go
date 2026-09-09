@@ -107,22 +107,23 @@ func TestReport_IsSortedByPath(t *testing.T) {
 	}
 }
 
-func TestReport_QuotesWhatWouldOtherwiseForgeALine(t *testing.T) {
+// A report is laid out in columns, and a value holding a newline and a tab
+// writes a row of its own, which reads as a setting nobody set.
+//
+// The value, and not the path: every path a report holds is either written
+// here or built from a name the document chose, and such a name is refused
+// before it becomes one. What a problem is written under is another matter,
+// and TestProblem_QuotesAPathThatCarriesControlCharacters is about that.
+func TestReport_QuotesAValueThatWouldOtherwiseForgeALine(t *testing.T) {
 	t.Parallel()
-	// A report is laid out in columns. A value or a name holding a newline and
-	// a tab writes a row of its own, which reads as a setting nobody set.
 	got, err := config.Resolve(map[string]any{
-		"listen":   map[string]any{"host": "127.0.0.1\n  listen.port\t1\tdefault"},
-		"networks": map[string]any{"local\x1b[31m": map[string]any{"kind": "simulated"}},
+		"listen": map[string]any{"host": "127.0.0.1\n  listen.port\t1\tdefault"},
 	}, noEnv)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
 
 	for _, line := range got.Report() {
-		if strings.ContainsAny(line.Path, "\n\t\x1b") {
-			t.Errorf("path %q reaches a report unquoted", line.Path)
-		}
 		if strings.ContainsAny(line.Value, "\n\t\x1b") {
 			t.Errorf("value %q reaches a report unquoted", line.Value)
 		}

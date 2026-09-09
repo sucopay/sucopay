@@ -269,9 +269,10 @@ func (r *reader) boolean(path string, def bool) bool {
 //
 // A name becomes a segment of the dotted paths that carry provenance and mark
 // secrets, so a dot inside one would split it in two and take networks.*.rpc
-// out of the secret set. Such a name is refused, and nothing under it is
-// read: reporting each of its keys as unknown would bury the name that caused
-// it.
+// out of the secret set. It is also what a report and a probe are keyed by, so
+// one holding a character a reader cannot see is two names that render alike.
+// Either is refused, and nothing under such a name is read: reporting each of
+// its keys as unknown would bury the name that caused it.
 func (r *reader) section(section, what string) []string {
 	v, ok := walk(r.doc, []string{section})
 	if !ok {
@@ -287,20 +288,36 @@ func (r *reader) section(section, what string) []string {
 	}
 	names := make([]string, 0, len(entries))
 	for name := range entries {
-		if strings.Contains(name, ".") {
+		switch {
+		case strings.Contains(name, "."):
 			r.fail(section, "%s name %q contains a dot", what, name)
-			for _, path := range leaves(r.doc) {
-				if strings.HasPrefix(path, section+"."+name+".") {
-					r.seen[path] = true
-				}
-			}
+		case invisible.Has(name):
+			// A name is what a report, a probe and a list are keyed by, and
+			// each of those is read by somebody. A reference and a symbol are
+			// already held to this where an asset is described; the name it is
+			// described under was the one place left where two that render
+			// alike could be two.
+			r.fail(section, "%s name %s holds a character that does not show up",
+				what, invisible.Quote(name))
+		default:
+			r.seen[section+"."+name] = true
+			names = append(names, name)
 			continue
 		}
-		r.seen[section+"."+name] = true
-		names = append(names, name)
+		r.under(section, name)
 	}
 	slices.Sort(names)
 	return names
+}
+
+// under marks every key beneath a name as read, for a name that was refused.
+// Reporting each of them as unknown would bury the name that caused it.
+func (r *reader) under(section, name string) {
+	for _, path := range leaves(r.doc) {
+		if strings.HasPrefix(path, section+"."+name+".") {
+			r.seen[path] = true
+		}
+	}
 }
 
 func (r *reader) networks() map[string]Network {

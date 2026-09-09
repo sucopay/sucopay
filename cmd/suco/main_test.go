@@ -867,8 +867,9 @@ func TestRun_ServeRefusesTwoNamesForOneAsset(t *testing.T) {
 // networks it is about and no other, in the order of their names, and that
 // doctor refuses in the same words: an operator meets the refusal at whichever
 // command they run first. A name is a key of the document, so naming it
-// repeats nothing that was typed after suco; and a key can hold a newline, so
-// one that does is quoted rather than given a line of its own.
+// repeats nothing that was typed after suco. A name that could forge a line of
+// its own is refused before it becomes a network, which is the configuration's
+// to say and not this.
 func TestRun_ServeRefusesANetworkNothingReads(t *testing.T) {
 	cases := []struct {
 		name string
@@ -895,11 +896,6 @@ func TestRun_ServeRefusesANetworkNothingReads(t *testing.T) {
 			"two no asset refers to, in the order of their names",
 			"networks:\n  b:\n    kind: simulated\n  a:\n    kind: simulated\n",
 			[]string{"networks.a", "networks.b"},
-		},
-		{
-			"one whose name holds a newline",
-			"networks:\n  \"a\\nb\":\n    kind: simulated\n",
-			[]string{`"networks.a\nb"`},
 		},
 	}
 	for _, c := range cases {

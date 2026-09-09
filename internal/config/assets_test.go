@@ -227,6 +227,59 @@ func TestResolve_RejectsAnAssetNameWithADot(t *testing.T) {
 	}
 }
 
+// A name a reader cannot see is refused where the reference and the symbol
+// beside it already are. The name is what a probe, a report and the list of
+// assets are keyed by, and every one of those is read by somebody.
+func TestResolve_RejectsANameNobodyCouldRead(t *testing.T) {
+	t.Parallel()
+	for what, name := range map[string]string{
+		"an override of the reading order": "jp\u202eyc",
+		"a zero-width space":               "jp\u200byc",
+		"a newline":                        "jp\nyc",
+		"a space that is not one":          "jp\u00a0yc",
+	} {
+		t.Run(what, func(t *testing.T) {
+			t.Parallel()
+			doc := assetDocument(nil)
+			doc["assets"] = map[string]any{name: doc["assets"].(map[string]any)["jpyc"]}
+
+			_, err := config.Resolve(doc, noEnv)
+
+			got := problems(t, err)
+			if len(got) != 1 || got[0].Path != "assets" {
+				t.Fatalf("problems = %v, want one at assets and none for the keys under the name", got)
+			}
+			// The message says which name, and does so without carrying the
+			// character into whatever reads the message.
+			if strings.Contains(got[0].Message, name) {
+				t.Errorf("message %q repeats the name as it was written", got[0].Message)
+			}
+			if !strings.Contains(got[0].Message, "jp") {
+				t.Errorf("message %q does not name the asset", got[0].Message)
+			}
+		})
+	}
+}
+
+// The same rule on a network, refused whether or not an asset names it.
+func TestResolve_RejectsANetworkNameNobodyCouldRead(t *testing.T) {
+	t.Parallel()
+	// Beside the one the asset settles on, so that the only thing wrong with
+	// the document is the name.
+	doc := assetDocument(nil)
+	doc["networks"].(map[string]any)["po\u202elygon"] = map[string]any{"kind": "simulated"}
+
+	_, err := config.Resolve(doc, noEnv)
+
+	got := problems(t, err)
+	if len(got) != 1 || got[0].Path != "networks" {
+		t.Fatalf("problems = %v, want one at networks and none for the keys under the name", got)
+	}
+	if !strings.Contains(got[0].Message, "does not show up") {
+		t.Errorf("message %q is not the one a name nobody could read gets", got[0].Message)
+	}
+}
+
 func TestResolve_RejectsAssetsThatAreNotAMapping(t *testing.T) {
 	t.Parallel()
 	doc := map[string]any{"assets": []any{"jpyc"}}
