@@ -1185,6 +1185,29 @@ func TestTick_SaysOnceThatTheChainNoLongerHoldsThePosition(t *testing.T) {
 	}
 }
 
+// What a round has to report was written by a provider or by the database, and
+// a line goes to a terminal and to whatever collects the lines after it. slog's
+// JSON handler is the one a deployment writes with, and it escapes what JSON
+// requires and nothing more.
+func TestRound_QuotesWhatSomebodyElseWroteIntoALine(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	said := &strings.Builder{}
+	w.observer.log = slog.New(slog.NewJSONHandler(said, nil))
+	// An override of the reading order, which reverses what a person reads
+	// after it and leaves no byte anyone would notice.
+	w.chain.Fail(errors.New("the provider said \u202eon"))
+
+	w.observer.round(t.Context())
+
+	if strings.Contains(said.String(), "\u202e") {
+		t.Errorf("a line holds a character that does not show up: %q", said.String())
+	}
+	if !strings.Contains(said.String(), "the provider said") {
+		t.Errorf("a line does not say what went wrong: %q", said.String())
+	}
+}
+
 // A round that stops without a word of its own leaves the last one standing,
 // and the last one says rounds are getting through. The instance holding the
 // lease is the one that has to take that back: every other instance reads when

@@ -20,6 +20,10 @@ var allowed = []string{
 	"slices", "sync", "time",
 	"github.com/jackc/pgx/v5", "github.com/jackc/pgx/v5/pgxpool",
 	"github.com/sucopay/sucopay/internal/adapter/chain",
+	// invisible names the characters a line may not carry. A round reports
+	// what a provider and what the database said, and neither is held to what
+	// a log line can hold.
+	"github.com/sucopay/sucopay/internal/invisible",
 	"github.com/sucopay/sucopay/internal/payment",
 }
 

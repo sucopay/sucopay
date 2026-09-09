@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sucopay/sucopay/internal/adapter/chain"
+	"github.com/sucopay/sucopay/internal/invisible"
 	"github.com/sucopay/sucopay/internal/payment"
 )
 
@@ -82,6 +83,19 @@ const ReadImplementationEvery = time.Minute
 // well, for a reason of its own: this package reads no configuration, so the
 // two are the same number by agreement rather than by construction.
 const minWidth = 10
+
+// maxErrorBytes bounds what somebody else's failure can put in a line.
+const maxErrorBytes = 512
+
+// shown is an error as a line carries one: cut short and quoted. What a round
+// has to report comes from a provider or from the database, and nothing here
+// vouches for the characters either of them wrote. slog's JSON handler is the
+// one a deployment writes with, and it passes a zero-width space or an
+// override of the reading order through as the bytes it was given.
+//
+// err is one there is: this is called where a round has something to report,
+// and a line saying nothing went wrong is not one of those places.
+func shown(err error) string { return invisible.Shown(err.Error(), maxErrorBytes) }
 
 // errLost says the lease is somebody else's now. The round stops where it is,
 // and whoever is running it goes back to asking for the lease.
@@ -379,7 +393,7 @@ func (o *Observer) Run(ctx context.Context) error {
 		release, stop := context.WithTimeout(context.WithoutCancel(ctx), storeTimeout)
 		defer stop()
 		if err := o.leases.Release(release, o.network.Name); err != nil {
-			o.log.Warn("the lease was not put down", "network", o.network.Name, "error", err.Error())
+			o.log.Warn("the lease was not put down", "network", o.network.Name, "error", shown(err))
 		}
 	}()
 
@@ -403,7 +417,7 @@ func (o *Observer) start(ctx context.Context) {
 		if errors.Is(err, chain.ErrNoFinal) {
 			o.says(noFinalized)
 		}
-		o.log.Warn("the network could not be read into", "network", o.network.Name, "error", err.Error())
+		o.log.Warn("the network could not be read into", "network", o.network.Name, "error", shown(err))
 		return
 	}
 	o.identified, o.looked = o.now(), o.now()
@@ -420,7 +434,7 @@ func (o *Observer) start(ctx context.Context) {
 func (o *Observer) round(ctx context.Context) {
 	held, err := o.leases.Acquire(ctx, o.network.Name)
 	if err != nil {
-		o.log.Warn("the lease could not be asked for", "network", o.network.Name, "error", err.Error())
+		o.log.Warn("the lease could not be asked for", "network", o.network.Name, "error", shown(err))
 		return
 	}
 	if !held {
@@ -430,7 +444,7 @@ func (o *Observer) round(ctx context.Context) {
 	o.held = o.now()
 	err = o.tick(ctx)
 	if err != nil {
-		o.log.Warn("the round did not finish", "network", o.network.Name, "error", err.Error())
+		o.log.Warn("the round did not finish", "network", o.network.Name, "error", shown(err))
 		o.stalling()
 	}
 	o.after(err)
@@ -467,7 +481,7 @@ func (o *Observer) waiting(ctx context.Context) {
 	touched, found, err := o.cursors.Touched(ctx, payment.Network(o.network.Name))
 	switch {
 	case err != nil:
-		o.log.Warn("the position could not be read", "network", o.network.Name, "error", err.Error())
+		o.log.Warn("the position could not be read", "network", o.network.Name, "error", shown(err))
 	case !found:
 		o.says(noPosition)
 	case o.now().Sub(touched) > Stale:
@@ -494,7 +508,7 @@ func (o *Observer) looking(ctx context.Context) {
 		code, err := o.network.Chain.Implementation(ctx, asset.Reference())
 		if err != nil {
 			o.log.Warn("what is behind an asset could not be read",
-				"network", o.network.Name, "asset", name, "error", err.Error())
+				"network", o.network.Name, "asset", name, "error", shown(err))
 			return
 		}
 		if was, ok := o.started[name]; ok && was != code {
@@ -587,7 +601,7 @@ func (o *Observer) tick(ctx context.Context) (err error) {
 	// so a round that cannot read it is a round that found nothing yet.
 	if err := o.ahead(ctx, network, head, behind); err != nil {
 		o.log.Warn("reading ahead of the final block failed",
-			"network", o.network.Name, "error", err.Error())
+			"network", o.network.Name, "error", shown(err))
 	}
 	return nil
 }
