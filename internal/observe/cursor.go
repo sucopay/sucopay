@@ -169,11 +169,11 @@ func (c *Cursors) Set(ctx context.Context, network payment.Network, at Position,
 		return Position{}, false, fmt.Errorf("position of %s: %w", network, err)
 	}
 	defer func() {
-		unwind, stop := context.WithTimeout(context.WithoutCancel(ctx), storeTimeout)
-		defer stop()
-		rollback := tx.Rollback(unwind)
-		if rollback != nil && !errors.Is(rollback, pgx.ErrTxClosed) && err == nil {
-			err = fmt.Errorf("position of %s: %w", network, rollback)
+		// The subject is put on here rather than by unwind, which serves the
+		// rounds as well, and a round already names the network it is of.
+		was := err
+		if err = unwind(ctx, tx, err); err != nil && was == nil {
+			err = fmt.Errorf("position of %s: %w", network, err)
 		}
 	}()
 

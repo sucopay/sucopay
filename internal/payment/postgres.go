@@ -48,6 +48,27 @@ type queries interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
+// unwind rolls a transaction back and reports the rollback under what, and
+// only where nothing else went wrong.
+//
+// After a commit it reports the transaction already closed, which is the
+// ordinary path rather than a failure. Anything else leaves one open, holding
+// a row lock until the pool reaps the connection, and saying nothing would
+// hide that from the only caller who could act.
+//
+// Detached from ctx so that a deadline which caused the failure does not also
+// defeat the rollback, and given one of its own because a rollback that hangs
+// holds the lock it was meant to release.
+func unwind(ctx context.Context, tx pgx.Tx, what string, err error) error {
+	back, stop := context.WithTimeout(context.WithoutCancel(ctx), storeTimeout)
+	defer stop()
+	rollback := tx.Rollback(back)
+	if rollback != nil && !errors.Is(rollback, pgx.ErrTxClosed) && err == nil {
+		return fmt.Errorf("%s: %w", what, rollback)
+	}
+	return err
+}
+
 // Create stores a payment nothing has stored before.
 func (s *Postgres) Create(ctx context.Context, account AccountID, p *Payment) (err error) {
 	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
@@ -61,14 +82,7 @@ func (s *Postgres) Create(ctx context.Context, account AccountID, p *Payment) (e
 	if err != nil {
 		return fmt.Errorf("payment %s: %w", p.ID(), err)
 	}
-	defer func() {
-		unwind, stop := context.WithTimeout(context.WithoutCancel(ctx), storeTimeout)
-		defer stop()
-		rollback := tx.Rollback(unwind)
-		if rollback != nil && !errors.Is(rollback, pgx.ErrTxClosed) && err == nil {
-			err = fmt.Errorf("payment %s: %w", p.ID(), rollback)
-		}
-	}()
+	defer func() { err = unwind(ctx, tx, fmt.Sprintf("payment %s", p.ID()), err) }()
 
 	asset := p.Asset()
 	_, err = tx.Exec(ctx, `
@@ -172,22 +186,7 @@ func (s *Postgres) Save(ctx context.Context, account AccountID, p *Payment, at R
 	if err != nil {
 		return fmt.Errorf("payment %s: %w", p.ID(), err)
 	}
-	defer func() {
-		// After a commit this reports the transaction already closed, which is
-		// the ordinary path rather than a failure. Anything else leaves one
-		// open, holding a row lock until the pool reaps the connection, and
-		// saying nothing would hide that from the only caller who could act.
-		//
-		// Detached from ctx so that a deadline which caused the failure does not
-		// also defeat the rollback, and given one of its own because a rollback
-		// that hangs holds the lock it was meant to release.
-		unwind, stop := context.WithTimeout(context.WithoutCancel(ctx), storeTimeout)
-		defer stop()
-		rollback := tx.Rollback(unwind)
-		if rollback != nil && !errors.Is(rollback, pgx.ErrTxClosed) && err == nil {
-			err = fmt.Errorf("payment %s: %w", p.ID(), rollback)
-		}
-	}()
+	defer func() { err = unwind(ctx, tx, fmt.Sprintf("payment %s", p.ID()), err) }()
 
 	var received *string
 	if r := p.Received(); r.IsSet() {
@@ -232,14 +231,7 @@ func (s *Postgres) Issue(ctx context.Context, account AccountID, a *Attempt) (er
 	if err != nil {
 		return fmt.Errorf("attempt %s: %w", a.ID(), err)
 	}
-	defer func() {
-		unwind, stop := context.WithTimeout(context.WithoutCancel(ctx), storeTimeout)
-		defer stop()
-		rollback := tx.Rollback(unwind)
-		if rollback != nil && !errors.Is(rollback, pgx.ErrTxClosed) && err == nil {
-			err = fmt.Errorf("attempt %s: %w", a.ID(), rollback)
-		}
-	}()
+	defer func() { err = unwind(ctx, tx, fmt.Sprintf("attempt %s", a.ID()), err) }()
 
 	_, err = tx.Exec(ctx, `
 		insert into attempts (
@@ -329,14 +321,7 @@ func (s *Postgres) SaveAttempt(ctx context.Context, account AccountID, a *Attemp
 	if err != nil {
 		return fmt.Errorf("attempt %s: %w", a.ID(), err)
 	}
-	defer func() {
-		unwind, stop := context.WithTimeout(context.WithoutCancel(ctx), storeTimeout)
-		defer stop()
-		rollback := tx.Rollback(unwind)
-		if rollback != nil && !errors.Is(rollback, pgx.ErrTxClosed) && err == nil {
-			err = fmt.Errorf("attempt %s: %w", a.ID(), rollback)
-		}
-	}()
+	defer func() { err = unwind(ctx, tx, fmt.Sprintf("attempt %s", a.ID()), err) }()
 
 	if err := saveAttempt(ctx, tx, account, a, at); err != nil {
 		return err
