@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/sucopay/sucopay/internal/accepted"
@@ -47,6 +48,8 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		ready       api.Ready
 		credentials api.Credentials
 		payments    api.Payments
+		chains      api.Chains
+		observers   observe.Observers
 	)
 	if cfg.Database.URL != "" {
 		db, err := postgres.Open(ctx, cfg.Database.URL)
@@ -80,17 +83,59 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		log.InfoContext(ctx, "schema applied",
 			slog.Int("migrations", applied),
 			slog.String("version", invisible.Shown(version, maxDescription)))
+
+		// After the schema: a round writes its position and takes a lease,
+		// and both want tables to be there. Opened here rather than beside
+		// the document, because what reads a chain has nowhere to write down
+		// how far it has read without a database.
+		networks, err := openChains(cfg)
+		if err != nil {
+			return err
+		}
+		for _, n := range networks {
+			observers = append(observers, observe.New(n, db.Conns(), store, log, time.Now))
+		}
+		chains = observers
 	}
 
 	addr := net.JoinHostPort(cfg.Listen.Host, strconv.Itoa(cfg.Listen.Port))
-	deps := api.Dependencies{Database: ready, Credentials: credentials, Payments: payments}
+	deps := api.Dependencies{Database: ready, Credentials: credentials, Payments: payments, Chains: chains}
 	server, err := api.Listen(addr, api.Handler(log, deps), log)
 	if err != nil {
 		return err
 	}
 
+	// The rounds run beside the server rather than before it. A network is
+	// read for as long as the process lives, so waiting for one to get
+	// anywhere would be waiting forever; and what it has got to is what
+	// /readyz answers with, which is how anybody learns it has got nowhere.
+	//
+	// On a context of their own, because the server stops for reasons of its
+	// own as well as for this one: a listener that dies hands its error back
+	// with the process's context still live. The rounds would go on reading a
+	// chain nobody can ask about any more, and the wait below would be a wait
+	// for the operator to notice.
+	reading, stopReading := context.WithCancel(ctx)
+	defer stopReading()
+	var rounds sync.WaitGroup
+	for _, o := range observers {
+		rounds.Add(1)
+		go func() {
+			defer rounds.Done()
+			if err := o.Run(reading); err != nil {
+				log.ErrorContext(ctx, "a network stopped being read",
+					slog.String("error", invisible.Shown(err.Error(), maxDescription)))
+			}
+		}()
+	}
+
 	log.InfoContext(ctx, "serving", slog.String("base_url", cfg.Listen.BaseURL))
 	err = server.Run(ctx)
+	stopReading()
+	// Waited for before the database is closed, which is deferred above: a
+	// round on its way out puts its lease down, and a lease nobody puts down
+	// is a network the next instance waits out the term of.
+	rounds.Wait()
 	log.InfoContext(context.WithoutCancel(ctx), "stopped")
 	return err
 }

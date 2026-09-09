@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -933,6 +935,103 @@ func TestRun_ServeRefusesANetworkNothingReads(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// readyz reads the probe, with the two nested objects a deployment reading a
+// chain answers with.
+func readyz(t *testing.T, port int) (int, map[string]any, string) {
+	t.Helper()
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/readyz", port)) //nolint:noctx // a test's own request, over a test's own lifetime
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("/readyz answered something other than a JSON object: %v\n%s", err, raw)
+	}
+	return resp.StatusCode, body, string(raw)
+}
+
+// wordFor is what the probe says about one network, or nothing where it says
+// nothing about any.
+func wordFor(body map[string]any, section, name string) string {
+	entries, ok := body[section].(map[string]any)
+	if !ok {
+		return ""
+	}
+	word, _ := entries[name].(string)
+	return word
+}
+
+// The whole path: serve opens the chain the document's asset settles on,
+// reads it round after round, and the probe answers with what the rounds have
+// come to. Nothing is asked of the chain to answer the probe.
+func TestRun_ServeReadsTheNetworkItsAssetSettlesOnAndSaysSo(t *testing.T) {
+	port := freePort(t)
+	deployed(t)
+	// A second apart, which is the shortest a document may set. What a round
+	// takes is not what this is about; that a round happens at all is.
+	document(t, fmt.Sprintf("listen:\n  port: %d\n%s%s", port, namingADatabase(),
+		"networks:\n  local:\n    kind: simulated\n    poll: 1s\n"+anAsset("local")))
+	_, stop := serving(t)
+	defer stop()
+
+	// The first round takes the position and reads nothing below it, so the
+	// word a deployment settles on is the one the round after it says.
+	var status int
+	var body map[string]any
+	for began := time.Now(); time.Since(began) < 3*time.Second; time.Sleep(50 * time.Millisecond) {
+		status, body, _ = readyz(t, port)
+		if wordFor(body, "networks", "local") == "observing" {
+			break
+		}
+	}
+
+	if word := wordFor(body, "networks", "local"); word != "observing" {
+		t.Errorf("the deployment says the network is %q after three seconds, want observing", word)
+	}
+	if word := wordFor(body, "assets", "jpyc"); word != "unchanged" {
+		t.Errorf("the deployment says the asset is %q, want unchanged", word)
+	}
+	if status != http.StatusOK {
+		t.Errorf("/readyz = %d, want %d", status, http.StatusOK)
+	}
+}
+
+// A lease left behind is a network the next instance waits out the term of
+// before it reads anything, so the rounds are waited for on the way out.
+func TestRun_ServePutsDownTheLeaseOfEveryNetworkItRead(t *testing.T) {
+	port := freePort(t)
+	d := deployed(t)
+	document(t, fmt.Sprintf("listen:\n  port: %d\n%s%s", port, namingADatabase(),
+		"networks:\n  local:\n    kind: simulated\n    poll: 1s\n"+anAsset("local")))
+	_, stop := serving(t)
+
+	held := func() int {
+		t.Helper()
+		var count int
+		if err := d.pool.Conns().QueryRow(t.Context(),
+			`select count(*) from leases where name = $1`, "local").Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	for began := time.Now(); held() == 0 && time.Since(began) < 3*time.Second; time.Sleep(50 * time.Millisecond) {
+	}
+	if held() != 1 {
+		t.Fatal("the instance read a network without taking the lease on it")
+	}
+
+	stop()
+
+	if held() != 0 {
+		t.Error("the instance stopped holding the lease on a network nobody is reading")
 	}
 }
 
