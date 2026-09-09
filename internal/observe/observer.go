@@ -287,6 +287,48 @@ func (o *Observer) keep(ctx context.Context) error {
 	return nil
 }
 
+// Report is what a network says about itself before anybody starts reading it
+// round by round.
+type Report struct {
+	// Identity is what the chain calls itself.
+	Identity string
+	// Head is where the chain stands.
+	Head chain.Head
+	// Position is how far the network has been read.
+	Position Position
+	// Read says whether the network has been read at all. The position means
+	// nothing without it.
+	Read bool
+	// Behind is the code behind each asset, by the name the document gives
+	// it. It is empty for a chain whose assets cannot be replaced.
+	Behind map[string]string
+}
+
+// Probe reads what a network says about itself. It writes nothing, so whoever
+// is only asking whether a deployment could observe this network can ask.
+func Probe(ctx context.Context, n Network, cursors *Cursors) (Report, error) {
+	report := Report{Behind: make(map[string]string, len(n.Assets))}
+	identity, err := n.Chain.Identity(ctx)
+	if err != nil {
+		return Report{}, fmt.Errorf("%s: %w", n.Name, err)
+	}
+	report.Identity = identity
+	if report.Head, err = n.Chain.Head(ctx); err != nil {
+		return Report{}, fmt.Errorf("%s: %w", n.Name, err)
+	}
+	if report.Position, report.Read, err = cursors.Get(ctx, payment.Network(n.Name)); err != nil {
+		return Report{}, fmt.Errorf("%s: %w", n.Name, err)
+	}
+	for name, asset := range n.Assets {
+		behind, err := n.Chain.Implementation(ctx, asset.Reference())
+		if err != nil {
+			return Report{}, fmt.Errorf("%s: %w", n.Name, err)
+		}
+		report.Behind[name] = behind
+	}
+	return report, nil
+}
+
 // tick is one round.
 //
 // What the chain says it is and where it stands comes first, then the blocks

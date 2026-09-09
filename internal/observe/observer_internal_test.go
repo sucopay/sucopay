@@ -1459,3 +1459,68 @@ func TestRun_LeavesTheWaitAndTheSpanWhereTheFinalBlockIsBelowThePosition(t *test
 		t.Errorf("the round waits %s and reads %d blocks", w.observer.interval, w.observer.width)
 	}
 }
+
+// What an instance reads before it starts reading rounds: what the chain calls
+// itself, where it stands, how far it has been read, and what is behind each
+// asset. It writes nothing, so whoever is only asking can ask.
+func TestProbe_ReadsWhereTheNetworkStandsWithoutWritingAnything(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	behind := &standing{Chain: w.chain, code: "0xabc"}
+	w.observer.network.Chain = behind
+	w.chain.Finalize(w.chain.Mine())
+
+	report, err := Probe(t.Context(), w.observer.network, w.observer.cursors)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Identity != "simulated" {
+		t.Errorf("the chain calls itself %q", report.Identity)
+	}
+	if report.Head.Latest.Height != 1 || report.Head.Final.Height != 1 {
+		t.Errorf("the head reads as %+v", report.Head)
+	}
+	if report.Read {
+		t.Errorf("the network reads as read to %+v, and no round has run", report.Position)
+	}
+	want := map[string]string{"jpyc": "0xabc", "other": "0xabc"}
+	if !reflect.DeepEqual(report.Behind, want) {
+		t.Errorf("the assets read as %v, want %v", report.Behind, want)
+	}
+	if had, err := w.observer.cursors.Has(t.Context(), payment.Network(w.observer.network.Name)); err != nil || had {
+		t.Errorf("the probe took a position: %v", err)
+	}
+}
+
+// Once a round has been round, the probe says where it got to.
+func TestProbe_SaysHowFarTheNetworkHasBeenRead(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	w.tick(t)
+
+	report, err := Probe(t.Context(), w.observer.network, w.observer.cursors)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Read || report.Position != w.position(t) {
+		t.Errorf("the network reads as read to %+v, %v", report.Position, report.Read)
+	}
+}
+
+// A chain that will not answer is one nothing can be said about.
+func TestProbe_ReportsWhatItCouldNotRead(t *testing.T) {
+	t.Parallel()
+	for _, method := range []string{"Identity", "Head", "Implementation"} {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+			w := watch(t)
+			w.chain.FailAt(method, 1, errors.New("the provider said no"))
+
+			if _, err := Probe(t.Context(), w.observer.network, w.observer.cursors); err == nil {
+				t.Errorf("the probe read a network whose %s failed", method)
+			}
+		})
+	}
+}
