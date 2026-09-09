@@ -108,6 +108,19 @@ const (
 	changed   = "changed"
 )
 
+// NetworkWords are every word a network can be in, in name order.
+//
+// Whoever reads [Observer.Words] decides what to do about each of them, which
+// is a list of its own somewhere else. This is what a test beside that list
+// holds it against, so that a word renamed or added here fails there rather
+// than falling to whatever a word it does not know happens to get.
+func NetworkWords() []string {
+	words := []string{observing, noPosition, unreachable, noFinalized,
+		stalled, chainMismatch, finalizedBehind, finalizedChanged}
+	slices.Sort(words)
+	return words
+}
+
 // Network is one network as the observer reads it.
 type Network struct {
 	// Name is what the configuration document calls the network, which is the

@@ -36,13 +36,13 @@ type route struct {
 // and refuses a registrar anywhere but [Handler].
 //
 // A handler here closes over what it takes from deps, the Database,
-// Credentials and Payments, rather than reaching them. routes runs while an
-// instance is still starting, and all three are nil in one configured
+// Credentials, Payments and Chains, rather than reaching them. routes runs
+// while an instance is still starting, and all four are nil in one configured
 // without a database.
 func routes(log *slog.Logger, deps Dependencies) []route {
 	return []route{
 		{pattern: "GET /healthz", needs: open, handle: alive},
-		{pattern: "GET /readyz", needs: open, handle: ready(log, deps.Database, deps.Credentials)},
+		{pattern: "GET /readyz", needs: open, handle: ready(log, deps.Database, deps.Credentials, deps.Chains)},
 		{pattern: "POST /payments", needs: write, handle: forAccount(log, deps.Payments, Payments.Create)},
 		{pattern: "GET /payments/{id}", needs: read, handle: forAccount(log, deps.Payments, Payments.Read)},
 	}

@@ -22,13 +22,14 @@ type Ready func(context.Context) error
 // Database may be nil, which is what an instance configured without one
 // passes. A function rather than an interface, so that "no database" is a
 // nil nobody can get wrong: a nil pointer in a non-nil interface would read
-// as configured and panic when asked. Credentials and Payments are nil in
-// the same instance; [Credentials] says what that refuses, and [Payments]
-// what it answers.
+// as configured and panic when asked. Credentials, Payments and Chains are
+// nil in the same instance; [Credentials] says what that refuses, [Payments]
+// what it answers, and [Chains] what it leaves out.
 type Dependencies struct {
 	Database    Ready
 	Credentials Credentials
 	Payments    Payments
+	Chains      Chains
 }
 
 // Handler returns the routes an instance serves, each behind what it asks of
@@ -52,8 +53,20 @@ func alive(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// readyJSON is what a probe is answered with. What a deployment does not have
+// is left out rather than written empty, so that a field a reader finds is one
+// with something in it.
+type readyJSON struct {
+	Status      string            `json:"status"`
+	Database    string            `json:"database"`
+	Credentials string            `json:"credentials,omitempty"`
+	Networks    map[string]string `json:"networks,omitempty"`
+	Assets      map[string]string `json:"assets,omitempty"`
+}
+
 // ready answers whether the instance can serve, which is what a load balancer
-// decides on.
+// decides on: the database it keeps payments in, and whether anything is
+// reading the chains those payments settle on.
 //
 // The body also says what credentials are in force, which does not change
 // the answer. A deployment holding no credential that writes is one nobody
@@ -61,10 +74,10 @@ func alive(w http.ResponseWriter, _ *http.Request) {
 // were it not ready, there would be no reaching it to make one. Nor does
 // the word prove that authentication works: a deployment whose key was
 // swapped holds credentials that write and refuses every request.
-func ready(log *slog.Logger, database Ready, credentials Credentials) http.HandlerFunc {
+func ready(log *slog.Logger, database Ready, credentials Credentials, chains Chains) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if database == nil {
-			writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "database": "none configured"})
+			writeJSON(w, http.StatusOK, readyJSON{Status: "ok", Database: "none configured"})
 			return
 		}
 		body, err := reached(r.Context(), database, credentials)
@@ -79,7 +92,16 @@ func ready(log *slog.Logger, database Ready, credentials Credentials) http.Handl
 				slog.String("dependency", "database"),
 				slog.String("error", invisible.Shown(err.Error(), maxErrorBytes)))
 			writeJSON(w, http.StatusServiceUnavailable,
-				map[string]string{"status": "unavailable", "database": "unreachable"})
+				readyJSON{Status: "unavailable", Database: "unreachable"})
+			return
+		}
+		body.Networks, body.Assets = words(chains)
+		if !serving(body.Networks) {
+			// One word for each network and no reason for any of them. A
+			// network is named in the document and read through an endpoint
+			// that may carry a key, and whoever can reach the port reads this.
+			body.Status = "unavailable"
+			writeJSON(w, http.StatusServiceUnavailable, body)
 			return
 		}
 		writeJSON(w, http.StatusOK, body)
@@ -94,19 +116,19 @@ func ready(log *slog.Logger, database Ready, credentials Credentials) http.Handl
 //
 // credentials is nil where nothing built a store over the database, which
 // a test does. There is then nothing to ask.
-func reached(ctx context.Context, database Ready, credentials Credentials) (map[string]string, error) {
+func reached(ctx context.Context, database Ready, credentials Credentials) (readyJSON, error) {
 	if err := database(ctx); err != nil {
-		return nil, err
+		return readyJSON{}, err
 	}
-	body := map[string]string{"status": "ok", "database": "reachable"}
+	body := readyJSON{Status: "ok", Database: "reachable"}
 	if credentials == nil {
 		return body, nil
 	}
 	inForce, err := credentials.InForce(ctx)
 	if err != nil {
-		return nil, err
+		return readyJSON{}, err
 	}
-	body["credentials"] = string(inForce)
+	body.Credentials = string(inForce)
 	return body, nil
 }
 
