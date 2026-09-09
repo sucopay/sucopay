@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -72,8 +74,8 @@ func watch(t *testing.T) *watching {
 	w.observer = New(Network{
 		Name:   asset.Network().String(),
 		Chain:  made,
-		Assets: []payment.Asset{asset, other},
-		Poll:   3 * time.Second,
+		Assets: map[string]payment.Asset{"jpyc": asset, "other": other},
+		Poll:   12 * time.Second,
 		Width:  50,
 	}, pool.Conns(), store, slog.New(slog.DiscardHandler), time.Now)
 	return w
@@ -195,9 +197,9 @@ func (w *watching) otherAttempt(t *testing.T) *payment.Attempt {
 	return a
 }
 
-// round is one turn of the observer, which fails the test rather than handing
+// tick is one round of the observer, which fails the test rather than handing
 // back an error nobody looks at.
-func (w *watching) round(t *testing.T) {
+func (w *watching) tick(t *testing.T) {
 	t.Helper()
 	if err := w.observer.tick(t.Context()); err != nil {
 		t.Fatal(err)
@@ -252,10 +254,10 @@ func TestTick_ConfirmsTheAttemptWhoseKeyATransferSpent(t *testing.T) {
 	t.Parallel()
 	w := watch(t)
 	// The first round takes the position and reads nothing below it.
-	w.round(t)
+	w.tick(t)
 	w.paid(t, w.attempt.Key())
 
-	w.round(t)
+	w.tick(t)
 
 	if got := w.status(t); got != payment.Confirming {
 		t.Errorf("the attempt is %s, and a transfer of the whole amount was seen", got)
@@ -279,7 +281,7 @@ func TestTick_ConfirmsTheAttemptWhoseKeyATransferSpent(t *testing.T) {
 	// read that block again would ask for the same receipt for as long as the
 	// payment lasted.
 	w.chain.Finalize(w.chain.Mine())
-	w.round(t)
+	w.tick(t)
 	if called := w.chain.Calls()["Receipt"]; called != 1 {
 		t.Errorf("the chain was asked for %d receipts, and one transfer was seen", called)
 	}
@@ -294,10 +296,10 @@ func TestTick_ConfirmsTheAttemptWhoseKeyATransferSpent(t *testing.T) {
 func TestTick_ReadsNoBlocksAndSaysItRanWhereNothingWasFinalised(t *testing.T) {
 	t.Parallel()
 	w := watch(t)
-	w.round(t)
+	w.tick(t)
 	before := w.touched(t)
 
-	w.round(t)
+	w.tick(t)
 
 	if called := w.chain.Calls()["Keys"]; called != 0 {
 		t.Errorf("the chain was asked for keys %d times, and nothing new was finalised", called)
@@ -305,8 +307,8 @@ func TestTick_ReadsNoBlocksAndSaysItRanWhereNothingWasFinalised(t *testing.T) {
 	if after := w.touched(t); !after.After(before) {
 		t.Errorf("the position was last written at %s, and a round has run since", after)
 	}
-	if w.observer.word != observing {
-		t.Errorf("the network is %q, want %q", w.observer.word, observing)
+	if w.observer.said() != observing {
+		t.Errorf("the network is %q, want %q", w.observer.said(), observing)
 	}
 }
 
@@ -348,11 +350,11 @@ func TestTick_WritesDownWhatArrivedAndDidNotPay(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			w := watch(t)
-			w.round(t)
+			w.tick(t)
 			w.chain.Send(c.sending(w, w.sending(w.attempt.Key())))
 			w.chain.Finalize(w.chain.Mine())
 
-			w.round(t)
+			w.tick(t)
 
 			rows := w.rows(t)
 			if len(rows) != 1 {
@@ -374,10 +376,10 @@ func TestTick_WritesDownWhatArrivedAndDidNotPay(t *testing.T) {
 func TestTick_ReadsNoReceiptForAKeyNobodyHereIssued(t *testing.T) {
 	t.Parallel()
 	w := watch(t)
-	w.round(t)
+	w.tick(t)
 	w.paid(t, strings.Repeat("f0", 32))
 
-	w.round(t)
+	w.tick(t)
 
 	if rows := w.rows(t); len(rows) != 0 {
 		t.Errorf("the round wrote %+v", rows)
@@ -400,8 +402,8 @@ func TestTick_ReadsNothingFromAChainThatIsNotTheOneNamed(t *testing.T) {
 	if err == nil {
 		t.Fatal("the round read a chain calling itself something else")
 	}
-	if w.observer.word != chainMismatch {
-		t.Errorf("the network is %q, want %q", w.observer.word, chainMismatch)
+	if w.observer.said() != chainMismatch {
+		t.Errorf("the network is %q, want %q", w.observer.said(), chainMismatch)
 	}
 	if calls := w.chain.Calls(); calls["Head"] != 0 || calls["Keys"] != 0 {
 		t.Errorf("the chain was asked %v", calls)
@@ -417,10 +419,10 @@ func TestTick_ReadsNothingFromAChainThatIsNotTheOneNamed(t *testing.T) {
 func TestTick_WritesWhateverTheChainSaysIsBehindTheAsset(t *testing.T) {
 	t.Parallel()
 	w := watch(t)
-	w.round(t)
+	w.tick(t)
 	w.paid(t, w.attempt.Key())
 
-	w.round(t)
+	w.tick(t)
 
 	var behind string
 	if err := w.pool.QueryRow(t.Context(), `select implementation from observations`).Scan(&behind); err != nil {
@@ -438,11 +440,11 @@ func TestTick_WritesWhateverTheChainSaysIsBehindTheAsset(t *testing.T) {
 func TestTick_WritesWhatItSawAheadOfFinalityWithoutCallingItFinal(t *testing.T) {
 	t.Parallel()
 	w := watch(t)
-	w.round(t)
+	w.tick(t)
 	w.chain.Send(w.sending(w.attempt.Key()))
 	w.chain.Mine()
 
-	w.round(t)
+	w.tick(t)
 
 	rows := w.rows(t)
 	if len(rows) != 1 {
@@ -463,7 +465,7 @@ func TestTick_WritesWhatItSawAheadOfFinalityWithoutCallingItFinal(t *testing.T) 
 	// The block the transfer is in becomes final, and the round that reaches
 	// it stamps the row it already wrote rather than writing a second one.
 	w.chain.Finalize(1)
-	w.round(t)
+	w.tick(t)
 	rows = w.rows(t)
 	if len(rows) != 1 {
 		t.Fatalf("the rounds wrote %d observations, want 1", len(rows))
@@ -480,7 +482,7 @@ func TestTick_WritesWhatItSawAheadOfFinalityWithoutCallingItFinal(t *testing.T) 
 func TestTick_CountsARoundThatCouldNotReadAheadOfFinalityAsARound(t *testing.T) {
 	t.Parallel()
 	w := watch(t)
-	w.round(t)
+	w.tick(t)
 	w.paid(t, w.attempt.Key())
 	w.chain.Mine()
 	before := w.position(t)
@@ -488,7 +490,7 @@ func TestTick_CountsARoundThatCouldNotReadAheadOfFinalityAsARound(t *testing.T) 
 	width := w.observer.network.Width
 
 	w.chain.FailAt("Keys", 2, chain.ErrTooWide)
-	w.round(t)
+	w.tick(t)
 
 	// What a provider refuses ahead of finality says nothing about the width:
 	// the range ends at the newest block, and a node behind the one that named
@@ -496,8 +498,8 @@ func TestTick_CountsARoundThatCouldNotReadAheadOfFinalityAsARound(t *testing.T) 
 	if w.observer.network.Width != width {
 		t.Errorf("the round reads %d blocks now, and it read %d", w.observer.network.Width, width)
 	}
-	if w.observer.word != observing {
-		t.Errorf("the network is %q, want %q", w.observer.word, observing)
+	if w.observer.said() != observing {
+		t.Errorf("the network is %q, want %q", w.observer.said(), observing)
 	}
 	if after := w.position(t); after.Height <= before.Height {
 		t.Errorf("the position is at %d, and the finalised range was read", after.Height)
@@ -525,7 +527,7 @@ func (w *watching) position(t *testing.T) Position {
 func TestTick_WritesNothingWhenTheFinalisedRangeCouldNotBeRead(t *testing.T) {
 	t.Parallel()
 	w := watch(t)
-	w.round(t)
+	w.tick(t)
 	w.paid(t, w.attempt.Key())
 	before := w.position(t)
 
@@ -551,7 +553,7 @@ func TestTick_WritesNothingWhenTheFinalisedRangeCouldNotBeRead(t *testing.T) {
 func TestTick_WritesNothingWhenThePositionMovedUnderIt(t *testing.T) {
 	t.Parallel()
 	w := watch(t)
-	w.round(t)
+	w.tick(t)
 	w.chain.Mine()
 	w.chain.Mine()
 	w.chain.Send(w.sending(w.attempt.Key()))
@@ -586,7 +588,7 @@ func TestTick_WritesNothingWhenThePositionMovedUnderIt(t *testing.T) {
 func TestTick_ReadsFromWhereThePositionWasPut(t *testing.T) {
 	t.Parallel()
 	w := watch(t)
-	w.round(t)
+	w.tick(t)
 	w.chain.Mine()
 	w.chain.Mine()
 	w.chain.Send(w.sending(w.attempt.Key()))
@@ -600,7 +602,7 @@ func TestTick_ReadsFromWhereThePositionWasPut(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w.round(t)
+	w.tick(t)
 
 	if at := w.position(t); at.Height != 3 {
 		t.Errorf("the position is at %d, and the round read from 2", at.Height)
@@ -616,7 +618,7 @@ func TestTick_ReadsFromWhereThePositionWasPut(t *testing.T) {
 func TestTick_WritesNothingWhenTheBlockAtThePositionCouldNotBeRead(t *testing.T) {
 	t.Parallel()
 	w := watch(t)
-	w.round(t)
+	w.tick(t)
 	w.paid(t, w.attempt.Key())
 	w.chain.Finalize(w.chain.Mine())
 	before := w.position(t)
@@ -654,10 +656,10 @@ func TestTick_MovesTheAttemptOfTheAccountWhoseKeyWasSpent(t *testing.T) {
 	t.Parallel()
 	w := watch(t)
 	other := w.otherAttempt(t)
-	w.round(t)
+	w.tick(t)
 	w.paid(t, w.attempt.Key())
 
-	w.round(t)
+	w.tick(t)
 
 	if got := w.status(t); got != payment.Confirming {
 		t.Errorf("the attempt of the account that was paid is %s", got)
@@ -687,10 +689,10 @@ func TestTick_KeepsTheKeyOutOfWhatItSaysItDid(t *testing.T) {
 	w := watch(t)
 	said := &strings.Builder{}
 	w.observer.log = slog.New(slog.NewJSONHandler(said, nil))
-	w.round(t)
+	w.tick(t)
 	w.paid(t, w.attempt.Key())
 
-	w.round(t)
+	w.tick(t)
 
 	if !strings.Contains(said.String(), w.payment.ID().String()) {
 		t.Fatalf("the round said nothing about the transfer it wrote down: %s", said)
@@ -708,10 +710,10 @@ func TestTick_TakesThePositionOnTheFirstRoundAndReadsNothingBelowIt(t *testing.T
 	w := watch(t)
 	w.paid(t, w.attempt.Key())
 
-	w.round(t)
+	w.tick(t)
 
-	if w.observer.word != noPosition {
-		t.Errorf("the network is %q, want %q", w.observer.word, noPosition)
+	if w.observer.said() != noPosition {
+		t.Errorf("the network is %q, want %q", w.observer.said(), noPosition)
 	}
 	if called := w.chain.Calls()["Keys"]; called != 0 {
 		t.Errorf("the chain was asked for keys %d times", called)
@@ -739,14 +741,14 @@ func TestTick_TakesThePositionOnTheFirstRoundAndReadsNothingBelowIt(t *testing.T
 func TestTick_ReadsNoMoreBlocksThanItsWidth(t *testing.T) {
 	t.Parallel()
 	w := watch(t)
-	w.round(t)
+	w.tick(t)
 	w.observer.network.Width = 2
 	w.chain.Mine()
 	w.chain.Mine()
 	w.chain.Send(w.sending(w.attempt.Key()))
 	w.chain.Finalize(w.chain.Mine())
 
-	w.round(t)
+	w.tick(t)
 
 	// The transfer is in the third block above the position, and two is what
 	// this round reads.
@@ -757,7 +759,7 @@ func TestTick_ReadsNoMoreBlocksThanItsWidth(t *testing.T) {
 		t.Errorf("the round wrote %+v out of a block it had not reached", rows)
 	}
 
-	w.round(t)
+	w.tick(t)
 	if rows := w.rows(t); len(rows) != 1 {
 		t.Fatalf("the rounds wrote %d observations, want 1", len(rows))
 	}
@@ -789,8 +791,8 @@ func TestTick_SaysWhyARoundThatReadNothingReadNothing(t *testing.T) {
 				t.Fatal("the round reported success without having read the chain")
 			}
 
-			if w.observer.word != c.word {
-				t.Errorf("the network is %q, want %q", w.observer.word, c.word)
+			if w.observer.said() != c.word {
+				t.Errorf("the network is %q, want %q", w.observer.said(), c.word)
 			}
 		})
 	}
@@ -802,13 +804,13 @@ func TestTick_SaysWhyARoundThatReadNothingReadNothing(t *testing.T) {
 func TestTick_WritesNothingForATransferAuthorisedSomeOtherWay(t *testing.T) {
 	t.Parallel()
 	w := watch(t)
-	w.round(t)
+	w.tick(t)
 	sent := w.sending(w.attempt.Key())
 	sent.Scheme = "somebody else's scheme"
 	w.chain.Send(sent)
 	w.chain.Finalize(w.chain.Mine())
 
-	w.round(t)
+	w.tick(t)
 
 	if rows := w.rows(t); len(rows) != 0 {
 		t.Errorf("the round wrote %+v", rows)
@@ -824,7 +826,7 @@ func TestTick_WritesNothingForATransferAuthorisedSomeOtherWay(t *testing.T) {
 func TestTick_ReadsNothingWhereARoundIsSetToReadNoBlocks(t *testing.T) {
 	t.Parallel()
 	w := watch(t)
-	w.round(t)
+	w.tick(t)
 	w.paid(t, w.attempt.Key())
 	before := w.position(t)
 	w.observer.network.Width = 0
@@ -851,14 +853,14 @@ func TestTick_ReadsWhatIsBehindAnAssetOnceForTheRound(t *testing.T) {
 	t.Parallel()
 	w := watch(t)
 	second := w.secondPayment(t)
-	w.round(t)
+	w.tick(t)
 	behind := &standing{Chain: w.chain, code: "0xabc"}
 	w.observer.network.Chain = behind
 	w.chain.Send(w.sending(w.attempt.Key()))
 	w.chain.Send(w.paying(second, w.attempt2.Key()))
 	w.chain.Finalize(w.chain.Mine())
 
-	w.round(t)
+	w.tick(t)
 
 	if behind.calls != 1 {
 		t.Errorf("the chain was asked what is behind the asset %d times", behind.calls)
@@ -895,12 +897,12 @@ func (s *standing) Implementation(context.Context, string) (string, error) {
 func TestTick_ReadsOneTransactionForOneKey(t *testing.T) {
 	t.Parallel()
 	w := watch(t)
-	w.round(t)
+	w.tick(t)
 	w.chain.Send(w.sending(w.attempt.Key()))
 	w.chain.Send(w.sending(w.attempt.Key()))
 	w.chain.Finalize(w.chain.Mine())
 
-	w.round(t)
+	w.tick(t)
 
 	if called := w.chain.Calls()["Receipt"]; called != 1 {
 		t.Errorf("the chain was asked for %d receipts, and one key was spent", called)
@@ -940,7 +942,7 @@ func TestTick_ComparesThePositionWithWhatTheHeadAlreadySaid(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			w := watch(t)
-			w.round(t)
+			w.tick(t)
 			for range c.ahead {
 				w.chain.Mine()
 			}
@@ -949,13 +951,13 @@ func TestTick_ComparesThePositionWithWhatTheHeadAlreadySaid(t *testing.T) {
 			}
 			before := w.chain.Calls()["Block"]
 
-			w.round(t)
+			w.tick(t)
 
 			if asked := w.chain.Calls()["Block"] - before; asked != c.asks {
 				t.Errorf("the chain was asked for %d blocks, want %d", asked, c.asks)
 			}
-			if w.observer.word != observing {
-				t.Errorf("the network is %q, want %q", w.observer.word, observing)
+			if w.observer.said() != observing {
+				t.Errorf("the network is %q, want %q", w.observer.said(), observing)
 			}
 			if at := w.position(t); at.Height != c.ahead {
 				t.Errorf("the position is at %d, want %d", at.Height, c.ahead)
@@ -979,7 +981,7 @@ func TestTick_StopsWhereTheChainNoLongerHoldsTheBlockThePositionNames(t *testing
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			w := watch(t)
-			w.round(t)
+			w.tick(t)
 			w.paid(t, w.attempt.Key())
 			for range ahead {
 				w.chain.Finalize(w.chain.Mine())
@@ -990,10 +992,10 @@ func TestTick_StopsWhereTheChainNoLongerHoldsTheBlockThePositionNames(t *testing
 				t.Fatal(err)
 			}
 
-			w.round(t)
+			w.tick(t)
 
-			if w.observer.word != finalizedChanged {
-				t.Errorf("the network is %q, want %q", w.observer.word, finalizedChanged)
+			if w.observer.said() != finalizedChanged {
+				t.Errorf("the network is %q, want %q", w.observer.said(), finalizedChanged)
 			}
 			if at := w.position(t); at != elsewhere {
 				t.Errorf("the position moved to %+v", at)
@@ -1011,9 +1013,9 @@ func TestTick_StopsWhereTheChainNoLongerHoldsTheBlockThePositionNames(t *testing
 			if _, _, err := w.observer.cursors.Set(t.Context(), network, at(block), time.Now()); err != nil {
 				t.Fatal(err)
 			}
-			w.round(t)
-			if w.observer.word != observing {
-				t.Errorf("the network is %q after the position was put back", w.observer.word)
+			w.tick(t)
+			if w.observer.said() != observing {
+				t.Errorf("the network is %q after the position was put back", w.observer.said())
 			}
 			if rows := w.rows(t); len(rows) != 1 {
 				t.Errorf("the round wrote %+v", rows)
@@ -1029,7 +1031,7 @@ func TestTick_StopsWhereTheChainNoLongerHoldsTheBlockThePositionNames(t *testing
 func TestTick_WaitsWhereTheFinalBlockIsBelowThePosition(t *testing.T) {
 	t.Parallel()
 	w := watch(t)
-	w.round(t)
+	w.tick(t)
 	for range 4 {
 		w.chain.Mine()
 	}
@@ -1045,10 +1047,10 @@ func TestTick_WaitsWhereTheFinalBlockIsBelowThePosition(t *testing.T) {
 	}
 	before, asked := w.touched(t), w.chain.Calls()
 
-	w.round(t)
+	w.tick(t)
 
-	if w.observer.word != finalizedBehind {
-		t.Errorf("the network is %q, want %q", w.observer.word, finalizedBehind)
+	if w.observer.said() != finalizedBehind {
+		t.Errorf("the network is %q, want %q", w.observer.said(), finalizedBehind)
 	}
 	calls := w.chain.Calls()
 	if calls["Keys"] != asked["Keys"] || calls["Block"] != asked["Block"] {
@@ -1060,10 +1062,10 @@ func TestTick_WaitsWhereTheFinalBlockIsBelowThePosition(t *testing.T) {
 
 	// The provider catches up with what it was given, and the rounds carry on.
 	w.chain.Finalize(4)
-	w.round(t)
+	w.tick(t)
 
-	if w.observer.word != observing {
-		t.Errorf("the network is %q, want %q", w.observer.word, observing)
+	if w.observer.said() != observing {
+		t.Errorf("the network is %q, want %q", w.observer.said(), observing)
 	}
 }
 
@@ -1073,12 +1075,12 @@ func TestTick_WaitsWhereTheFinalBlockIsBelowThePosition(t *testing.T) {
 func TestTick_MovesARecordToTheBlockATransactionCameBackIn(t *testing.T) {
 	t.Parallel()
 	w := watch(t)
-	w.round(t)
+	w.tick(t)
 	w.chain.Mine()
 	w.chain.Send(w.sending(w.attempt.Key()))
 	w.chain.Mine()
 
-	w.round(t)
+	w.tick(t)
 
 	rows := w.rows(t)
 	if len(rows) != 1 || rows[0].Height != 2 {
@@ -1087,7 +1089,7 @@ func TestTick_MovesARecordToTheBlockATransactionCameBackIn(t *testing.T) {
 
 	// The chain drops both blocks and puts the transaction in one of its own.
 	w.chain.Reorg(1, rows[0].Tx)
-	w.round(t)
+	w.tick(t)
 
 	moved := w.rows(t)
 	if len(moved) != 1 {
@@ -1104,11 +1106,11 @@ func TestTick_MovesARecordToTheBlockATransactionCameBackIn(t *testing.T) {
 func TestTick_MarksWhatWentAwayAndTakesTheAttemptBack(t *testing.T) {
 	t.Parallel()
 	w := watch(t)
-	w.round(t)
+	w.tick(t)
 	w.chain.Mine()
 	w.chain.Send(w.sending(w.attempt.Key()))
 	w.chain.Mine()
-	w.round(t)
+	w.tick(t)
 	if got := w.status(t); got != payment.Confirming {
 		t.Fatalf("the attempt is %s, and a transfer was seen ahead of finality", got)
 	}
@@ -1121,7 +1123,7 @@ func TestTick_MarksWhatWentAwayAndTakesTheAttemptBack(t *testing.T) {
 	w.chain.Reorg(1)
 	w.chain.Mine()
 	w.chain.Finalize(2)
-	w.round(t)
+	w.tick(t)
 
 	rows := w.rows(t)
 	if len(rows) != 1 {
@@ -1138,7 +1140,7 @@ func TestTick_MarksWhatWentAwayAndTakesTheAttemptBack(t *testing.T) {
 	// pays the payment.
 	w.chain.Send(w.sending(w.attempt.Key()))
 	w.chain.Finalize(w.chain.Mine())
-	w.round(t)
+	w.tick(t)
 
 	if got := w.status(t); got != payment.Confirming {
 		t.Errorf("the attempt is %s after the transfer came back", got)
@@ -1158,7 +1160,7 @@ func TestTick_MarksWhatWentAwayAndTakesTheAttemptBack(t *testing.T) {
 func TestTick_SaysOnceThatTheChainNoLongerHoldsThePosition(t *testing.T) {
 	t.Parallel()
 	w := watch(t)
-	w.round(t)
+	w.tick(t)
 	said := &strings.Builder{}
 	w.observer.log = slog.New(slog.NewJSONHandler(said, nil))
 	if _, _, err := w.observer.cursors.Set(t.Context(), payment.Network(w.observer.network.Name),
@@ -1167,13 +1169,132 @@ func TestTick_SaysOnceThatTheChainNoLongerHoldsThePosition(t *testing.T) {
 	}
 
 	for range 3 {
-		w.round(t)
+		w.tick(t)
 	}
 
-	if w.observer.word != finalizedChanged {
-		t.Fatalf("the network is %q", w.observer.word)
+	if w.observer.said() != finalizedChanged {
+		t.Fatalf("the network is %q", w.observer.said())
 	}
 	if count := strings.Count(said.String(), "no longer holds"); count != 1 {
 		t.Errorf("the rounds said it %d times, want once", count)
 	}
+}
+
+// What a deployment is asked about is one word for the network and one for
+// each asset. The names are the document's, because a reference names one
+// token on four chains and would say which of them nothing.
+func TestWords_AreTheNetworkAndTheAssetsByTheNameTheDocumentGives(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	w.tick(t)
+	w.tick(t)
+
+	network, assets := w.observer.Words()
+
+	if network != observing {
+		t.Errorf("the network is %q, want %q", network, observing)
+	}
+	if want := map[string]string{"jpyc": unchanged, "other": unchanged}; !reflect.DeepEqual(assets, want) {
+		t.Errorf("the assets are %v, want %v", assets, want)
+	}
+}
+
+// A token that says its code was replaced is one whose behaviour nobody here
+// has read. The round carries on, because what it saw is still what the chain
+// says happened, and the word is what says to go and look.
+func TestWords_SayAnAssetChangedWhereTheChainSaidItsCodeWas(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	w.tick(t)
+	w.chain.Send(w.sending(w.attempt.Key()))
+	w.chain.Upgrade(w.asset.Reference())
+	w.chain.Finalize(w.chain.Mine())
+
+	w.tick(t)
+
+	_, assets := w.observer.Words()
+	if want := map[string]string{"jpyc": changed, "other": unchanged}; !reflect.DeepEqual(assets, want) {
+		t.Errorf("the assets are %v, want %v", assets, want)
+	}
+	if got := w.status(t); got != payment.Confirming {
+		t.Errorf("the attempt is %s, and the transfer was seen all the same", got)
+	}
+}
+
+// Every network of a deployment answers together, and the asset names are the
+// document's, so two networks carrying one token still say which is which.
+func TestWords_OfEveryObserverComeBackTogether(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	elsewhere := watch(t)
+	elsewhere.observer.network.Name = "elsewhere"
+	elsewhere.observer.assets = map[string]string{"jpyc-elsewhere": unchanged}
+	w.tick(t)
+	w.tick(t)
+
+	networks, assets := Observers{w.observer, elsewhere.observer}.Words()
+
+	if want := map[string]string{"local": observing, "elsewhere": unreachable}; !reflect.DeepEqual(networks, want) {
+		t.Errorf("the networks are %v, want %v", networks, want)
+	}
+	want := map[string]string{"jpyc": unchanged, "other": unchanged, "jpyc-elsewhere": unchanged}
+	if !reflect.DeepEqual(assets, want) {
+		t.Errorf("the assets are %v, want %v", assets, want)
+	}
+}
+
+// The words are written by the round and read by whoever is answering
+// somebody else's question about this deployment, which is not the round's
+// goroutine.
+func TestWords_AreReadWhileARoundIsWritingThem(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	w.tick(t)
+	w.paid(t, w.attempt.Key())
+
+	var err error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		err = w.observer.tick(t.Context())
+	}()
+	for range 200 {
+		w.observer.Words()
+	}
+	<-done
+
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// What a provider is asked is the same request every round. The assets are
+// held under the names a document gave them, and where a map puts those names
+// is not something a request should show.
+func TestTick_AsksAboutTheAssetsInOneOrder(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	asked := &asking{Chain: w.chain}
+	w.observer.network.Chain = asked
+	w.tick(t)
+	w.paid(t, w.attempt.Key())
+
+	w.tick(t)
+
+	want := []string{w.asset.Reference(), w.other.Reference()}
+	slices.Sort(want)
+	if !slices.Equal(asked.assets, want) {
+		t.Errorf("the round asked about %v, want %v", asked.assets, want)
+	}
+}
+
+// asking is a chain that remembers which assets it was asked about.
+type asking struct {
+	chain.Chain
+	assets []string
+}
+
+func (a *asking) Keys(ctx context.Context, first, last uint64, assets []string) (chain.Scan, error) {
+	a.assets = append([]string(nil), assets...)
+	return a.Chain.Keys(ctx, first, last, assets)
 }

@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -19,7 +22,8 @@ const (
 	// observing is a round that read the finalised range and wrote what it
 	// found.
 	observing = "observing"
-	// noPosition is a network nothing has been read on yet.
+	// noPosition is a network no round has finished on, whether or not a
+	// position has been written down for it.
 	noPosition = "no-position"
 	// unreachable is a provider that did not answer.
 	unreachable = "unreachable"
@@ -38,6 +42,13 @@ const (
 	finalizedChanged = "finalized-changed"
 )
 
+// The words an asset carries: whether the code behind it is still the code
+// that was behind it when this instance started reading.
+const (
+	unchanged = "unchanged"
+	changed   = "changed"
+)
+
 // Network is one network as the observer reads it.
 type Network struct {
 	// Name is what the configuration document calls the network, which is the
@@ -48,9 +59,13 @@ type Network struct {
 	Want string
 	// Chain is what the network is read through.
 	Chain chain.Chain
-	// Assets are the tokens payments on this network arrive in. A transfer of
-	// anything else is not read.
-	Assets []payment.Asset
+	// Assets are the tokens payments on this network arrive in, by the name
+	// the document gives each. A transfer of anything else is not read.
+	//
+	// By name, because a name is what anybody is told about an asset: one
+	// token has one reference on four chains, and a reference would say which
+	// of them nothing.
+	Assets map[string]payment.Asset
 	// Poll is how long to wait between rounds.
 	Poll time.Duration
 	// Width is the most blocks one round reads.
@@ -79,21 +94,94 @@ type Observer struct {
 	store   *payment.Postgres
 	log     *slog.Logger
 	now     func() time.Time
+	// named is the document's name for each asset, by the reference the chain
+	// writes it as. A chain says things about references, and whoever asks
+	// after this deployment is answered in names.
+	named map[string]string
 
-	// word is what the last round made of the network, in the one word
-	// whoever asks after this deployment is given.
-	word string
+	// What a round leaves behind is read by whoever is answering somebody
+	// else's question about this deployment, which is another goroutine.
+	mu     sync.Mutex
+	word   string
+	assets map[string]string
 }
 
 // New returns an observer of one network, reading and writing through pool.
 func New(n Network, pool *pgxpool.Pool, store *payment.Postgres, log *slog.Logger, now func() time.Time) *Observer {
+	named := make(map[string]string, len(n.Assets))
+	assets := make(map[string]string, len(n.Assets))
+	for name, asset := range n.Assets {
+		named[asset.Reference()] = name
+		assets[name] = unchanged
+	}
 	return &Observer{
+		// Nothing has been read from this network yet, and a network nothing
+		// has been read from is not one to say anything better about.
+		word:    unreachable,
 		network: n,
 		pool:    pool,
 		cursors: NewCursors(pool),
 		store:   store,
 		log:     log,
 		now:     now,
+		named:   named,
+		assets:  assets,
+	}
+}
+
+// Words are what this network and its assets have come to, in the one word
+// each that whoever asks after the deployment is given.
+func (o *Observer) Words() (network string, assets map[string]string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	assets = make(map[string]string, len(o.assets))
+	maps.Copy(assets, o.assets)
+	return o.word, assets
+}
+
+// Observers are the observers of one deployment, one to a network.
+type Observers []*Observer
+
+// Words are what every network of the deployment and every asset on them have
+// come to. Asset names are the document's and belong to one network each, so
+// nothing here can be two things at once.
+func (s Observers) Words() (networks, assets map[string]string) {
+	networks, assets = make(map[string]string, len(s)), map[string]string{}
+	for _, o := range s {
+		network, own := o.Words()
+		networks[o.network.Name] = network
+		maps.Copy(assets, own)
+	}
+	return networks, assets
+}
+
+// says puts the word a round came to where it can be read.
+func (o *Observer) says(word string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.word = word
+}
+
+// said is the word the last round came to.
+func (o *Observer) said() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.word
+}
+
+// replaced says the code behind an asset is no longer the code that was behind
+// it. What a scan reports is a reference, and the word is kept under the name
+// the document gave it.
+func (o *Observer) replaced(references []string) {
+	if len(references) == 0 {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for _, reference := range references {
+		if name, ok := o.named[reference]; ok {
+			o.assets[name] = changed
+		}
 	}
 }
 
@@ -131,7 +219,7 @@ func (o *Observer) tick(ctx context.Context) (err error) {
 		// The first round reads nothing. An attempt is issued against the
 		// position of the moment, so nothing below the block this starts at
 		// was ever payable.
-		o.word = noPosition
+		o.says(noPosition)
 		return o.cursors.Init(ctx, network, at(head.Final), o.now())
 	}
 
@@ -139,7 +227,7 @@ func (o *Observer) tick(ctx context.Context) (err error) {
 	// nothing to add this round. It is not behind for long, and it is not
 	// something to act on, so the round waits without writing.
 	if head.Final.Height < from.Height {
-		o.word = finalizedBehind
+		o.says(finalizedBehind)
 		return nil
 	}
 	// Reading on from a position the chain no longer holds would be reading a
@@ -154,11 +242,11 @@ func (o *Observer) tick(ctx context.Context) (err error) {
 		// Once, on the way into the state. The rounds after it find the same
 		// thing until somebody moves the position, and saying so every time
 		// would bury what else the deployment has to say.
-		if o.word != finalizedChanged {
+		if o.said() != finalizedChanged {
 			o.log.Warn("the chain no longer holds the block the position names",
 				"network", o.network.Name, "height", from.Height)
 		}
-		o.word = finalizedChanged
+		o.says(finalizedChanged)
 		return nil
 	}
 
@@ -172,7 +260,7 @@ func (o *Observer) tick(ctx context.Context) (err error) {
 	} else if err := o.stood(ctx, network, from); err != nil {
 		return err
 	}
-	o.word = observing
+	o.says(observing)
 
 	// Ahead of finality nothing moves the position. What is found there is
 	// written as evidence and read again when the finalised range reaches it,
@@ -189,21 +277,21 @@ func (o *Observer) tick(ctx context.Context) (err error) {
 func (o *Observer) standing(ctx context.Context) (chain.Head, error) {
 	identity, err := o.network.Chain.Identity(ctx)
 	if err != nil {
-		o.word = unreachable
+		o.says(unreachable)
 		return chain.Head{}, err
 	}
 	// A chain that is not the one the document names is one whose blocks say
 	// nothing about these payments, so nothing of it is read or written.
 	if o.network.Want != "" && identity != o.network.Want {
-		o.word = chainMismatch
+		o.says(chainMismatch)
 		return chain.Head{}, fmt.Errorf("the chain calls itself %s, and the document names %s",
 			identity, o.network.Want)
 	}
 	head, err := o.network.Chain.Head(ctx)
 	if err != nil {
-		o.word = unreachable
+		o.says(unreachable)
 		if errors.Is(err, chain.ErrNoFinal) {
-			o.word = noFinalized
+			o.says(noFinalized)
 		}
 		return chain.Head{}, err
 	}
@@ -317,6 +405,7 @@ func (o *Observer) seen(ctx context.Context, network payment.Network, first, las
 	if err != nil {
 		return nil, err
 	}
+	o.replaced(scan.Changed)
 	if len(scan.Consumed) == 0 {
 		return nil, nil
 	}
@@ -433,6 +522,9 @@ func (o *Observer) references() []string {
 	for _, asset := range o.network.Assets {
 		out = append(out, asset.Reference())
 	}
+	// In one order, so that what a provider is asked does not depend on where
+	// a map put things.
+	slices.Sort(out)
 	return out
 }
 

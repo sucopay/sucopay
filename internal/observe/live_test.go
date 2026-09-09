@@ -92,7 +92,7 @@ func polygon(t *testing.T, reading chain.Chain) (*Observer, *payment.Postgres) {
 		Name:   "polygon",
 		Want:   "137",
 		Chain:  reading,
-		Assets: []payment.Asset{token(t, jpycOnPolygon, "JPYC")},
+		Assets: map[string]payment.Asset{"jpyc": token(t, jpycOnPolygon, "JPYC")},
 		Poll:   3 * time.Second,
 		Width:  50,
 	}, pool.Conns(), store, slog.New(slog.DiscardHandler), time.Now), store

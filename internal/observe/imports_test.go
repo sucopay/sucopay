@@ -16,7 +16,8 @@ import (
 // and writes rows, and a chain's own library reaching it would put the shape
 // of one chain into what every network is read with.
 var allowed = []string{
-	"context", "crypto/rand", "encoding/hex", "errors", "fmt", "log/slog", "math", "time",
+	"context", "crypto/rand", "encoding/hex", "errors", "fmt", "log/slog", "maps", "math",
+	"slices", "sync", "time",
 	"github.com/jackc/pgx/v5", "github.com/jackc/pgx/v5/pgxpool",
 	"github.com/sucopay/sucopay/internal/adapter/chain",
 	"github.com/sucopay/sucopay/internal/payment",

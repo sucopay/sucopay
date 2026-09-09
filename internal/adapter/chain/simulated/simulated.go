@@ -36,6 +36,8 @@ type Chain struct {
 	blocks []block
 	// staged are the transfers waiting for the next block.
 	staged []chain.Transfer
+	// changing are the assets whose code is replaced in the next block.
+	changing []string
 	// final is the height Finalize was last given.
 	final uint64
 	// made counts the blocks ever made, so that two blocks at one height
@@ -61,6 +63,8 @@ type failure struct {
 type block struct {
 	block     chain.Block
 	transfers []chain.Transfer
+	// changed are the assets whose code was replaced in this block.
+	changed []string
 }
 
 var _ chain.Chain = (*Chain)(nil)
@@ -93,6 +97,16 @@ func (c *Chain) Send(t chain.Transfer) {
 	t.Tx = fmt.Sprintf("tx%d", c.sent)
 	t.Position = 0
 	c.staged = append(c.staged, t)
+}
+
+// Upgrade replaces the code behind an asset from the next block on, the way an
+// upgrade of a proxy does: the block carries the fact, and a scan over it says
+// the asset changed. What [Chain.Implementation] answers does not move, because
+// nothing here stands in front of anything else to begin with.
+func (c *Chain) Upgrade(asset string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.changing = append(c.changing, asset)
 }
 
 // Finalize makes the block at a height the final one. Every block at or below
@@ -217,6 +231,11 @@ func (c *Chain) Keys(_ context.Context, first, last uint64, assets []string) (ch
 				scan.Consumed = append(scan.Consumed, chain.Consumed{Key: t.Key, Tx: t.Tx})
 			}
 		}
+		for _, asset := range c.blocks[height].changed {
+			if slices.Contains(assets, asset) && !slices.Contains(scan.Changed, asset) {
+				scan.Changed = append(scan.Changed, asset)
+			}
+		}
 	}
 	return scan, nil
 }
@@ -286,6 +305,8 @@ func (c *Chain) mine(transfers []chain.Transfer) uint64 {
 	for i := range transfers {
 		transfers[i].Block = made
 	}
-	c.blocks = append(c.blocks, block{block: made, transfers: transfers})
+	changed := c.changing
+	c.changing = nil
+	c.blocks = append(c.blocks, block{block: made, transfers: transfers, changed: changed})
 	return height
 }

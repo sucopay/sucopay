@@ -3,6 +3,7 @@ package simulated_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -358,5 +359,37 @@ func TestFailAt_IsSpentOnTheCallItWasHeldFor(t *testing.T) {
 	}
 	if _, err := c.Keys(t.Context(), 0, 0, nil); err != nil {
 		t.Errorf("the third call gave %v, and the failure was spent", err)
+	}
+}
+
+// A proxy whose code is replaced says so in the block it happened in, and a
+// scan over that block is where a reader finds out.
+func TestUpgrade_IsReportedByTheScanOverTheBlockItHappenedIn(t *testing.T) {
+	t.Parallel()
+	c := simulated.New()
+	c.Upgrade("0xtoken")
+	at := c.Mine()
+
+	scan, err := c.Keys(t.Context(), at, at, []string{"0xtoken"})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"0xtoken"}; !slices.Equal(scan.Changed, want) {
+		t.Errorf("the scan says %v changed, want %v", scan.Changed, want)
+	}
+	after, err := c.Keys(t.Context(), c.Mine(), at+1, []string{"0xtoken"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Changed) != 0 {
+		t.Errorf("the block after it says %v changed", after.Changed)
+	}
+	nobody, err := c.Keys(t.Context(), at, at, []string{"0xelse"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nobody.Changed) != 0 {
+		t.Errorf("a scan of another asset says %v changed", nobody.Changed)
 	}
 }
