@@ -208,12 +208,12 @@ const useInterval = time.Hour
 //
 // c is what FindByToken returned, and its LastUsedAt is what decides: within
 // useInterval of it, nothing is written and the database is not asked. The
-// row is not read again to decide. The statement's where clause holds the
-// same hour, for the N workers of one client that read an old value in the
-// same moment: the second and later updates wait on the row lock, re-read
-// the row the winner wrote, match nothing, and return. The cast in that
-// clause is for the parser, which would otherwise read $2 beside an
-// interval as one.
+// row is not read again to decide. The statement is given the same interval,
+// for the N workers of one client that read an old value in the same moment:
+// the second and later updates wait on the row lock, re-read the row the
+// winner wrote, match nothing, and return. Both parameters are cast, because
+// the parser takes a parameter for whatever stands beside it, and here each
+// of the two stands beside the other.
 //
 // An update that matches no row is the usual outcome, and nothing tells it
 // from an ID no row has. The ID came out of FindByToken a moment ago.
@@ -232,8 +232,8 @@ func (s *Postgres) RecordUse(ctx context.Context, c Credential, now time.Time) e
 		update credentials
 		   set last_used_at = $2
 		 where id = $1
-		   and (last_used_at is null or last_used_at < $2::timestamptz - interval '1 hour')`,
-		c.ID, now); err != nil {
+		   and (last_used_at is null or last_used_at < $2::timestamptz - $3::interval)`,
+		c.ID, now, useInterval.String()); err != nil {
 		return fmt.Errorf("credential %s: %w", c.ID, err)
 	}
 	return nil
