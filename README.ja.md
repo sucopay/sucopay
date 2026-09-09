@@ -1,7 +1,7 @@
 <h1 align="center">suco Pay</h1>
 
 <p align="center">
-  <b>ステーブルコイン決済のためのオープンソース決済基盤</b>
+  <b>ステーブルコイン決済のオープンソース基盤</b>
 </p>
 
 <p align="center">
@@ -19,63 +19,77 @@
 ---
 
 Payment を作成し、オンチェーンで受け取り、確定を判定し、返金し、Webhook を受け取ります。
-suco Pay は自社のインフラで動作します。資金は顧客のウォレットから加盟店のウォレットへ直接
-移動します。
 
-> **開発初期です。** 現時点であるのは CLI だけです。今できることとできないことは
+suco Pay は、自社のインフラで動かすソフトウェアです。鍵を預かりません。手数料を取りません。
+資金は顧客のウォレットから加盟店のウォレットへ、間に何も挟まずに移動します。suco Pay がするのは、
+チェーンを見て、届いたと伝えることです。
+
+> **開発初期です。** `succeeded` になる payment はまだありません。送金は見つかり、突き合わされ、
+> 記録されますが、決済として確定したと判断する部分がまだありません。今できることとできないことは
 > [ROADMAP.ja.md](ROADMAP.ja.md) にあります。
 
-## インストール
+## はじめかた
+
+Go 1.26 以上と、向ける先の PostgreSQL が要ります。
 
 ```bash
 git clone https://github.com/sucopay/sucopay && cd sucopay
 go build -o suco ./cmd/suco
-./suco init   # 下の export の行を、書き出した鍵ファイルの名前入りで印字します
-export SUCO_CREDENTIALS_KEY="$(cat -- 'credentials-<key_id>.key')"
+./suco init
+export SUCO_CREDENTIALS_KEY="$(cat -- 'credentials-<key_id>.key')"   # init がこの行を印字します
 ./suco doctor
 ./suco serve
 ```
 
-`suco init` が `suco.yaml` と鍵のファイルを書き出します。`suco.yaml` は読んでコミットできる
-設定で、鍵のファイルは所有者だけが読めます。資格情報は `suco` が鍵を使って保存します。`suco.yaml` には
-鍵を読む環境変数の名前だけが入り、鍵の値は入りません。その環境変数は `suco` を動かすシェルで
-設定してください。`suco doctor` は解決後の設定値と、それぞれの出所を表示します。秘密のキーについては、値ではなく設定されて
-いるかどうかだけが出ます。`suco serve` は `http://localhost:7826` で待ち受けます。`/healthz` はプロセスが動いていることを、
-`/readyz` は必要なものに届いているかと、有効な資格情報に書き込みできるものがあるかを答えます。
-走っている間に起きたことは stdout に書きます。
-データベースを設定した配備では、`suco credential new --read-only` か `--read-write` が API の
-資格情報を 1 本作り、トークンを所有者だけが読めるファイルへ書きます。`suco credential list` は
-有効な資格情報を最終使用の新しい順に表示し、`suco credential revoke <id>` は 1 本を失効させます。
+- `suco init` が、読んでコミットできる `suco.yaml` と、所有者だけが読める鍵のファイルを書き出し
+  ます。資格情報はその鍵で保存し、文書には鍵の値ではなく、鍵を読む環境変数の名前が入ります。
+- `suco doctor` が、解決した設定と、それぞれの値の出所と、インスタンスが何に届くかを印字します。
+  秘密の設定については、設定されているかどうかだけを言います。
+- `suco serve` が `http://localhost:7826` で待ち受け、していることを stdout に書きます。
+  `/healthz` はプロセスが動いていることを、`/readyz` は仕事ができるかを答えます。
 
-Payment を作るには、それが届くネットワークと、その資産を `suco.yaml` に載せてください。
+## Payment の受け取り
+
+payment が届く network と、その資産を書きます。
 
 ```yaml
 networks:
-  local:
-    kind: simulated
+  polygon:
+    kind: evm
+    chain_id: 137
+    rpc: ${SUCO_POLYGON_RPC_URL}
 assets:
   jpyc:
-    network: local
-    reference: "0x0000000000000000000000000000000000000001"
+    network: polygon
+    reference: "0xE7C3D8C9a439feDe00D2600032D5dB0Be71C3c29"
     symbol: JPYC
     decimals: 18
 ```
 
-ネットワークの `kind` は今のところ `simulated` だけを受け付けます。チェーンを見るものはまだ無いので、
-Payment が `succeeded` になることはありません。`suco asset accept <name> <address>` は、`suco.yaml` に
-その名前で載せた資産の支払いを受け取るアドレスを記録します。`suco asset list` は `suco.yaml` に載せた
-資産をすべて表示し、受け付けているものにはアドレスを、まだのものには `not accepted` を添えます。
-`suco payment await <id>` は Payment を支払える状態にし、支払者が署名する 7 つの値を出します。
-支払い画面ができるまでの手段で、出力は実行した端末にとどめてください。加盟店のサーバは
-[docs/api.ja.md](docs/api.ja.md) の API で Payment を作り、読みます。
+データベースを設定したうえで、次を実行します。
 
-インストールスクリプトとビルド済みバイナリは最初のリリースで用意します。上の一覧にある機能は
-まだありません。
+```bash
+./suco credential new --read-write          # API の資格情報のファイルを書き出します
+./suco asset accept jpyc 0xYourWalletHere   # jpyc の payment を払う先
+./suco payment await <id>                   # 支払い画面ができるまでの、署名する値の印字
+```
+
+加盟店のサーバは API で payment を作り、読み戻します。`suco serve` はチェーンを周ごとに読み、
+それに応える送金を記録します。
+
+## ドキュメント
+
+| | |
+|---|---|
+| [docs/api.ja.md](docs/api.ja.md) | 加盟店のサーバが呼ぶ HTTP API |
+| [docs/configuration.ja.md](docs/configuration.ja.md) | `suco.yaml` が取る設定の全て |
+| [docs/operating.ja.md](docs/operating.ja.md) | `/readyz`、`suco doctor`、止まったインスタンスの直し方 |
+| [ROADMAP.ja.md](ROADMAP.ja.md) | 今できることとできないこと |
 
 ## コントリビュート
 
-[CONTRIBUTING.ja.md](CONTRIBUTING.ja.md) を参照してください。
-脆弱性の報告は [SECURITY.ja.md](SECURITY.ja.md) の手順に従ってください。
+[CONTRIBUTING.ja.md](CONTRIBUTING.ja.md) を読んでください。セキュリティの問題は
+[SECURITY.ja.md](SECURITY.ja.md) の手順で報告してください。
 
 ## ライセンス
 

@@ -18,7 +18,7 @@ while IFS= read -r doc; do
 done < <(find . -name '*.md' -not -path './.git/*')
 
 # The commands each roadmap names are the commands suco dispatches. The usage
-# text and the dispatch already read one list in Go; a README is the third
+# text and the dispatch already read one list in Go; a roadmap is the third
 # place a command name can be written.
 #
 # This is the line the check reads. Rewording it in a roadmap is a change to
@@ -27,7 +27,6 @@ done < <(find . -name '*.md' -not -path './.git/*')
 list='^- \[[ x]\] CLI: '
 
 suco="$(mktemp)"
-trap 'rm -f "$suco"' EXIT
 go build -o "$suco" ./cmd/suco
 
 # help is a command but not a feature, so the READMEs leave it out. The first
@@ -44,6 +43,45 @@ for roadmap in ROADMAP.md ROADMAP.ja.md; do
   documented="$(printf '%s' "$line" | grep -oE '`[a-z]+`' | tr -d '`' | sort | tr '\n' ' ' || true)"
   [ "$documented" = "$dispatched" ] ||
     note "$roadmap lists commands [$documented] but suco dispatches [$dispatched]"
+done
+
+# The suco.yaml each README shows is one suco accepts. A reader copies it, so a
+# key renamed in the code and not there sends them to a refusal on their first
+# run.
+#
+# doctor is what reads it. Its exit status is about what it reached, which
+# needs a database and a provider; that a document resolved at all is the
+# report it prints before going looking, so the report is what this reads.
+work="$(mktemp -d)"
+trap 'rm -f "$suco"; rm -rf "$work"' EXIT
+cat >"$work/head.yaml" <<'YAML'
+listen:
+  port: 7826
+credentials:
+  key: ${SUCO_CREDENTIALS_KEY}
+  key_id: "0123456789abcdef"
+database:
+  managed: false
+  url: ${SUCO_DATABASE_URL}
+YAML
+
+for readme in README.md README.ja.md; do
+  # The one fenced yaml block each README carries, which is the example.
+  awk '/^```yaml$/{inside=1; next} /^```$/{inside=0} inside' "$readme" >"$work/example.yaml"
+  if [ ! -s "$work/example.yaml" ]; then
+    note "$readme has no yaml example for scripts/check-docs.sh to check"
+    continue
+  fi
+  cat "$work/head.yaml" "$work/example.yaml" >"$work/suco.yaml"
+  report="$(cd "$work" && SUCO_CONFIG=suco.yaml \
+    SUCO_CREDENTIALS_KEY=0000000000000000000000000000000000000000000000000000000000000000 \
+    SUCO_DATABASE_URL=postgres://nobody@127.0.0.1:1/nothing \
+    SUCO_POLYGON_RPC_URL=http://127.0.0.1:1/rpc \
+    "$suco" doctor 2>&1 || true)"
+  case "$report" in
+    *assets.jpyc.reference*) ;;
+    *) note "$readme shows a suco.yaml that suco does not accept:"$'\n'"$report" ;;
+  esac
 done
 
 if [ "$fail" -eq 0 ]; then

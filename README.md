@@ -19,58 +19,73 @@
 ---
 
 Create a payment, get paid on chain, know when it's final, refund it, and get a webhook.
-suco Pay runs on your own infrastructure. Funds go straight from the customer's wallet to yours.
 
-> **Pre-alpha.** Only the CLI exists so far. [ROADMAP.md](ROADMAP.md) says what works today
-> and what does not.
+suco Pay is software you run on your own infrastructure. It holds no keys and charges no fee.
+A payment goes from the customer's wallet to yours with nothing in between; what suco Pay does is
+watch the chain and tell you it arrived.
+
+> **Pre-alpha.** No payment reaches `succeeded` yet: a transfer is seen, matched and recorded, and
+> deciding it has settled is not built. [ROADMAP.md](ROADMAP.md) says what works today and what
+> does not.
 
 ## Getting started
+
+Requires Go 1.26+ and a PostgreSQL to point it at.
 
 ```bash
 git clone https://github.com/sucopay/sucopay && cd sucopay
 go build -o suco ./cmd/suco
-./suco init   # prints the export line below, with the name of the key file it wrote
-export SUCO_CREDENTIALS_KEY="$(cat -- 'credentials-<key_id>.key')"
+./suco init
+export SUCO_CREDENTIALS_KEY="$(cat -- 'credentials-<key_id>.key')"   # init prints this line
 ./suco doctor
 ./suco serve
 ```
 
-`suco init` writes a `suco.yaml` you can read and commit, and a key file only its owner can read.
-Credentials are stored under the key; `suco.yaml` names the environment variable the key is read
-from and holds no key, so set the variable in the shell that runs `suco`. `suco doctor` prints
-the settings it resolved and where each value came from, saying of a secret only whether it is
-set. `suco serve`
-listens on `http://localhost:7826`, where `/healthz` says the process is up and `/readyz` says
-whether it can reach what it needs and whether any credential in force can write. It writes what
-it is doing to stdout. With a database
-configured, `suco credential new --read-only` or `--read-write` makes a credential for the API and
-writes its token to a file only its owner can read. `suco credential list` shows the credentials
-in force, the most recently used first, and `suco credential revoke <id>` takes one out of force.
+- `suco init` writes a `suco.yaml` you can read and commit, and a key file only its owner can
+  read. Credentials are stored under that key, and the document names the environment variable it
+  is read from rather than holding it.
+- `suco doctor` prints every setting it resolved, where each value came from, and what the
+  instance reaches. Of a secret it says only whether it is set.
+- `suco serve` listens on `http://localhost:7826` and writes what it is doing to stdout.
+  `/healthz` says the process is up; `/readyz` says whether it can serve.
 
-To open payments, list in `suco.yaml` the network they arrive on and the asset they are in:
+## Taking a payment
+
+List the network a payment arrives on and the asset it is in:
 
 ```yaml
 networks:
-  local:
-    kind: simulated
+  polygon:
+    kind: evm
+    chain_id: 137
+    rpc: ${SUCO_POLYGON_RPC_URL}
 assets:
   jpyc:
-    network: local
-    reference: "0x0000000000000000000000000000000000000001"
+    network: polygon
+    reference: "0xE7C3D8C9a439feDe00D2600032D5dB0Be71C3c29"
     symbol: JPYC
     decimals: 18
 ```
 
-`simulated` is the one kind of network accepted so far. Nothing observes a chain yet, so no payment
-reaches `succeeded`. `suco asset accept <name> <address>` records the address a payment in the asset
-`suco.yaml` lists under that name is paid to, and `suco asset list` shows every asset the document
-lists, each with its address or `not accepted`. `suco payment await <id>` makes one payment payable
-and prints the seven values a payer signs to pay it, which is what Checkout will do once there is a
-Checkout; what it prints stays on the terminal that asked for it. A merchant's server opens payments
-and reads them back over the API in [docs/api.md](docs/api.md).
+Then, with a database configured:
 
-An install script and released binaries arrive with the first release. Everything in the list
-above is still to come.
+```bash
+./suco credential new --read-write          # writes a token file for the API
+./suco asset accept jpyc 0xYourWalletHere   # where a payment in jpyc is paid to
+./suco payment await <id>                   # prints what a payer signs, until Checkout exists
+```
+
+Your server opens payments and reads them back over the API. `suco serve` reads the chain round
+after round and records the transfers that answer them.
+
+## Documentation
+
+| | |
+|---|---|
+| [docs/api.md](docs/api.md) | The HTTP API a merchant's server calls |
+| [docs/configuration.md](docs/configuration.md) | Every setting `suco.yaml` takes |
+| [docs/operating.md](docs/operating.md) | `/readyz`, `suco doctor`, and putting a stopped instance right |
+| [ROADMAP.md](ROADMAP.md) | What works today and what does not |
 
 ## Contributing
 
