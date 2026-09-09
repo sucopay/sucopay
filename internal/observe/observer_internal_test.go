@@ -1584,6 +1584,30 @@ func TestProbe_SaysHowFarTheNetworkHasBeenRead(t *testing.T) {
 	}
 }
 
+// A caller with nowhere a position could have been written still learns what
+// the chain says about itself. Refusing to answer without a database would
+// leave an operator who has not set one up yet unable to find out whether
+// their endpoint answers at all.
+func TestProbe_ReadsTheChainWithNowhereAPositionCouldHaveBeenWritten(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	w.tick(t)
+
+	report, err := Probe(t.Context(), w.observer.network, nil)
+
+	if err != nil {
+		t.Fatalf("err = %v, want none", err)
+	}
+	if report.Identity == "" || report.Head.Final.Hash == "" {
+		t.Errorf("the probe read %+v, want what the chain says about itself", report)
+	}
+	// A position was written by the round above, and this was not asked for
+	// it: what comes back has to say so rather than read as height zero.
+	if report.Read {
+		t.Errorf("the probe says it read a position it was given nowhere to read one from")
+	}
+}
+
 // A chain that will not answer is one nothing can be said about.
 func TestProbe_ReportsWhatItCouldNotRead(t *testing.T) {
 	t.Parallel()

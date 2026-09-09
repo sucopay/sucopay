@@ -364,6 +364,11 @@ type Report struct {
 
 // Probe reads what a network says about itself. It writes nothing, so whoever
 // is only asking whether a deployment could observe this network can ask.
+//
+// cursors may be nil, for a caller with nowhere a position could have been
+// written: the chain is still read, and [Report.Read] is false. A deployment
+// that has not been given a database yet is the case, and what its operator
+// wants to know first is whether the endpoint answers at all.
 func Probe(ctx context.Context, n Network, cursors *Cursors) (_ Report, err error) {
 	// One probe is about one network, and the name goes on whatever it
 	// reports rather than on each of the places that could report something.
@@ -380,8 +385,10 @@ func Probe(ctx context.Context, n Network, cursors *Cursors) (_ Report, err erro
 	if report.Head, err = n.Chain.Head(ctx); err != nil {
 		return Report{}, err
 	}
-	if report.Position, report.Read, err = cursors.Get(ctx, payment.Network(n.Name)); err != nil {
-		return Report{}, err
+	if cursors != nil {
+		if report.Position, report.Read, err = cursors.Get(ctx, payment.Network(n.Name)); err != nil {
+			return Report{}, err
+		}
 	}
 	for name, asset := range n.Assets {
 		behind, err := n.Chain.Implementation(ctx, asset.Reference())

@@ -6,17 +6,26 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 	"text/tabwriter"
 
 	"github.com/sucopay/sucopay/internal/config"
 	"github.com/sucopay/sucopay/internal/credential"
 	"github.com/sucopay/sucopay/internal/invisible"
+	"github.com/sucopay/sucopay/internal/observe"
+	"github.com/sucopay/sucopay/internal/payment"
 	"github.com/sucopay/sucopay/internal/postgres"
 )
 
 // maxDescription bounds what a database can put in front of an operator.
 // Nothing limits the length of what a server sends.
 const maxDescription = 64
+
+// maxReason bounds what somebody else says went wrong. Wider than a version,
+// because a reason has to carry enough of what happened to act on; the adapter
+// has already cut a provider's own words to less than this.
+const maxReason = 512
 
 func doctor(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) > 0 {
@@ -47,12 +56,41 @@ func doctor(ctx context.Context, args []string, stdout io.Writer) error {
 		return fmt.Errorf("writing the report: %w", err)
 	}
 
-	database, credentials, reach := describeDatabase(ctx, resolved.Config)
+	// Opened once. What the server says about itself, what credentials are in
+	// force, and how far each network has been read all come off it.
+	var (
+		db      *postgres.Pool
+		schema  string
+		cursors *observe.Cursors
+	)
+	database, reach := "none configured", error(nil)
+	var credentials credential.InForce
+	if cfg := resolved.Config; cfg.Database.URL != "" {
+		db, reach = postgres.Open(ctx, cfg.Database.URL)
+		if reach != nil {
+			database, reach = "unreachable", errors.New(invisible.Quote(reach.Error()))
+		} else {
+			defer db.Close()
+			database, credentials, schema, reach = describeDatabase(ctx, db, resolved.Config)
+		}
+	}
+	// A database with no schema has no table a position could be in. The
+	// chains are still read: an operator who has not run serve yet wants to
+	// know whether their endpoint answers, and a line saying the table is
+	// missing would say that twice and the endpoint not at all.
+	if db != nil && schema != "" {
+		cursors = observe.NewCursors(db.Conns())
+	}
+
 	var tail bytes.Buffer
 	fmt.Fprintf(&tail, "\ndatabase: %s\n", database)
 	if credentials != "" {
 		fmt.Fprintf(&tail, "credentials: %s\n", credentials)
 	}
+	// The networks after the database, because how far each has been read is
+	// written there. A network that could not be read is said and not failed
+	// on: the instance still serves, and its probe is what says it is unfit.
+	describeNetworks(ctx, &tail, resolved.Config, cursors)
 	tail.WriteString("\n")
 	if _, err := stdout.Write(tail.Bytes()); err != nil {
 		return fmt.Errorf("writing the report: %w", err)
@@ -78,29 +116,20 @@ func doctor(ctx context.Context, args []string, stdout io.Writer) error {
 //
 // Everything here was chosen by a server at the other end of a network, so it
 // is bounded and quoted before it reaches a terminal.
-func describeDatabase(ctx context.Context, cfg config.Config) (database string, credentials credential.InForce, err error) {
-	if cfg.Database.URL == "" {
-		return "none configured", "", nil
-	}
-	db, err := postgres.Open(ctx, cfg.Database.URL)
-	if err != nil {
-		return "unreachable", "", errors.New(invisible.Quote(err.Error()))
-	}
-	defer db.Close()
-
+func describeDatabase(ctx context.Context, db *postgres.Pool, cfg config.Config) (database string, credentials credential.InForce, schema string, err error) {
 	version, err := db.ServerVersion(ctx)
 	if err != nil {
-		return "unreachable", "", errors.New(invisible.Quote(err.Error()))
+		return "unreachable", "", "", errors.New(invisible.Quote(err.Error()))
 	}
 	// What an instance would find there, which is not the same question as
 	// whether it answered.
-	schema, err := db.SchemaVersion(ctx)
+	schema, err = db.SchemaVersion(ctx)
 	if err != nil {
-		return "unreachable", "", errors.New(invisible.Quote(err.Error()))
+		return "unreachable", "", "", errors.New(invisible.Quote(err.Error()))
 	}
 	database = describeVersion(version) + ", schema " + describeSchema(schema)
 	if schema == "" {
-		return database, "", nil
+		return database, "", schema, nil
 	}
 	// The store hashes under the key, and this asks it nothing that hashes.
 	// The key is parsed all the same, so that a store is only ever built as
@@ -108,13 +137,13 @@ func describeDatabase(ctx context.Context, cfg config.Config) (database string, 
 	// it was read, so this cannot fail past that.
 	key, err := credential.ParseKey(cfg.Credentials.Key)
 	if err != nil {
-		return database, "", err
+		return database, "", schema, err
 	}
 	credentials, err = credential.NewPostgres(db.Conns(), key, cfg.Credentials.KeyID).InForce(ctx)
 	if err != nil {
-		return database, "", errors.New(invisible.Quote(err.Error()))
+		return database, "", schema, errors.New(invisible.Quote(err.Error()))
 	}
-	return database, credentials, nil
+	return database, credentials, schema, nil
 }
 
 // describeSchema names the migration a database has been brought up to.
@@ -129,4 +158,98 @@ func describeSchema(version string) string {
 // person reads.
 func describeVersion(version string) string {
 	return "PostgreSQL " + invisible.Shown(version, maxDescription)
+}
+
+// describeNetworks writes what each network the assets settle on says about
+// itself: what it is, what chain it calls itself, where it stands, and how far
+// this deployment has read it.
+//
+// It reads the chains the way a start does, through the same adapters, so that
+// what an operator is told here is what an instance would meet. It writes
+// nothing: whoever is asking whether a deployment could observe a network is
+// not the one who should be moving its position.
+//
+// cursors is nil where nothing could have written a position: no database, or
+// one nothing has applied the schema to. The chain is read either way, and
+// where the reading stands is left out.
+func describeNetworks(ctx context.Context, w io.Writer, cfg config.Config, cursors *observe.Cursors) {
+	networks, err := openChains(cfg)
+	if err != nil {
+		// A kind nothing can open, or an endpoint the adapter refuses. The
+		// configuration refuses both before this, so meeting one here is the
+		// two having come apart.
+		fmt.Fprintf(w, "\nnetworks: %s\n", invisible.Quote(err.Error()))
+		return
+	}
+	if len(networks) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "\nnetworks:")
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	defer tw.Flush()
+	for _, n := range networks {
+		// Once for the network and everything on it. What is behind each asset
+		// is a call to the provider, and asking again for the lines below
+		// would double what a report costs whoever is paying for the endpoint.
+		report, err := observe.Probe(ctx, n, nil)
+		fmt.Fprintf(tw, "  %s\t%s\t%s\n", invisible.Quote(n.Name), cfg.Networks[n.Name].Kind,
+			standing(ctx, n, report, err, cursors))
+		for _, name := range slices.Sorted(maps.Keys(n.Assets)) {
+			fmt.Fprintf(tw, "    %s\t\t%s\n", invisible.Quote(name), behind(report, err, name))
+		}
+	}
+}
+
+// standing is one network as a report says it: where the chain is, how far it
+// has been read, and how far behind that leaves the reading.
+//
+// The chain and the position are read apart, so that a failure at either says
+// which it was. Asked together they come back as one refusal, and an operator
+// whose database is short of the table reads it as an endpoint that will not
+// answer, and goes and changes their provider.
+func standing(ctx context.Context, n observe.Network, report observe.Report, err error, cursors *observe.Cursors) string {
+	if err != nil {
+		// The provider's own code and words, which the adapter has already cut
+		// short and taken its endpoint out of.
+		return "could not be read: " + invisible.Shown(err.Error(), maxReason)
+	}
+	if n.Want != "" && report.Identity != n.Want {
+		return fmt.Sprintf("chain-mismatch: it calls itself %s and the document names %s",
+			invisible.Shown(report.Identity, maxDescription), n.Want)
+	}
+	where := fmt.Sprintf("chain %s, latest %d, final %d",
+		invisible.Shown(report.Identity, maxDescription), report.Head.Latest.Height, report.Head.Final.Height)
+	if cursors == nil {
+		return where + ", and nowhere a position could have been written"
+	}
+	at, read, err := cursors.Get(ctx, payment.Network(n.Name))
+	switch {
+	case err != nil:
+		return where + ", and the position could not be read: " + invisible.Shown(err.Error(), maxReason)
+	case !read:
+		return where + ", no position"
+	}
+	// Behind the final block and not the latest: the finalised range is what a
+	// round reads, and the blocks above it are read again when they settle.
+	var lag uint64
+	if report.Head.Final.Height > at.Height {
+		lag = report.Head.Final.Height - at.Height
+	}
+	return fmt.Sprintf("%s, position %d, behind %d", where, at.Height, lag)
+}
+
+// behind is what a report says of one asset: the code the chain runs for it,
+// which is what an upgrade of a proxy changes. The probe read it along with
+// the rest, so an asset costs no call of its own.
+func behind(report observe.Report, err error, name string) string {
+	code := report.Behind[name]
+	switch {
+	case err != nil:
+		// The network's own line says what went wrong, and a reason under
+		// every asset would say it again once per asset.
+		return "not read"
+	case code == "":
+		return "nothing stands in front of it"
+	}
+	return "implementation " + invisible.Shown(code, maxDescription)
 }
