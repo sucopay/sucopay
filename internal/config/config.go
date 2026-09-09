@@ -19,8 +19,10 @@ const (
 	// DefaultNetworkKind is the kind of a network whose document names none.
 	DefaultNetworkKind = "evm"
 	// DefaultPoll is how often a network is asked for new blocks when the
-	// document sets no poll.
-	DefaultPoll = 3 * time.Second
+	// document sets no poll. Not shorter: a round is several calls, and what
+	// a deployment takes from an endpoint it does not run is somebody else's
+	// to give. A deployment reading a node of its own sets it down.
+	DefaultPoll = 12 * time.Second
 	// DefaultWidth is the widest span, in blocks, one request for logs is
 	// given when the document sets no width. Providers cap the span, each at
 	// its own value: between 50 and 10000 blocks on the public endpoints
