@@ -204,34 +204,30 @@ func (w *watching) round(t *testing.T) {
 	}
 }
 
-// rows are the observations the round wrote, in the order they were written.
-func (w *watching) rows(t *testing.T) []struct {
+// record is one observation as a round left it.
+type record struct {
 	Key    string
 	Tx     string
 	Reason string
+	Height uint64
 	Final  bool
-} {
+}
+
+// rows are the observations the rounds wrote, in the order the chain carried
+// them.
+func (w *watching) rows(t *testing.T) []record {
 	t.Helper()
 	rows, err := w.pool.Query(t.Context(),
-		`select key, tx, reason, final_at is not null from observations order by block_height, position`)
+		`select key, tx, reason, block_height, final_at is not null
+		   from observations order by block_height, position`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rows.Close()
-	var out []struct {
-		Key    string
-		Tx     string
-		Reason string
-		Final  bool
-	}
+	var out []record
 	for rows.Next() {
-		var one struct {
-			Key    string
-			Tx     string
-			Reason string
-			Final  bool
-		}
-		if err := rows.Scan(&one.Key, &one.Tx, &one.Reason, &one.Final); err != nil {
+		var one record
+		if err := rows.Scan(&one.Key, &one.Tx, &one.Reason, &one.Height, &one.Final); err != nil {
 			t.Fatal(err)
 		}
 		out = append(out, one)
@@ -556,10 +552,19 @@ func TestTick_WritesNothingWhenThePositionMovedUnderIt(t *testing.T) {
 	t.Parallel()
 	w := watch(t)
 	w.round(t)
-	w.paid(t, w.attempt.Key())
+	w.chain.Mine()
+	w.chain.Mine()
+	w.chain.Send(w.sending(w.attempt.Key()))
+	w.chain.Finalize(w.chain.Mine())
 	network := payment.Network(w.observer.network.Name)
+	// Somebody puts the position at the block below the transfer while the
+	// round is reading the range from the block below that.
+	moved, err := w.chain.Block(t.Context(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
 	w.observer.network.Chain = interrupted{Chain: w.chain, during: func() {
-		if _, _, err := w.observer.cursors.Set(t.Context(), network, Position{Height: 9, Hash: "elsewhere"}, time.Now()); err != nil {
+		if _, _, err := w.observer.cursors.Set(t.Context(), network, at(moved), time.Now()); err != nil {
 			t.Error(err)
 		}
 	}}
@@ -573,6 +578,59 @@ func TestTick_WritesNothingWhenThePositionMovedUnderIt(t *testing.T) {
 	}
 	if got := w.status(t); got != payment.Issued {
 		t.Errorf("the attempt is %s", got)
+	}
+}
+
+// The round after a position was put somewhere reads from there. What was
+// below it is not read again, and what is above it is.
+func TestTick_ReadsFromWhereThePositionWasPut(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	w.round(t)
+	w.chain.Mine()
+	w.chain.Mine()
+	w.chain.Send(w.sending(w.attempt.Key()))
+	w.chain.Finalize(w.chain.Mine())
+	moved, err := w.chain.Block(t.Context(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := w.observer.cursors.Set(t.Context(),
+		payment.Network(w.observer.network.Name), at(moved), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	w.round(t)
+
+	if at := w.position(t); at.Height != 3 {
+		t.Errorf("the position is at %d, and the round read from 2", at.Height)
+	}
+	if rows := w.rows(t); len(rows) != 1 {
+		t.Errorf("the round wrote %+v", rows)
+	}
+}
+
+// The block at the position is read where the head does not already answer for
+// it, and a round that could not read it writes nothing: what it would have
+// compared is what says the records came off this chain.
+func TestTick_WritesNothingWhenTheBlockAtThePositionCouldNotBeRead(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	w.round(t)
+	w.paid(t, w.attempt.Key())
+	w.chain.Finalize(w.chain.Mine())
+	before := w.position(t)
+
+	w.chain.FailAt("Block", 1, errors.New("the provider said no"))
+	if err := w.observer.tick(t.Context()); err == nil {
+		t.Fatal("the round reported success without having compared the position")
+	}
+
+	if at := w.position(t); at != before {
+		t.Errorf("the position moved to %+v", at)
+	}
+	if rows := w.rows(t); len(rows) != 0 {
+		t.Errorf("the round wrote %+v", rows)
 	}
 }
 
@@ -860,5 +918,262 @@ func TestTick_ReadsOneTransactionForOneKey(t *testing.T) {
 	}
 	if rows[0].Tx != scan.Consumed[0].Tx {
 		t.Errorf("the round read %s, and the scan named %s first", rows[0].Tx, scan.Consumed[0].Tx)
+	}
+}
+
+// The provider that named the final block is not always the one that named it
+// last time. Before anything is read, the block the position names has to be
+// the one the chain has at that height, and where the head already says so, it
+// is not asked again.
+func TestTick_ComparesThePositionWithWhatTheHeadAlreadySaid(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		ahead uint64
+		asks  int
+	}{
+		"the final block is the position":        {0, 0},
+		"the final block is one above it":        {1, 0},
+		"the final block is two above it":        {2, 1},
+		"the final block is a long way above it": {5, 1},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			w := watch(t)
+			w.round(t)
+			for range c.ahead {
+				w.chain.Mine()
+			}
+			if c.ahead > 0 {
+				w.chain.Finalize(c.ahead)
+			}
+			before := w.chain.Calls()["Block"]
+
+			w.round(t)
+
+			if asked := w.chain.Calls()["Block"] - before; asked != c.asks {
+				t.Errorf("the chain was asked for %d blocks, want %d", asked, c.asks)
+			}
+			if w.observer.word != observing {
+				t.Errorf("the network is %q, want %q", w.observer.word, observing)
+			}
+			if at := w.position(t); at.Height != c.ahead {
+				t.Errorf("the position is at %d, want %d", at.Height, c.ahead)
+			}
+		})
+	}
+}
+
+// A position naming a block the chain does not have at that height is a
+// position on a chain that was replaced. Nothing is read and nothing is
+// written: how far back to go is not something this can work out, and going
+// back too far would pay a payment twice.
+func TestTick_StopsWhereTheChainNoLongerHoldsTheBlockThePositionNames(t *testing.T) {
+	t.Parallel()
+	cases := map[string]uint64{
+		"the final block is the position": 0,
+		"the final block is one above it": 1,
+		"the final block is two above it": 2,
+	}
+	for name, ahead := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			w := watch(t)
+			w.round(t)
+			w.paid(t, w.attempt.Key())
+			for range ahead {
+				w.chain.Finalize(w.chain.Mine())
+			}
+			network := payment.Network(w.observer.network.Name)
+			elsewhere := Position{Height: 0, Hash: "0x" + strings.Repeat("99", 32)}
+			if _, _, err := w.observer.cursors.Set(t.Context(), network, elsewhere, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+
+			w.round(t)
+
+			if w.observer.word != finalizedChanged {
+				t.Errorf("the network is %q, want %q", w.observer.word, finalizedChanged)
+			}
+			if at := w.position(t); at != elsewhere {
+				t.Errorf("the position moved to %+v", at)
+			}
+			if rows := w.rows(t); len(rows) != 0 {
+				t.Errorf("the round wrote %+v", rows)
+			}
+
+			// Putting the position back is the operator's to do, and the round
+			// after it carries on.
+			block, err := w.chain.Block(t.Context(), 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := w.observer.cursors.Set(t.Context(), network, at(block), time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			w.round(t)
+			if w.observer.word != observing {
+				t.Errorf("the network is %q after the position was put back", w.observer.word)
+			}
+			if rows := w.rows(t); len(rows) != 1 {
+				t.Errorf("the round wrote %+v", rows)
+			}
+		})
+	}
+}
+
+// A provider whose final block is below the position is one that has not
+// caught up with what another provider already said was final. There is
+// nothing to read, so nothing is read, and the word says to wait rather than
+// that anything is wrong.
+func TestTick_WaitsWhereTheFinalBlockIsBelowThePosition(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	w.round(t)
+	for range 4 {
+		w.chain.Mine()
+	}
+	// The operator, or the provider that was read before this one, put the
+	// position above what this one calls final.
+	ahead, err := w.chain.Block(t.Context(), 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	network := payment.Network(w.observer.network.Name)
+	if _, _, err := w.observer.cursors.Set(t.Context(), network, at(ahead), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	before, asked := w.touched(t), w.chain.Calls()
+
+	w.round(t)
+
+	if w.observer.word != finalizedBehind {
+		t.Errorf("the network is %q, want %q", w.observer.word, finalizedBehind)
+	}
+	calls := w.chain.Calls()
+	if calls["Keys"] != asked["Keys"] || calls["Block"] != asked["Block"] {
+		t.Errorf("the round asked the chain for blocks or logs it had nothing to do with: %v", calls)
+	}
+	if after := w.touched(t); after.After(before) {
+		t.Error("the position was written, and the round had nothing to write")
+	}
+
+	// The provider catches up with what it was given, and the rounds carry on.
+	w.chain.Finalize(4)
+	w.round(t)
+
+	if w.observer.word != observing {
+		t.Errorf("the network is %q, want %q", w.observer.word, observing)
+	}
+}
+
+// A transfer that comes back in another block is the same transfer. The row it
+// already has moves to the block it is in now, and a merchant asking what
+// arrived is not shown it twice.
+func TestTick_MovesARecordToTheBlockATransactionCameBackIn(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	w.round(t)
+	w.chain.Mine()
+	w.chain.Send(w.sending(w.attempt.Key()))
+	w.chain.Mine()
+
+	w.round(t)
+
+	rows := w.rows(t)
+	if len(rows) != 1 || rows[0].Height != 2 {
+		t.Fatalf("the round wrote %+v, want one row in block 2", rows)
+	}
+
+	// The chain drops both blocks and puts the transaction in one of its own.
+	w.chain.Reorg(1, rows[0].Tx)
+	w.round(t)
+
+	moved := w.rows(t)
+	if len(moved) != 1 {
+		t.Fatalf("the rounds wrote %+v, want one row", moved)
+	}
+	if moved[0].Height != 1 || moved[0].Tx != rows[0].Tx {
+		t.Errorf("the row reads %+v, and the transaction is in block 1 now", moved[0])
+	}
+}
+
+// A transfer seen ahead of finality and gone by the time the position reached
+// it is a transfer that was never paid. The record says so and the attempt goes
+// back to where it was, so the payer can be given something to sign again.
+func TestTick_MarksWhatWentAwayAndTakesTheAttemptBack(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	w.round(t)
+	w.chain.Mine()
+	w.chain.Send(w.sending(w.attempt.Key()))
+	w.chain.Mine()
+	w.round(t)
+	if got := w.status(t); got != payment.Confirming {
+		t.Fatalf("the attempt is %s, and a transfer was seen ahead of finality", got)
+	}
+	if rows := w.rows(t); len(rows) != 1 || rows[0].Height != 2 {
+		t.Fatalf("the round wrote %+v, want one row in block 2", rows)
+	}
+
+	// The blocks are replaced by ones without the transaction in them, and
+	// finality passes over the range the transfer was seen in.
+	w.chain.Reorg(1)
+	w.chain.Mine()
+	w.chain.Finalize(2)
+	w.round(t)
+
+	rows := w.rows(t)
+	if len(rows) != 1 {
+		t.Fatalf("the rounds wrote %+v, want one row", rows)
+	}
+	if rows[0].Reason != payment.Vanished.String() {
+		t.Errorf("the row says %q, and what it recorded is not on the chain", rows[0].Reason)
+	}
+	if got := w.status(t); got != payment.Issued {
+		t.Errorf("the attempt is %s, and nothing it was confirmed on is still there", got)
+	}
+
+	// The payer's authorisation still stands, so a second submission of it
+	// pays the payment.
+	w.chain.Send(w.sending(w.attempt.Key()))
+	w.chain.Finalize(w.chain.Mine())
+	w.round(t)
+
+	if got := w.status(t); got != payment.Confirming {
+		t.Errorf("the attempt is %s after the transfer came back", got)
+	}
+	back := w.rows(t)
+	if len(back) != 2 {
+		t.Fatalf("the rounds wrote %+v, want the one that went and the one that came", back)
+	}
+	if back[1].Reason != payment.Matched.String() {
+		t.Errorf("the second row says %q", back[1].Reason)
+	}
+}
+
+// A position the chain does not hold stays that way until somebody moves it.
+// The rounds in between find what the first one found, and saying so every few
+// seconds would bury whatever else the deployment has to say.
+func TestTick_SaysOnceThatTheChainNoLongerHoldsThePosition(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	w.round(t)
+	said := &strings.Builder{}
+	w.observer.log = slog.New(slog.NewJSONHandler(said, nil))
+	if _, _, err := w.observer.cursors.Set(t.Context(), payment.Network(w.observer.network.Name),
+		Position{Height: 0, Hash: "0x" + strings.Repeat("99", 32)}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	for range 3 {
+		w.round(t)
+	}
+
+	if w.observer.word != finalizedChanged {
+		t.Fatalf("the network is %q", w.observer.word)
+	}
+	if count := strings.Count(said.String(), "no longer holds"); count != 1 {
+		t.Errorf("the rounds said it %d times, want once", count)
 	}
 }

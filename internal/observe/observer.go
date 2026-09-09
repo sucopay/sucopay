@@ -29,6 +29,13 @@ const (
 	noFinalized = "no-finalized"
 	// chainMismatch is a chain that is not the one the document names.
 	chainMismatch = "chain-mismatch"
+	// finalizedBehind is a provider whose final block is below the position,
+	// which is a block another provider had already called final.
+	finalizedBehind = "finalized-behind"
+	// finalizedChanged is a chain that no longer holds the block the position
+	// names. Nothing moves until somebody puts the position somewhere the
+	// chain does hold.
+	finalizedChanged = "finalized-changed"
 )
 
 // Network is one network as the observer reads it.
@@ -128,6 +135,33 @@ func (o *Observer) tick(ctx context.Context) (err error) {
 		return o.cursors.Init(ctx, network, at(head.Final), o.now())
 	}
 
+	// A provider that has not reached what another one already called final has
+	// nothing to add this round. It is not behind for long, and it is not
+	// something to act on, so the round waits without writing.
+	if head.Final.Height < from.Height {
+		o.word = finalizedBehind
+		return nil
+	}
+	// Reading on from a position the chain no longer holds would be reading a
+	// chain other than the one the records came off. How far back to go is not
+	// something this can work out: whoever put the position there is who puts
+	// it somewhere else.
+	held, err := o.holds(ctx, from, head.Final)
+	if err != nil {
+		return err
+	}
+	if !held {
+		// Once, on the way into the state. The rounds after it find the same
+		// thing until somebody moves the position, and saying so every time
+		// would bury what else the deployment has to say.
+		if o.word != finalizedChanged {
+			o.log.Warn("the chain no longer holds the block the position names",
+				"network", o.network.Name, "height", from.Height)
+		}
+		o.word = finalizedChanged
+		return nil
+	}
+
 	// What is behind an asset is read once for the round, however many of its
 	// ranges turn something up.
 	behind := map[string]string{}
@@ -174,6 +208,25 @@ func (o *Observer) standing(ctx context.Context) (chain.Head, error) {
 		return chain.Head{}, err
 	}
 	return head, nil
+}
+
+// holds reports whether the chain still has the block the position names at
+// the height it names.
+//
+// The head answers it already where the final block is the position or the one
+// above it, and a call is what it takes anywhere else.
+func (o *Observer) holds(ctx context.Context, from Position, final chain.Block) (bool, error) {
+	switch final.Height {
+	case from.Height:
+		return final.Hash == from.Hash, nil
+	case from.Height + 1:
+		return final.Parent == from.Hash, nil
+	}
+	block, err := o.network.Chain.Block(ctx, from.Height)
+	if err != nil {
+		return false, err
+	}
+	return block.Hash == from.Hash, nil
 }
 
 // settled reads the blocks from the one after the position up to the final
