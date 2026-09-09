@@ -104,11 +104,18 @@ func (s *Service) Find(ctx context.Context, account AccountID, id ID) (*Payment,
 	return p, nil
 }
 
-// Positions reports whether a network is being read. It is what stops a key
-// being handed out for a chain nothing is watching: the payer would sign, the
-// transfer would land, and nobody would look.
+// Positions reports whether a network has been read. It is what stops a key
+// being handed out for a chain nothing has ever watched: the payer would sign,
+// the transfer would land, and nobody would ever look.
+//
+// Ever, and not lately. A reader that has stopped left its position where it
+// was, and the round that picks the network up again reads forward from there,
+// so a transfer that arrived while it was stopped is seen late rather than
+// missed. Refusing to issue while a provider has a bad minute would fail a
+// checkout for something that rights itself. What a deployment says about a
+// network that has stopped being read is a probe's to answer.
 type Positions interface {
-	// Has reports whether the network is one this deployment reads.
+	// Has reports whether the network is one this deployment has read.
 	Has(ctx context.Context, network Network) (bool, error)
 }
 
@@ -117,14 +124,14 @@ type Positions interface {
 // [Service.Await] first.
 var ErrNotAwaiting = errors.New("payment: the payment is not awaiting payment")
 
-// NoPosition reports that nothing has read the network the payment is on, so a
-// transfer against it would not be seen.
+// NoPosition reports that nothing has ever read the network the payment is on,
+// so a transfer against it would never be seen.
 type NoPosition struct {
 	// Network is the network with no position.
 	Network Network
 }
 
-// Error names the network nothing is reading.
+// Error names the network nothing has read.
 func (e NoPosition) Error() string { return "payment: no position on " + string(e.Network) }
 
 // Issue gives a payer something to sign: an attempt holding a key that the
@@ -132,7 +139,7 @@ func (e NoPosition) Error() string { return "payment: no position on " + string(
 // against.
 //
 // A payment can only be attempted while it is open for payment, while nothing
-// else is attempting it, and while its network is being read. The three are
+// else is attempting it, and once its network has been read. The three are
 // checked in that order, so a caller is told what the payment is doing before
 // it is told about the chain.
 func (s *Service) Issue(ctx context.Context, account AccountID, id ID) (*Attempt, *Payment, error) {

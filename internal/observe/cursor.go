@@ -69,8 +69,11 @@ func (c *Cursors) Get(ctx context.Context, network payment.Network) (Position, b
 }
 
 // Has reports whether a network has a position. It is what a service asks
-// before issuing an attempt: a network nobody is reading would take the
-// payment and see nothing.
+// before issuing an attempt: a network nothing has ever read would take the
+// payment and never see anything.
+//
+// Whether a round has finished on it lately is [Cursors.Touched], and is not
+// asked here. A reader that stopped reads forward from where it left off.
 func (c *Cursors) Has(ctx context.Context, network payment.Network) (bool, error) {
 	_, ok, err := c.Get(ctx, network)
 	return ok, err
