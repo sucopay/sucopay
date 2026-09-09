@@ -61,11 +61,13 @@ func NewAsset(network Network, reference, symbol string, decimals uint8) (Asset,
 	case decimals > MaxAssetDecimals:
 		return Asset{}, fmt.Errorf("%w: %d, at most %d", ErrTooManyDecimals, decimals, MaxAssetDecimals)
 	}
-	for name, value := range map[string]string{
-		"network": string(network), "reference": reference, "symbol": symbol,
+	// In one order, for the reason screen gives: an asset wrong in two fields
+	// is refused for the same one every time.
+	for _, field := range []struct{ name, value string }{
+		{"network", string(network)}, {"reference", reference}, {"symbol", symbol},
 	} {
-		if invisible.Has(value) {
-			return Asset{}, fmt.Errorf("asset %s holds a character that does not show up", name)
+		if invisible.Has(field.value) {
+			return Asset{}, fmt.Errorf("asset %s holds a character that does not show up", field.name)
 		}
 	}
 	return Asset{network: network, reference: reference, symbol: symbol, decimals: decimals}, nil

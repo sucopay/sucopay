@@ -148,18 +148,22 @@ const MaxTransferField = 256
 // screen refuses what a row should not carry, whatever a provider answered.
 // The adapter checks the shapes of its own chain; this is the last gate before
 // the value is stored and, later, shown to whoever asks what arrived.
+//
+// In one order, so that a transfer wrong in two fields is refused for the same
+// one every time. Ranging over a map would name a different one each run, and
+// a refusal read from a log is a refusal somebody is going to act on.
 func screen(t Transfer) error {
-	for name, value := range map[string]string{
-		"asset": t.Asset, "key": t.Key, "authorizer": t.Authorizer,
-		"from": t.From, "to": t.To, "value": t.Value, "tx": t.Tx,
-		"block hash": t.BlockHash, "scheme": string(t.Scheme),
+	for _, field := range []struct{ name, value string }{
+		{"asset", t.Asset}, {"key", t.Key}, {"authorizer", t.Authorizer},
+		{"from", t.From}, {"to", t.To}, {"value", t.Value}, {"tx", t.Tx},
+		{"block hash", t.BlockHash}, {"scheme", string(t.Scheme)},
 	} {
 		switch {
-		case len(value) > MaxTransferField:
+		case len(field.value) > MaxTransferField:
 			return fmt.Errorf("transfer %s: %s is %d bytes, at most %d",
-				t.Tx, name, len(value), MaxTransferField)
-		case invisible.Has(value):
-			return fmt.Errorf("transfer %s: %s holds a character that does not show up", t.Tx, name)
+				t.Tx, field.name, len(field.value), MaxTransferField)
+		case invisible.Has(field.value):
+			return fmt.Errorf("transfer %s: %s holds a character that does not show up", t.Tx, field.name)
 		}
 	}
 	return nil
