@@ -6,6 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/sucopay/sucopay/discussions">Discussions</a> ·
+  <a href="ROADMAP.md">Roadmap</a> ·
   <a href="README.ja.md">日本語</a>
 </p>
 
@@ -20,17 +21,8 @@
 Create a payment, get paid on chain, know when it's final, refund it, and get a webhook.
 suco Pay runs on your own infrastructure. Funds go straight from the customer's wallet to yours.
 
-> **Pre-alpha.** Only the CLI exists so far. Watch the repository or join
-> [Discussions](https://github.com/sucopay/sucopay/discussions).
-
-- [ ] Payments: lifecycle, expiry, under/overpayment, idempotency
-- [ ] Finality: confirmation policy per network
-- [ ] Checkout: hosted and embeddable
-- [ ] Webhooks: signed, retried, with delivery history
-- [ ] Refunds: records and transfer intents
-- [ ] Reconciliation: periodic diff between internal state and the chain
-- [ ] Console: payments, transactions, refunds, webhook deliveries
-- [x] CLI: `init` `serve` `doctor` `credential` `asset` `payment` `network`
+> **Pre-alpha.** Only the CLI exists so far. [ROADMAP.md](ROADMAP.md) says what works today
+> and what does not.
 
 ## Getting started
 

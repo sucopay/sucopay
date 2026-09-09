@@ -17,12 +17,12 @@ while IFS= read -r doc; do
   done < <(grep -oE '\]\([^)]+\)' "$doc" | sed 's/^](//; s/)$//')
 done < <(find . -name '*.md' -not -path './.git/*')
 
-# The commands each README names are the commands suco dispatches. The usage
+# The commands each roadmap names are the commands suco dispatches. The usage
 # text and the dispatch already read one list in Go; a README is the third
 # place a command name can be written.
 #
-# This is the line the check reads. Rewording it in a README is a change to
-# this script as well, so a README that no longer carries it is a failure
+# This is the line the check reads. Rewording it in a roadmap is a change to
+# this script as well, so a roadmap that no longer carries it is a failure
 # rather than a silent pass.
 list='^- \[[ x]\] CLI: '
 
@@ -35,15 +35,15 @@ go build -o "$suco" ./cmd/suco
 # per command and one word in a README.
 dispatched="$("$suco" help | sed -n 's/^  suco \([a-z][a-z]*\).*/\1/p' | sed '/^help$/d' | sort -u | tr '\n' ' ')"
 
-for readme in README.md README.ja.md; do
-  line="$(grep -m1 -E "$list" "$readme" || true)"
+for roadmap in ROADMAP.md ROADMAP.ja.md; do
+  line="$(grep -m1 -E "$list" "$roadmap" || true)"
   if [ -z "$line" ]; then
-    note "$readme has no line matching '$list'; restore it or update scripts/check-docs.sh"
+    note "$roadmap has no line matching '$list'; restore it or update scripts/check-docs.sh"
     continue
   fi
   documented="$(printf '%s' "$line" | grep -oE '`[a-z]+`' | tr -d '`' | sort | tr '\n' ' ' || true)"
   [ "$documented" = "$dispatched" ] ||
-    note "$readme lists commands [$documented] but suco dispatches [$dispatched]"
+    note "$roadmap lists commands [$documented] but suco dispatches [$dispatched]"
 done
 
 if [ "$fail" -eq 0 ]; then

@@ -6,6 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/sucopay/sucopay/discussions">Discussions</a> ·
+  <a href="ROADMAP.ja.md">ロードマップ</a> ·
   <a href="README.md">English</a>
 </p>
 
@@ -21,17 +22,8 @@ Payment を作成し、オンチェーンで受け取り、確定を判定し、
 suco Pay は自社のインフラで動作します。資金は顧客のウォレットから加盟店のウォレットへ直接
 移動します。
 
-> **開発初期です。** 現時点であるのは CLI だけです。
-> [Discussions](https://github.com/sucopay/sucopay/discussions) で進捗を追えます。
-
-- [ ] Payment: ライフサイクル、期限、過払いと不足、冪等性
-- [ ] Finality: ネットワークごとに設定する確定判定
-- [ ] 支払い画面: ホスト型と埋め込み型
-- [ ] Webhook: 署名、リトライ、送信履歴
-- [ ] Refund: 記録と送金指示の作成
-- [ ] 照合: 内部状態とチェーンの定期突合
-- [ ] Console: Payment と Transaction の照会、返金、Webhook 送信履歴
-- [x] CLI: `init` `serve` `doctor` `credential` `asset` `payment` `network`
+> **開発初期です。** 現時点であるのは CLI だけです。今できることとできないことは
+> [ROADMAP.ja.md](ROADMAP.ja.md) にあります。
 
 ## インストール
 
