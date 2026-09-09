@@ -49,6 +49,9 @@ var commands = []command{
 	{name: "payment", sub: []command{
 		{name: "await", about: "make a payment payable and print what a payer signs, standing in for Checkout", run: paymentAwait},
 	}},
+	{name: "network", sub: []command{
+		{name: "position", about: "put where a network has been read up to", run: networkPosition},
+	}},
 	{name: "asset", sub: []command{
 		{name: "accept", about: "accept an asset the document lists, paid to an address", run: assetAccept},
 		{name: "list", about: "show the assets the document lists, and the address each is paid to", run: assetList},

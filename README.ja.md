@@ -31,7 +31,7 @@ suco Pay は自社のインフラで動作します。資金は顧客のウォ�
 - [ ] Refund: 記録と送金指示の作成
 - [ ] 照合: 内部状態とチェーンの定期突合
 - [ ] Console: Payment と Transaction の照会、返金、Webhook 送信履歴
-- [x] CLI: `init` `serve` `doctor` `credential` `asset` `payment`
+- [x] CLI: `init` `serve` `doctor` `credential` `asset` `payment` `network`
 
 ## インストール
 

@@ -16,14 +16,19 @@ import (
 )
 
 // opened is what a command that reads or writes the database has once
-// [openStore] returns: the assets the document lists, the database it names,
-// and the store of credentials over it. The document's path is for a refusal
-// to name. The assets and not the whole configuration: the rest of it holds
-// the credential key, which no command has a use for once the store is open.
+// [openStore] returns: the assets and networks the document lists, how it says
+// to write a line, the database it names, and the store of credentials over
+// it. The document's path is for a refusal to name.
+//
+// These and not the whole configuration: the rest of it holds the credential
+// key, which no command has a use for once the store is open.
 type opened struct {
-	document    string
-	assets      config.Assets
-	networks    map[string]config.Network
+	document string
+	assets   config.Assets
+	networks map[string]config.Network
+	// log is how the one command that writes a line rather than answering a
+	// person is to write it.
+	log         config.Log
 	db          *postgres.Pool
 	credentials *credential.Postgres
 }
@@ -74,6 +79,7 @@ func openStore(ctx context.Context) (opened, error) {
 		document:    document,
 		assets:      cfg.Assets,
 		networks:    cfg.Networks,
+		log:         cfg.Log,
 		db:          db,
 		credentials: credential.NewPostgres(db.Conns(), key, cfg.Credentials.KeyID),
 	}, nil

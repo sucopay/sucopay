@@ -200,6 +200,7 @@ func TestRun_EveryCommandRefusesWordsItDoesNotTakeByTheirCountBeforeReadingTheDo
 		"credential new":    {"--read-only"},
 		"credential revoke": {string(credential.NewID())},
 		"asset accept":      {"jpyc", theAddress},
+		"network position":  {"local", "0"},
 	}
 	for _, path := range paths(commands) {
 		t.Run(strings.Join(path, " "), func(t *testing.T) {
@@ -233,6 +234,7 @@ func TestRun_NoCommandRepeatsAWordItRefuses(t *testing.T) {
 		"credential new":    {"--read-only"},
 		"credential revoke": {string(credential.NewID())},
 		"asset accept":      {"jpyc", theAddress},
+		"network position":  {"local", "0"},
 	}
 	var cases [][]string
 	for _, path := range paths(commands) {

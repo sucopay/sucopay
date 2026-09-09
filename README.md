@@ -30,7 +30,7 @@ suco Pay runs on your own infrastructure. Funds go straight from the customer's 
 - [ ] Refunds: records and transfer intents
 - [ ] Reconciliation: periodic diff between internal state and the chain
 - [ ] Console: payments, transactions, refunds, webhook deliveries
-- [x] CLI: `init` `serve` `doctor` `credential` `asset` `payment`
+- [x] CLI: `init` `serve` `doctor` `credential` `asset` `payment` `network`
 
 ## Getting started
 

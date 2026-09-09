@@ -19,9 +19,13 @@ import (
 	"github.com/sucopay/sucopay/internal/postgres"
 )
 
-// serve writes to the log rather than to stdout. It is the one command that
-// keeps running, and what a running process says about itself is its log;
-// init and doctor answer a person and keep printing.
+// serve writes to the log rather than answering a person. It is the one
+// command that keeps running, and what a running process says about itself is
+// its log; init and doctor answer a person and keep printing.
+//
+// network position writes a line too, for a different reason: what it did is
+// worth keeping wherever the lines are kept, not only in the terminal of
+// whoever ran it.
 func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) > 0 {
 		// Counted: no error repeats a word typed after suco, for the reason
