@@ -82,8 +82,23 @@ func noFinalBlock(err error) error {
 }
 
 // Block is the block at a height.
+//
+// A block is asked for by height, and one that came back under another one
+// would be written down under the height that was asked for. What the observer
+// takes as its next position is the block it read here, and so is what an
+// operator putting a position by hand writes: a provider answering high would
+// move a reader past blocks nobody read, and the position it lands on outlives
+// the provider that gave it.
 func (n *network) Block(ctx context.Context, height uint64) (chain.Block, error) {
-	return n.blockBy(ctx, quantity(height).String())
+	block, err := n.blockBy(ctx, quantity(height).String())
+	if err != nil {
+		return chain.Block{}, err
+	}
+	if block.Height != height {
+		return chain.Block{}, fmt.Errorf("eth_getBlockByNumber: asked for %d and answered for %d",
+			height, block.Height)
+	}
+	return block, nil
 }
 
 // Implementation is the address EIP-1967 keeps the code a proxy runs at.

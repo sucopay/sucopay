@@ -253,6 +253,24 @@ func TestBlock_ReadsTheBlockAtAHeightAndAsksForNoTransactions(t *testing.T) {
 	}
 }
 
+func TestBlock_RefusesAnAnswerForAnotherHeight(t *testing.T) {
+	t.Parallel()
+	evm, _ := opening(t, map[string]string{
+		"eth_getBlockByNumber 0x89": answered(blockOf(0x9a, 1788265269)),
+	})
+
+	block, err := evm.Block(t.Context(), 0x89)
+
+	if err == nil {
+		t.Fatalf("the block at 0x89 read as %+v, want a refusal", block)
+	}
+	for _, want := range []string{"137", "154"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not say %s: %v", want, err)
+		}
+	}
+}
+
 func TestBlock_RefusesAnAnswerThatIdentifiesNoBlock(t *testing.T) {
 	t.Parallel()
 	for name, answer := range map[string]string{

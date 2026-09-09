@@ -22,7 +22,10 @@ type Chain interface {
 	// replace.
 	Head(ctx context.Context) (Head, error)
 	// Block is the block at a height, for checking that a block remembered at
-	// that height is the one the chain has there now.
+	// that height is the one the chain has there now. It is the block at that
+	// height or an error: a caller writes what comes back down as the position
+	// it asked about, so an adapter holds a provider to the height it was
+	// given rather than passing on whichever block arrived.
 	Block(ctx context.Context, height uint64) (Block, error)
 	// Keys are the keys the assets consumed in the blocks from first to last,
 	// both included, each with the transaction that consumed it, and the
