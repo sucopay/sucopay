@@ -42,6 +42,16 @@ const (
 	finalizedChanged = "finalized-changed"
 )
 
+// RenewBelow is how little of a lease may be left when a round is about to
+// call a chain. Less than this and the round puts the lease out again first,
+// so that a lease cannot lapse between two calls of one round: a call is given
+// half of what a lease runs for.
+const RenewBelow = 15 * time.Second
+
+// errLost says the lease is somebody else's now. The round stops where it is,
+// and whoever is running it goes back to asking for the lease.
+var errLost = errors.New("observe: the lease is held by another instance")
+
 // The words an asset carries: whether the code behind it is still the code
 // that was behind it when this instance started reading.
 const (
@@ -91,9 +101,15 @@ type Observer struct {
 	network Network
 	pool    *pgxpool.Pool
 	cursors *Cursors
+	leases  *Leases
 	store   *payment.Postgres
 	log     *slog.Logger
 	now     func() time.Time
+	// held is when the lease was last taken or put out again, by this
+	// process's clock. What decides that a lease has lapsed is the database's
+	// clock, so this is read to renew early and to decide nothing. Only the
+	// round reads or writes it.
+	held time.Time
 	// named is the document's name for each asset, by the reference the chain
 	// writes it as. A chain says things about references, and whoever asks
 	// after this deployment is answered in names.
@@ -121,6 +137,7 @@ func New(n Network, pool *pgxpool.Pool, store *payment.Postgres, log *slog.Logge
 		network: n,
 		pool:    pool,
 		cursors: NewCursors(pool),
+		leases:  NewLeases(pool),
 		store:   store,
 		log:     log,
 		now:     now,
@@ -183,6 +200,27 @@ func (o *Observer) replaced(references []string) {
 			o.assets[name] = changed
 		}
 	}
+}
+
+// keep puts the lease out again where little of it is left, and says the round
+// is over where somebody else holds it now.
+//
+// Renewed here rather than by a timer of its own: a timer would hold the
+// network for an observer that had stopped getting anywhere, and nothing else
+// could take it over.
+func (o *Observer) keep(ctx context.Context) error {
+	if o.now().Sub(o.held) < LeaseTTL-RenewBelow {
+		return nil
+	}
+	held, err := o.leases.Renew(ctx, o.network.Name)
+	if err != nil {
+		return err
+	}
+	if !held {
+		return errLost
+	}
+	o.held = o.now()
+	return nil
 }
 
 // tick is one round.
@@ -275,6 +313,9 @@ func (o *Observer) tick(ctx context.Context) (err error) {
 // standing is what the chain says it is and where it stands, or the word for
 // why the round stops here.
 func (o *Observer) standing(ctx context.Context) (chain.Head, error) {
+	if err := o.keep(ctx); err != nil {
+		return chain.Head{}, err
+	}
 	identity, err := o.network.Chain.Identity(ctx)
 	if err != nil {
 		o.says(unreachable)
@@ -309,6 +350,9 @@ func (o *Observer) holds(ctx context.Context, from Position, final chain.Block) 
 		return final.Hash == from.Hash, nil
 	case from.Height + 1:
 		return final.Parent == from.Hash, nil
+	}
+	if err := o.keep(ctx); err != nil {
+		return false, err
 	}
 	block, err := o.network.Chain.Block(ctx, from.Height)
 	if err != nil {
@@ -401,6 +445,9 @@ func (o *Observer) record(ctx context.Context, network payment.Network, first, l
 // every transfer that spent a key some attempt holds, with what the rules made
 // of it.
 func (o *Observer) seen(ctx context.Context, network payment.Network, first, last uint64, behind map[string]string) ([]payment.Seen, error) {
+	if err := o.keep(ctx); err != nil {
+		return nil, err
+	}
 	scan, err := o.network.Chain.Keys(ctx, first, last, o.references())
 	if err != nil {
 		return nil, err
@@ -421,6 +468,9 @@ func (o *Observer) seen(ctx context.Context, network payment.Network, first, las
 	// receipt is not read, so what it moved and who moved it is not looked at.
 	var out []payment.Seen
 	for _, tx := range transactions(scan.Consumed, against) {
+		if err := o.keep(ctx); err != nil {
+			return nil, err
+		}
 		transfers, err := o.network.Chain.Receipt(ctx, tx)
 		if err != nil {
 			return nil, err
@@ -473,6 +523,9 @@ func (o *Observer) write(ctx context.Context, network payment.Network, first, la
 func (o *Observer) at(ctx context.Context, last uint64, final chain.Block) (Position, error) {
 	if last == final.Height {
 		return at(final), nil
+	}
+	if err := o.keep(ctx); err != nil {
+		return Position{}, err
 	}
 	block, err := o.network.Chain.Block(ctx, last)
 	if err != nil {

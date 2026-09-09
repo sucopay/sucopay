@@ -78,6 +78,10 @@ func watch(t *testing.T) *watching {
 		Poll:   12 * time.Second,
 		Width:  50,
 	}, pool.Conns(), store, slog.New(slog.DiscardHandler), time.Now)
+	if taken, err := w.observer.leases.Acquire(t.Context(), w.observer.network.Name); err != nil || !taken {
+		t.Fatal(taken, err)
+	}
+	w.observer.held = time.Now()
 	return w
 }
 
@@ -1297,4 +1301,63 @@ type asking struct {
 func (a *asking) Keys(ctx context.Context, first, last uint64, assets []string) (chain.Scan, error) {
 	a.assets = append([]string(nil), assets...)
 	return a.Chain.Keys(ctx, first, last, assets)
+}
+
+// A round that runs longer than the lease it started under puts the lease out
+// again on the way, so that nothing else takes the network over while this is
+// still writing to it.
+func TestTick_PutsTheLeaseOutAgainWhereLittleOfItIsLeft(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	w.tick(t)
+	w.paid(t, w.attempt.Key())
+	w.observer.held = time.Now().Add(-(LeaseTTL - RenewBelow) - time.Second)
+
+	w.tick(t)
+
+	if left := time.Since(w.observer.held); left > time.Second {
+		t.Errorf("the lease was last put out %s ago, and the round should have renewed it", left)
+	}
+	if rows := w.rows(t); len(rows) != 1 {
+		t.Errorf("the round wrote %+v", rows)
+	}
+}
+
+// A lease this instance no longer holds is another instance reading the same
+// network. The round stops where it is: what it has read belongs to a position
+// somebody else is moving.
+func TestTick_WritesNothingWhenTheLeaseCouldNotBePutOutAgain(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	w.tick(t)
+	w.paid(t, w.attempt.Key())
+	before := w.position(t)
+	w.observer.held = time.Now().Add(-LeaseTTL)
+
+	// Somebody else takes the network over.
+	expire(t, w.pool, w.observer.network.Name)
+	if taken, err := NewLeases(w.pool).Acquire(t.Context(), w.observer.network.Name); err != nil || !taken {
+		t.Fatal(taken, err)
+	}
+
+	if err := w.observer.tick(t.Context()); err == nil {
+		t.Fatal("the round went on without the lease")
+	}
+
+	if at := w.position(t); at != before {
+		t.Errorf("the position moved to %+v", at)
+	}
+	if rows := w.rows(t); len(rows) != 0 {
+		t.Errorf("the round wrote %+v", rows)
+	}
+}
+
+// expire puts a lease's deadline in the past, which is what dying looks like
+// to whoever comes to take it over.
+func expire(t *testing.T, pool *pgxpool.Pool, name string) {
+	t.Helper()
+	if _, err := pool.Exec(t.Context(),
+		`update leases set expires_at = now() - interval '1 second' where name = $1`, name); err != nil {
+		t.Fatal(err)
+	}
 }

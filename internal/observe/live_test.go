@@ -45,6 +45,13 @@ func TestTick_ReadsAPaymentPolygonCarried(t *testing.T) {
 		t.Fatal(err)
 	}
 	o, store := polygon(t, opened)
+	// The round puts the lease out again as it goes, which is something to
+	// hold before it starts. Run takes it; a test calling one round takes it
+	// here.
+	if taken, err := o.leases.Acquire(t.Context(), o.network.Name); err != nil || !taken {
+		t.Fatal(taken, err)
+	}
+	o.held = time.Now()
 
 	account, p := payable(t, store)
 	planted(t, store, account, p)
