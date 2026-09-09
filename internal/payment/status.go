@@ -1,5 +1,7 @@
 package payment
 
+import "slices"
+
 // Status is where a payment has got to.
 //
 // These are the payment's own states, not a transfer's. Whether a transfer has
@@ -54,14 +56,7 @@ func (s Status) Final() bool {
 }
 
 // CanBecome reports whether a payment in status s may move to want.
-func (s Status) CanBecome(want Status) bool {
-	for _, allowed := range next[s] {
-		if allowed == want {
-			return true
-		}
-	}
-	return false
-}
+func (s Status) CanBecome(want Status) bool { return slices.Contains(next[s], want) }
 
 // String returns the status as written.
 func (s Status) String() string { return string(s) }

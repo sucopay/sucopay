@@ -65,8 +65,9 @@ func (r Resolved) Report() []ReportLine {
 	for path, value := range values {
 		secret := Secret(path)
 		if secret {
-			value = "not set"
-			if values[path] != "" {
+			if value == "" {
+				value = "not set"
+			} else {
 				value = "set"
 			}
 		}

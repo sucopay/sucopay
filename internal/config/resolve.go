@@ -289,7 +289,7 @@ func (r *reader) section(section, what string) []string {
 	for name := range entries {
 		if strings.Contains(name, ".") {
 			r.fail(section, "%s name %q contains a dot", what, name)
-			for _, path := range leaves(r.doc, "") {
+			for _, path := range leaves(r.doc) {
 				if strings.HasPrefix(path, section+"."+name+".") {
 					r.seen[path] = true
 				}
@@ -507,7 +507,7 @@ func (r *reader) validateAssets(assets Assets) {
 // misspelt key would otherwise leave its default in place and say nothing,
 // which is the mistake a configuration document invites most.
 func (r *reader) reportUnknownKeys() {
-	for _, path := range leaves(r.doc, "") {
+	for _, path := range leaves(r.doc) {
 		if !r.seen[path] {
 			r.fail(path, "unknown key")
 		}
@@ -521,8 +521,8 @@ func (r *reader) reportUnknownKeys() {
 // A secret path is a leaf whatever it holds. Descending into one would put the
 // keys a secret is written with into a report, which is the shape of the secret
 // even when its values are hidden.
-func leaves(doc map[string]any, prefix string) []string {
-	return leavesTo(doc, prefix, maxDepth)
+func leaves(doc map[string]any) []string {
+	return leavesTo(doc, "", maxDepth)
 }
 
 func leavesTo(doc map[string]any, prefix string, depth int) []string {

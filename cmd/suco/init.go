@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -22,7 +23,7 @@ import (
 // init cannot set the variable. A process sets the environment of what it
 // starts, and init is not what starts serve; so it prints the line that does,
 // for the shell that will.
-func initialise(args []string, stdout io.Writer) error {
+func initialise(_ context.Context, args []string, stdout io.Writer) error {
 	if len(args) > 0 {
 		// Counted: no error repeats a word typed after suco, for the reason
 		// at errUnknown.

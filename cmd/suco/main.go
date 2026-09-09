@@ -37,9 +37,7 @@ type command struct {
 }
 
 var commands = []command{
-	{name: "init", about: "write a configuration document", run: func(_ context.Context, args []string, stdout io.Writer) error {
-		return initialise(args, stdout)
-	}},
+	{name: "init", about: "write a configuration document", run: initialise},
 	{name: "serve", about: "run the server", run: serve},
 	{name: "doctor", about: "show the resolved configuration and its sources", run: doctor},
 	{name: "credential", sub: []command{

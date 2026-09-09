@@ -329,23 +329,29 @@ type Report struct {
 
 // Probe reads what a network says about itself. It writes nothing, so whoever
 // is only asking whether a deployment could observe this network can ask.
-func Probe(ctx context.Context, n Network, cursors *Cursors) (Report, error) {
+func Probe(ctx context.Context, n Network, cursors *Cursors) (_ Report, err error) {
+	// One probe is about one network, and the name goes on whatever it
+	// reports rather than on each of the places that could report something.
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("%s: %w", n.Name, err)
+		}
+	}()
+
 	report := Report{Behind: make(map[string]string, len(n.Assets))}
-	identity, err := n.Chain.Identity(ctx)
-	if err != nil {
-		return Report{}, fmt.Errorf("%s: %w", n.Name, err)
+	if report.Identity, err = n.Chain.Identity(ctx); err != nil {
+		return Report{}, err
 	}
-	report.Identity = identity
 	if report.Head, err = n.Chain.Head(ctx); err != nil {
-		return Report{}, fmt.Errorf("%s: %w", n.Name, err)
+		return Report{}, err
 	}
 	if report.Position, report.Read, err = cursors.Get(ctx, payment.Network(n.Name)); err != nil {
-		return Report{}, fmt.Errorf("%s: %w", n.Name, err)
+		return Report{}, err
 	}
 	for name, asset := range n.Assets {
 		behind, err := n.Chain.Implementation(ctx, asset.Reference())
 		if err != nil {
-			return Report{}, fmt.Errorf("%s: %w", n.Name, err)
+			return Report{}, err
 		}
 		report.Behind[name] = behind
 	}

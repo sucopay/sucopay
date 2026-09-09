@@ -52,9 +52,7 @@ func (q *quantity) UnmarshalJSON(b []byte) error {
 }
 
 // MarshalJSON writes a quantity the way the chain reads one.
-func (q quantity) MarshalJSON() ([]byte, error) {
-	return json.Marshal("0x" + strconv.FormatUint(uint64(q), 16))
-}
+func (q quantity) MarshalJSON() ([]byte, error) { return json.Marshal(q.String()) }
 
 // String is the quantity as it goes into a request.
 func (q quantity) String() string { return "0x" + strconv.FormatUint(uint64(q), 16) }

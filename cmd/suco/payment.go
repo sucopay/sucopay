@@ -32,10 +32,11 @@ func paymentAwait(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	defer o.db.Close()
 
-	account, err := oneAccount(ctx, o.credentials)
+	who, err := oneAccount(ctx, o.credentials)
 	if err != nil {
 		return err
 	}
+	account := payment.AccountID(who)
 	store := payment.NewPostgres(o.db.Conns())
 	service := payment.NewService(store, store, observe.NewCursors(o.db.Conns()), time.Now)
 	// A payment is made payable once, and this command is run again whenever
@@ -43,16 +44,16 @@ func paymentAwait(ctx context.Context, args []string, stdout io.Writer) error {
 	// reads yet, on a deployment whose position was not set. Making a payment
 	// payable that already is would be refused, and would leave the operator
 	// with a payment nothing here could ever issue against.
-	held, err := service.Find(ctx, payment.AccountID(account), id)
+	held, err := service.Find(ctx, account, id)
 	if err != nil {
 		return err
 	}
 	if held.Status() == payment.Created {
-		if _, err := service.Await(ctx, payment.AccountID(account), id); err != nil {
+		if _, err := service.Await(ctx, account, id); err != nil {
 			return err
 		}
 	}
-	a, p, err := service.Issue(ctx, payment.AccountID(account), id)
+	a, p, err := service.Issue(ctx, account, id)
 	if err != nil {
 		return err
 	}

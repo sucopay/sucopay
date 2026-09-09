@@ -1518,8 +1518,15 @@ func TestProbe_ReportsWhatItCouldNotRead(t *testing.T) {
 			w := watch(t)
 			w.chain.FailAt(method, 1, errors.New("the provider said no"))
 
-			if _, err := Probe(t.Context(), w.observer.network, w.observer.cursors); err == nil {
-				t.Errorf("the probe read a network whose %s failed", method)
+			_, err := Probe(t.Context(), w.observer.network, w.observer.cursors)
+			if err == nil {
+				t.Fatalf("the probe read a network whose %s failed", method)
+			}
+			// A deployment reads several networks, and what went wrong on one
+			// of them says nothing until it says which.
+			if !strings.Contains(err.Error(), w.observer.network.Name) {
+				t.Errorf("the probe failed with %q, which does not name %s",
+					err, w.observer.network.Name)
 			}
 		})
 	}
