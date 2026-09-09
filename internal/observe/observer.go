@@ -20,7 +20,8 @@ import (
 // is reading a chain. One network has one of them at a time.
 const (
 	// observing is a round that read the finalised range and wrote what it
-	// found.
+	// found. It stands only while rounds keep finishing: one that has not for
+	// [Stale] is stalled.
 	observing = "observing"
 	// noPosition is a network no round has finished on, whether or not a
 	// position has been written down for it.
@@ -31,8 +32,11 @@ const (
 	// The word is spelt the way the tag it comes from is spelt, because it is
 	// that tag going unanswered that this says.
 	noFinalized = "no-finalized"
-	// stalled is a network whose position nobody has written for [Stale],
-	// which is a reader that stopped rather than a chain that is quiet.
+	// stalled is a network no round has finished on for [Stale], which is a
+	// reader that stopped rather than a chain that is quiet. An instance says
+	// it of its own rounds and of the rounds of whoever holds the lease, and
+	// reads a different thing to know: its own last round, or when the
+	// position was last written.
 	stalled = "stalled"
 	// chainMismatch is a chain that is not the one the document names.
 	chainMismatch = "chain-mismatch"
@@ -190,6 +194,10 @@ type Observer struct {
 	// by the name the document gives it. What is behind one now is compared
 	// with this.
 	started map[string]string
+	// succeeded is when a round last read the finalised range and wrote what
+	// it found. It is what tells a deployment still getting somewhere from one
+	// whose rounds have stopped finishing. Only the round reads or writes it.
+	succeeded time.Time
 	// held is when the lease was last taken or put out again, by this
 	// process's clock. What decides that a lease has lapsed is the database's
 	// clock, so this is read to renew early and to decide nothing. Only the
@@ -423,10 +431,32 @@ func (o *Observer) round(ctx context.Context) {
 	err = o.tick(ctx)
 	if err != nil {
 		o.log.Warn("the round did not finish", "network", o.network.Name, "error", err.Error())
+		o.stalling()
 	}
 	o.after(err)
 	if err == nil {
 		o.looking(ctx)
+	}
+}
+
+// went says a round finished the finalised range and wrote what it read. The
+// word and the moment move together, because the word stands on the moment.
+func (o *Observer) went() {
+	o.says(observing)
+	o.succeeded = o.now()
+}
+
+// stalling takes back the word that says rounds are getting through, once none
+// has for [Stale].
+//
+// A round that stopped for a reason of its own has already said what it was,
+// and those words stand. This is for the rounds that stop without one: every
+// failure to write, and every call a round makes to the chain after the head.
+// Without it the instance holding the lease is the one that cannot say it has
+// stopped, while every instance waiting on it can.
+func (o *Observer) stalling() {
+	if o.said() == observing && o.now().Sub(o.succeeded) > Stale {
+		o.says(stalled)
 	}
 }
 
@@ -550,7 +580,7 @@ func (o *Observer) tick(ctx context.Context) (err error) {
 	} else if err := o.stood(ctx, network, from); err != nil {
 		return err
 	}
-	o.says(observing)
+	o.went()
 
 	// Ahead of finality nothing moves the position. What is found there is
 	// written as evidence and read again when the finalised range reaches it,

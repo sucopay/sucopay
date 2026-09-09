@@ -1185,6 +1185,58 @@ func TestTick_SaysOnceThatTheChainNoLongerHoldsThePosition(t *testing.T) {
 	}
 }
 
+// A round that stops without a word of its own leaves the last one standing,
+// and the last one says rounds are getting through. The instance holding the
+// lease is the one that has to take that back: every other instance reads when
+// the position was last written, and the holder is who stopped writing it.
+func TestRound_SaysStalledOnceNoRoundHasFinishedForStale(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	w.tick(t)
+	w.paid(t, w.attempt.Key())
+	w.tick(t)
+	if network, _ := w.observer.Words(); network != observing {
+		t.Fatalf("a round that went through says %q, want %q", network, observing)
+	}
+
+	// A call the round makes after the head, which is where a round stops
+	// without saying anything more particular than that it did.
+	w.paid(t, w.attempt.Key())
+	w.chain.FailAt("Keys", 1, errors.New("the provider said no"))
+	w.observer.round(t.Context())
+	if network, _ := w.observer.Words(); network != observing {
+		t.Errorf("a round that failed inside %s says %q, want %q", Stale, network, observing)
+	}
+
+	w.chain.FailAt("Keys", 1, errors.New("the provider said no"))
+	w.observer.now = func() time.Time { return time.Now().Add(Stale + time.Second) }
+	w.observer.round(t.Context())
+	if network, _ := w.observer.Words(); network != stalled {
+		t.Errorf("a round that has not finished for %s says %q, want %q", Stale, network, stalled)
+	}
+}
+
+// A round that stopped for a reason of its own has already said what it was,
+// and no length of time turns that into somebody having stopped reading. Which
+// of the two an operator is told decides where they go looking.
+func TestRound_LeavesAWordARoundSaidForItself(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	w.tick(t)
+	w.paid(t, w.attempt.Key())
+	w.tick(t)
+
+	// The head is what a round reads first, and a provider that will not
+	// answer for it is one the round names.
+	w.chain.FailAt("Head", 1, errors.New("the provider said no"))
+	w.observer.now = func() time.Time { return time.Now().Add(Stale + time.Second) }
+	w.observer.round(t.Context())
+
+	if network, _ := w.observer.Words(); network != unreachable {
+		t.Errorf("the network says %q, want %q", network, unreachable)
+	}
+}
+
 // What a deployment is asked about is one word for the network and one for
 // each asset. The names are the document's, because a reference names one
 // token on four chains and would say which of them nothing.
