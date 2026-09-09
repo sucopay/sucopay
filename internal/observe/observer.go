@@ -48,6 +48,23 @@ const (
 // half of what a lease runs for.
 const RenewBelow = 15 * time.Second
 
+// MaxInterval is the longest a round waits for the one after it. A provider
+// refusing everything is asked 288 times a day at this, which is a rate
+// nothing has to be spared from.
+const MaxInterval = 300 * time.Second
+
+// RecoverAfter is how many rounds have to read their span before the span goes
+// back up. A provider that refused a span once tends to refuse it again, so
+// the way back is slow.
+const RecoverAfter = 100
+
+// minWidth is the narrowest span a round asks for. Narrower than this and a
+// round stops keeping up with a chain that makes a block every two seconds,
+// whatever the provider will answer. It is the narrowest a document may set as
+// well, for a reason of its own: this package reads no configuration, so the
+// two are the same number by agreement rather than by construction.
+const minWidth = 10
+
 // errLost says the lease is somebody else's now. The round stops where it is,
 // and whoever is running it goes back to asking for the lease.
 var errLost = errors.New("observe: the lease is held by another instance")
@@ -82,14 +99,54 @@ type Network struct {
 	Width int
 }
 
-// blocks is the width as a count of blocks, and none for a width that is not
-// one. The document a width comes from holds it above zero, and a round reads
-// this before it reads a chain.
-func (n Network) blocks() uint64 {
-	if n.Width <= 0 {
+// blocks is what one round asks for now, as a count of blocks. A width that is
+// not one reads as none, and a round that would read no blocks stops rather
+// than asking for a span nobody named.
+func (o *Observer) blocks() uint64 {
+	if o.width <= 0 {
 		return 0
 	}
-	return uint64(n.Width)
+	return uint64(o.width)
+}
+
+// after moves the span and the wait on what the round came to.
+//
+// A refusal of the span narrows it, a refusal for the rate of calls lengthens
+// the wait, and rounds that go through undo both. A provider that has not
+// caught up says nothing about either: that round read nothing.
+func (o *Observer) after(err error) {
+	if o.said() == finalizedBehind {
+		return
+	}
+	if err == nil {
+		o.interval = max(o.interval/2, o.network.Poll)
+		o.passed++
+		if o.passed >= RecoverAfter {
+			o.width, o.passed = min(2*o.width, o.network.Width), 0
+		}
+		return
+	}
+	o.passed = 0
+	var limited chain.RateLimited
+	switch {
+	case errors.As(err, &limited):
+		// What the provider asked to be waited for, where that is a wait this
+		// would take anyway. Longer than the longest is the provider's idea of
+		// a day off, and how long to stay away is this deployment's to decide;
+		// shorter than the document's own interval is not an invitation to
+		// read a chain faster than it was set to.
+		if after := limited.RetryAfter; after > 0 && after <= MaxInterval {
+			o.interval = max(after, o.network.Poll)
+			return
+		}
+		o.interval = min(2*o.interval, MaxInterval)
+	case errors.Is(err, chain.ErrTooWide):
+		// Never wider than it was: a refusal is not a reason to ask for more,
+		// whatever the narrowest a round reads happens to be.
+		if o.width > minWidth {
+			o.width = max(o.width/2, minWidth)
+		}
+	}
 }
 
 // Observer reads one network and writes down what it finds there.
@@ -105,6 +162,11 @@ type Observer struct {
 	store   *payment.Postgres
 	log     *slog.Logger
 	now     func() time.Time
+	// What one round asks for and how long the one after it waits, as the
+	// provider's answers have moved them. Only the round reads or writes them.
+	width    int
+	interval time.Duration
+	passed   int
 	// held is when the lease was last taken or put out again, by this
 	// process's clock. What decides that a lease has lapsed is the database's
 	// clock, so this is read to renew early and to decide nothing. Only the
@@ -131,6 +193,8 @@ func New(n Network, pool *pgxpool.Pool, store *payment.Postgres, log *slog.Logge
 		assets[name] = unchanged
 	}
 	return &Observer{
+		width:    n.Width,
+		interval: n.Poll,
 		// Nothing has been read from this network yet, and a network nothing
 		// has been read from is not one to say anything better about.
 		word:    unreachable,
@@ -242,8 +306,8 @@ func (o *Observer) tick(ctx context.Context) (err error) {
 	// A round reads at least one block. A width that says otherwise would have
 	// a range run backwards, which is a provider asked for nothing and a
 	// position moved past blocks nobody read.
-	if o.network.blocks() == 0 {
-		return fmt.Errorf("one round is set to read %d blocks", o.network.Width)
+	if o.blocks() == 0 {
+		return fmt.Errorf("one round is set to read %d blocks", o.width)
 	}
 	head, err := o.standing(ctx)
 	if err != nil {
@@ -366,7 +430,7 @@ func (o *Observer) holds(ctx context.Context, from Position, final chain.Block) 
 // the position it read to.
 func (o *Observer) settled(ctx context.Context, network payment.Network, from Position, final chain.Block, behind map[string]string) error {
 	first, last := from.Height+1, final.Height
-	if reach := from.Height + o.network.blocks(); last > reach {
+	if reach := from.Height + o.blocks(); last > reach {
 		last = reach
 	}
 	seen, err := o.seen(ctx, network, first, last, behind)
@@ -410,7 +474,7 @@ func (o *Observer) ahead(ctx context.Context, network payment.Network, head chai
 	first, last := head.Final.Height+1, head.Latest.Height
 	// The width is counted back from the newest block, because the newest is
 	// the end a reader ahead of finality is interested in.
-	if width := o.network.blocks(); last-first+1 > width {
+	if width := o.blocks(); last-first+1 > width {
 		first = last - width + 1
 	}
 	seen, err := o.seen(ctx, network, first, last, behind)

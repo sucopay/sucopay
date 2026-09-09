@@ -3,6 +3,7 @@ package observe
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"reflect"
 	"slices"
@@ -746,7 +747,7 @@ func TestTick_ReadsNoMoreBlocksThanItsWidth(t *testing.T) {
 	t.Parallel()
 	w := watch(t)
 	w.tick(t)
-	w.observer.network.Width = 2
+	w.observer.width = 2
 	w.chain.Mine()
 	w.chain.Mine()
 	w.chain.Send(w.sending(w.attempt.Key()))
@@ -833,7 +834,7 @@ func TestTick_ReadsNothingWhereARoundIsSetToReadNoBlocks(t *testing.T) {
 	w.tick(t)
 	w.paid(t, w.attempt.Key())
 	before := w.position(t)
-	w.observer.network.Width = 0
+	w.observer.width = 0
 
 	if err := w.observer.tick(t.Context()); err == nil {
 		t.Fatal("the round reported success while set to read no blocks")
@@ -1359,5 +1360,102 @@ func expire(t *testing.T, pool *pgxpool.Pool, name string) {
 	if _, err := pool.Exec(t.Context(),
 		`update leases set expires_at = now() - interval '1 second' where name = $1`, name); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A provider that refuses the span narrows what the next round asks for, and
+// the rounds that go through widen it again. Neither happens all at once: the
+// span that was refused is the one the next round has to get through.
+func TestRun_NarrowsTheSpanItAsksForAndWidensItBack(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	w.observer.width = 40
+
+	w.observer.after(fmt.Errorf("reading: %w", chain.ErrTooWide))
+	if w.observer.width != 20 {
+		t.Errorf("the round reads %d blocks, want 20", w.observer.width)
+	}
+	for range 4 {
+		w.observer.after(fmt.Errorf("reading: %w", chain.ErrTooWide))
+	}
+	if w.observer.width != minWidth {
+		t.Errorf("the round reads %d blocks, want the narrowest %d", w.observer.width, minWidth)
+	}
+
+	for range RecoverAfter - 1 {
+		w.observer.after(nil)
+	}
+	if w.observer.width != minWidth {
+		t.Errorf("the round reads %d blocks after %d that went through", w.observer.width, RecoverAfter-1)
+	}
+	w.observer.after(nil)
+	if w.observer.width != 2*minWidth {
+		t.Errorf("the round reads %d blocks, want %d", w.observer.width, 2*minWidth)
+	}
+}
+
+// A provider that refuses for the rate of calls is waited for, and the wait
+// comes back down as rounds go through. What the provider asked to be waited
+// for is what it gets, where that is a wait this would take anyway.
+func TestRun_WaitsLongerWhenAProviderRefusesForTheRateOfCalls(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		after time.Duration
+		want  time.Duration
+	}{
+		{name: "a refusal that asks for nothing", want: 24 * time.Second},
+		{name: "a refusal that asks for thirty seconds", after: 30 * time.Second, want: 30 * time.Second},
+		{name: "a refusal that asks for less than the document set", after: 7 * time.Second, want: 12 * time.Second},
+		{name: "a refusal that asks for longer than this waits", after: 900 * time.Second, want: 24 * time.Second},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			w := watch(t)
+
+			w.observer.after(fmt.Errorf("reading: %w", chain.RateLimited{RetryAfter: c.after}))
+
+			if w.observer.interval != c.want {
+				t.Errorf("the next round waits %s, want %s", w.observer.interval, c.want)
+			}
+		})
+	}
+}
+
+// The wait stops going up where a provider that refuses everything would
+// otherwise be asked once a day, and comes back down to what the document set.
+func TestRun_KeepsTheWaitBetweenWhatWasSetAndWhatIsWorthWaiting(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+
+	for range 20 {
+		w.observer.after(fmt.Errorf("reading: %w", chain.RateLimited{}))
+	}
+	if w.observer.interval != MaxInterval {
+		t.Errorf("the next round waits %s, want %s", w.observer.interval, MaxInterval)
+	}
+
+	for range 20 {
+		w.observer.after(nil)
+	}
+	if w.observer.interval != w.observer.network.Poll {
+		t.Errorf("the next round waits %s, want the %s the document set", w.observer.interval, w.observer.network.Poll)
+	}
+}
+
+// A provider that has not caught up says nothing about how fast it is being
+// read or how wide a span it will take: the round read nothing.
+func TestRun_LeavesTheWaitAndTheSpanWhereTheFinalBlockIsBelowThePosition(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	w.observer.interval = 2 * time.Minute
+	w.observer.width = 40
+	w.observer.says(finalizedBehind)
+
+	w.observer.after(nil)
+
+	if w.observer.interval != 2*time.Minute || w.observer.width != 40 {
+		t.Errorf("the round waits %s and reads %d blocks", w.observer.interval, w.observer.width)
 	}
 }
