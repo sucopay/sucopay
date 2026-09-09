@@ -882,19 +882,14 @@ func TestRun_ServeRefusesANetworkNothingReads(t *testing.T) {
 			[]string{"networks.local"},
 		},
 		{
-			"one with an rpc, though an asset refers to it",
-			anEVMNetwork("local") + anAsset("local"),
-			[]string{"networks.local.rpc"},
-		},
-		{
 			"the one no asset refers to, beside one an asset does",
 			anAssetOn("local", "  other:\n    kind: simulated\n"),
 			[]string{"networks.other"},
 		},
 		{
-			"one no asset refers to, with an rpc: both are said",
+			"one no asset refers to, whatever else it declares",
 			anEVMNetwork("local"),
-			[]string{"networks.local", "networks.local.rpc"},
+			[]string{"networks.local"},
 		},
 		{
 			"two no asset refers to, in the order of their names",
@@ -935,6 +930,19 @@ func TestRun_ServeRefusesANetworkNothingReads(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// An endpoint is read now, so a document naming one is one an instance
+// starts on. It was refused for as long as nothing read it, which is a
+// refusal that had to go when something did.
+func TestRun_DoctorAcceptsANetworkReachedOverAnEndpoint(t *testing.T) {
+	document(t, anEVMNetwork("local")+anAsset("local"))
+
+	_, _, err := runArgs(t, "doctor")
+
+	if err != nil {
+		t.Fatalf("err = %v, want none", err)
 	}
 }
 
@@ -1001,6 +1009,33 @@ func TestRun_ServeReadsTheNetworkItsAssetSettlesOnAndSaysSo(t *testing.T) {
 	}
 	if status != http.StatusOK {
 		t.Errorf("/readyz = %d, want %d", status, http.StatusOK)
+	}
+}
+
+// A deployment reading nothing is one no payment could be seen arriving in,
+// and is taken out of service. The endpoint it could not reach may carry a
+// key, and the probe is read by whoever can reach the port.
+func TestRun_ServeSaysNothingOfTheEndpointOnAProbe(t *testing.T) {
+	port := freePort(t)
+	deployed(t)
+	document(t, fmt.Sprintf("listen:\n  port: %d\n%s%s", port, namingADatabase(),
+		"networks:\n  local:\n    kind: evm\n    chain_id: 137\n"+
+			"    rpc: http://127.0.0.1:1/v1?key=secret\n"+anAsset("local")))
+	_, stop := serving(t)
+	defer stop()
+
+	status, body, raw := readyz(t, port)
+
+	if status != http.StatusServiceUnavailable {
+		t.Errorf("/readyz = %d, want %d from a deployment reading no network", status, http.StatusServiceUnavailable)
+	}
+	if body["status"] != "unavailable" {
+		t.Errorf("status = %v, want unavailable", body["status"])
+	}
+	for _, part := range []string{"key=secret", "secret", "127.0.0.1:1", "/v1", "rpc"} {
+		if strings.Contains(raw, part) {
+			t.Errorf("the probe answered with %q of the endpoint:\n%s", part, raw)
+		}
 	}
 }
 

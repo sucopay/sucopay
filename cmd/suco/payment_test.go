@@ -164,3 +164,23 @@ func TestRun_HelpSaysWhatPaymentAwaitIsFor(t *testing.T) {
 		t.Errorf("the usage text does not say what payment await stands in for:\n%s", stdout)
 	}
 }
+
+// The chain a payer's signature is bound to is the one the document names.
+// A network that runs inside the process has none, and prints zero.
+func TestRun_PaymentAwaitPrintsTheChainTheDocumentNames(t *testing.T) {
+	d := deployed(t)
+	document(t, namingADatabase()+anEVMNetwork("local")+anAsset("local"))
+	if _, _, err := runArgs(t, "asset", "accept", "jpyc", theAddress); err != nil {
+		t.Fatal(err)
+	}
+	p := awaiting(t, d)
+
+	stdout, _, err := runArgs(t, "payment", "await", p.ID().String())
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout, "chainId 1\n") {
+		t.Errorf("the authorisation names no chain the document declared:\n%s", stdout)
+	}
+}
