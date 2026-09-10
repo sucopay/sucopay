@@ -28,13 +28,13 @@ One word for each network:
 | | |
 |---|---|
 | `observing` | A round finished within the last 60 seconds. Finishing is reading the finalised range and writing what it found; a failure ahead of finality does not count |
-| `no-position` | The chain answers and is the one the document names, and no round has finished yet |
+| `no-cursor` | The chain answers and is the one the document names, and no round has finished yet |
 | `unreachable` | The last read of the head failed |
-| `stalled` | No round has finished for 60 seconds. A provider that has dropped the history the position sits in leaves a network here |
+| `stalled` | No round has finished for 60 seconds. A provider that has dropped the history the cursor sits in leaves a network here |
 | `chain-mismatch` | `eth_chainId` is not what the document names. Nothing is read or written |
 | `no-finalized` | The provider will not say which block is final. Nothing is read or written |
-| `finalized-changed` | The chain no longer holds the block the position names. Nothing moves until somebody puts the position where it does |
-| `finalized-behind` | The provider's final block is below the position. It is behind, and reading resumes when it catches up |
+| `finalized-changed` | The chain no longer holds the block the cursor sits on. Nothing moves until somebody puts the cursor where it does |
+| `finalized-behind` | The provider's final block is below the cursor. It is behind, and reading resumes when it catches up |
 
 Sixty seconds is twice the term of the lease one instance holds on a network, which leaves whoever
 takes over time to finish a round of their own.
@@ -78,14 +78,17 @@ instance would meet. It writes nothing.
 A deployment with no database, or one nothing has applied the schema to, still has its chains
 read. What it cannot say is how far each has been read.
 
-## suco network position
+## suco network cursor
 
 ```bash
-suco network position <name> <height>
+suco network cursor <name> <height>
 ```
 
-A chain that no longer holds the block the position names is one no round reads past. How far back
-to go is not something a round can work out, so this is how somebody puts the position where the
+A cursor is what moves and a position is where it is. Each network has one, and it holds the
+height a round has read to and the hash of the block there.
+
+A chain that no longer holds the block the cursor sits on is one no round reads past. How far back
+to go is not something a round can work out, so this is how somebody puts the cursor where the
 chain does hold a block. `/readyz` says `finalized-changed` while a network is in that state.
 
 The block at that height is read from the chain and its hash is written with it. A height alone
@@ -94,12 +97,12 @@ does not say which chain it was on.
 No lease is taken. A round advances on a condition of the position it read, so one under way when
 this writes does not commit its advance, and the round after it reads from where this put it.
 
-**Nothing reads the blocks it skips.** Putting the position forward past blocks no round has read
+**Nothing reads the blocks it skips.** Putting the cursor forward past blocks no round has read
 means every transfer in them goes unseen, and there is no later pass that finds them. The command
-does not compare the height against where the position is: a provider that has dropped its history
+does not compare the height against where the cursor is: a provider that has dropped its history
 is exactly the case this exists for, and there the only way on is forward.
 
-Both positions go to the log, the one it replaced included. That is what puts it back.
+Where the cursor was and where it is now both go to the log. Where it was is what puts it back.
 
 ## suco payment await
 

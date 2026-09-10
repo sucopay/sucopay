@@ -23,7 +23,7 @@ type Chains interface {
 // arrive, and is taken out of service.
 //
 // The words a network can be in besides these leave it in service. The chain
-// having moved under the position, no round having finished yet, and a
+// having moved under the cursor, no round having finished yet, and a
 // provider that has not caught up are all states somebody has to act on, and
 // the one who acts is the operator or the provider rather than whatever reads
 // this.

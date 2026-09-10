@@ -717,8 +717,8 @@ func TestTick_TakesThePositionOnTheFirstRoundAndReadsNothingBelowIt(t *testing.T
 
 	w.tick(t)
 
-	if w.observer.said() != noPosition {
-		t.Errorf("the network is %q, want %q", w.observer.said(), noPosition)
+	if w.observer.said() != noCursor {
+		t.Errorf("the network is %q, want %q", w.observer.said(), noCursor)
 	}
 	if called := w.chain.Calls()["Keys"]; called != 0 {
 		t.Errorf("the chain was asked for keys %d times", called)
@@ -1682,8 +1682,8 @@ func TestRun_SaysWhatItCanWhereAnotherInstanceHoldsTheNetwork(t *testing.T) {
 	nowhere := New(Network{Name: "nowhere", Chain: w.chain, Poll: time.Second, Width: 50},
 		w.pool, w.store, slog.New(slog.DiscardHandler), time.Now)
 	nowhere.round(t.Context())
-	if nowhere.said() != noPosition {
-		t.Errorf("a network nobody has read says %q, want %q", nowhere.said(), noPosition)
+	if nowhere.said() != noCursor {
+		t.Errorf("a network nobody has read says %q, want %q", nowhere.said(), noCursor)
 	}
 	if called := w.chain.Calls()["Keys"]; called != 0 {
 		t.Errorf("the instance without the lease read %d spans", called)
@@ -1711,7 +1711,7 @@ func TestRun_SaysWhyTheFirstReadFailedAndCarriesOn(t *testing.T) {
 		t.Errorf("the network is %q, want %q", w.observer.said(), noFinalized)
 	}
 	w.tick(t)
-	if w.observer.said() != noPosition {
+	if w.observer.said() != noCursor {
 		t.Errorf("the network is %q after a round that went through", w.observer.said())
 	}
 }

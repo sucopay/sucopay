@@ -115,13 +115,13 @@ func TestRun_DoctorSaysWhereEachNetworkStands(t *testing.T) {
 	}
 	networks := networksIn(t, stdout)
 	for _, want := range []string{
-		"local",       // the name the document gives it
-		"evm",         // what this build opens it as
-		"chain 137",   // what the chain calls itself
-		"latest 16",   // where the chain stands
-		"final 16",    //
-		"no position", // how far this deployment has read it
-		"jpyc",        // what settles on it
+		"local",     // the name the document gives it
+		"evm",       // what this build opens it as
+		"chain 137", // what the chain calls itself
+		"latest 16", // where the chain stands
+		"final 16",  //
+		"no cursor", // how far this deployment has read it
+		"jpyc",      // what settles on it
 		// and the code that chain runs for it, which is what an upgrade of a
 		// proxy changes under a deployment that is not watching for it.
 		"implementation 0x" + strings.Repeat("00", 20),
@@ -132,10 +132,10 @@ func TestRun_DoctorSaysWhereEachNetworkStands(t *testing.T) {
 	}
 }
 
-// The chain answering and the position being readable are two questions with
+// The chain answering and the cursor being readable are two questions with
 // two answers. Asked as one, an operator whose database is short of the table
 // reads it as an endpoint that will not answer, and changes their provider.
-func TestRun_DoctorTellsAChainItCannotReadFromAPositionItCannot(t *testing.T) {
+func TestRun_DoctorTellsAChainItCannotReadFromACursorItCannot(t *testing.T) {
 	d := deployed(t)
 	document(t, namingADatabase()+anAssetOn("local", ""))
 	if _, err := d.pool.Conns().Exec(t.Context(), `drop table observation_cursors`); err != nil {
@@ -148,8 +148,8 @@ func TestRun_DoctorTellsAChainItCannotReadFromAPositionItCannot(t *testing.T) {
 		t.Fatalf("err = %v, want none", err)
 	}
 	networks := networksIn(t, stdout)
-	if !strings.Contains(networks, "the position could not be read") {
-		t.Errorf("the report does not say it was the position that could not be read:\n%s", networks)
+	if !strings.Contains(networks, "the cursor could not be read") {
+		t.Errorf("the report does not say it was the cursor that could not be read:\n%s", networks)
 	}
 	// The chain answered, and the report has to say so: it is the half the
 	// operator would otherwise go and change.

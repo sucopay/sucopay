@@ -25,6 +25,10 @@ var ErrMoved = errors.New("observe: the position moved since it was read")
 
 // Position is a block a network has been read up to.
 //
+// A cursor is what moves and a position is where it is. [Cursors] holds one
+// cursor for each network, and this is the value it holds; what an operator
+// moves, and what a word like finalized-changed is about, is the cursor.
+//
 // The hash is held with the height because a height alone does not say which
 // chain it was on: the block at a height can be replaced, and a reader that
 // carried on from the height would skip whatever the new block holds.

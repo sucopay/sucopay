@@ -200,7 +200,7 @@ func TestRun_EveryCommandRefusesWordsItDoesNotTakeByTheirCountBeforeReadingTheDo
 		"credential new":    {"--read-only"},
 		"credential revoke": {string(credential.NewID())},
 		"asset accept":      {"jpyc", theAddress},
-		"network position":  {"local", "0"},
+		"network cursor":    {"local", "0"},
 	}
 	for _, path := range paths(commands) {
 		t.Run(strings.Join(path, " "), func(t *testing.T) {
@@ -234,7 +234,7 @@ func TestRun_NoCommandRepeatsAWordItRefuses(t *testing.T) {
 		"credential new":    {"--read-only"},
 		"credential revoke": {string(credential.NewID())},
 		"asset accept":      {"jpyc", theAddress},
-		"network position":  {"local", "0"},
+		"network cursor":    {"local", "0"},
 	}
 	var cases [][]string
 	for _, path := range paths(commands) {
@@ -988,7 +988,7 @@ func TestRun_ServeReadsTheNetworkItsAssetSettlesOnAndSaysSo(t *testing.T) {
 	_, stop := serving(t)
 	defer stop()
 
-	// The first round takes the position and reads nothing below it, so the
+	// The first round places the cursor and reads nothing below it, so the
 	// word a deployment settles on is the one the round after it says.
 	var status int
 	var body map[string]any

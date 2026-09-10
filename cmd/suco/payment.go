@@ -41,7 +41,7 @@ func paymentAwait(ctx context.Context, args []string, stdout io.Writer) error {
 	service := payment.NewService(store, store, observe.NewCursors(o.db.Conns()), time.Now)
 	// A payment is made payable once, and this command is run again whenever
 	// the first run stopped before the key was issued: on a network nothing
-	// reads yet, on a deployment whose position was not set. Making a payment
+	// reads yet, on a deployment whose cursor was not set. Making a payment
 	// payable that already is would be refused, and would leave the operator
 	// with a payment nothing here could ever issue against.
 	held, err := service.Find(ctx, account, id)

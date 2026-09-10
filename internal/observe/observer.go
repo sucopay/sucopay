@@ -24,9 +24,9 @@ const (
 	// found. It stands only while rounds keep finishing: one that has not for
 	// [Stale] is stalled.
 	observing = "observing"
-	// noPosition is a network no round has finished on, whether or not a
-	// position has been written down for it.
-	noPosition = "no-position"
+	// noCursor is a network no round has finished on, whether or not a cursor
+	// has been written down for it.
+	noCursor = "no-cursor"
 	// unreachable is a provider that did not answer.
 	unreachable = "unreachable"
 	// noFinalized is a provider that will not answer for the finalized block.
@@ -36,17 +36,17 @@ const (
 	// stalled is a network no round has finished on for [Stale], which is a
 	// reader that stopped rather than a chain that is quiet. An instance says
 	// it of its own rounds and of the rounds of whoever holds the lease, and
-	// reads a different thing to know: its own last round, or when the
-	// position was last written.
+	// reads a different thing to know: its own last round, or when the cursor
+	// was last written.
 	stalled = "stalled"
 	// chainMismatch is a chain that is not the one the document names.
 	chainMismatch = "chain-mismatch"
-	// finalizedBehind is a provider whose final block is below the position,
-	// which is a block another provider had already called final.
+	// finalizedBehind is a provider whose final block is below the cursor,
+	// which sits on a block another provider had already called final.
 	finalizedBehind = "finalized-behind"
-	// finalizedChanged is a chain that no longer holds the block the position
-	// names. Nothing moves until somebody puts the position somewhere the
-	// chain does hold.
+	// finalizedChanged is a chain that no longer holds the block the cursor
+	// sits on. Nothing moves until somebody puts the cursor where the chain
+	// does hold one.
 	finalizedChanged = "finalized-changed"
 )
 
@@ -115,7 +115,7 @@ const (
 // holds it against, so that a word renamed or added here fails there rather
 // than falling to whatever a word it does not know happens to get.
 func NetworkWords() []string {
-	words := []string{observing, noPosition, unreachable, noFinalized,
+	words := []string{observing, noCursor, unreachable, noFinalized,
 		stalled, chainMismatch, finalizedBehind, finalizedChanged}
 	slices.Sort(words)
 	return words
@@ -446,7 +446,7 @@ func (o *Observer) start(ctx context.Context) {
 		o.says(chainMismatch)
 		return
 	}
-	o.says(noPosition)
+	o.says(noCursor)
 }
 
 // round is one turn of the loop: read where the lease allows it, and say what
@@ -501,9 +501,9 @@ func (o *Observer) waiting(ctx context.Context) {
 	touched, found, err := o.cursors.Touched(ctx, payment.Network(o.network.Name))
 	switch {
 	case err != nil:
-		o.log.Warn("the position could not be read", "network", o.network.Name, "error", shown(err))
+		o.log.Warn("the cursor could not be read", "network", o.network.Name, "error", shown(err))
 	case !found:
-		o.says(noPosition)
+		o.says(noCursor)
 	case o.now().Sub(touched) > Stale:
 		o.says(stalled)
 	default:
@@ -573,7 +573,7 @@ func (o *Observer) tick(ctx context.Context) (err error) {
 		// The first round reads nothing. An attempt is issued against the
 		// position of the moment, so nothing below the block this starts at
 		// was ever payable.
-		o.says(noPosition)
+		o.says(noCursor)
 		return o.cursors.Init(ctx, network, at(head.Final), o.now())
 	}
 
@@ -584,20 +584,20 @@ func (o *Observer) tick(ctx context.Context) (err error) {
 		o.says(finalizedBehind)
 		return nil
 	}
-	// Reading on from a position the chain no longer holds would be reading a
+	// Reading on from a block the chain no longer holds would be reading a
 	// chain other than the one the records came off. How far back to go is not
-	// something this can work out: whoever put the position there is who puts
-	// it somewhere else.
+	// something this can work out: whoever put the cursor there is who puts it
+	// somewhere else.
 	held, err := o.holds(ctx, from, head.Final)
 	if err != nil {
 		return err
 	}
 	if !held {
 		// Once, on the way into the state. The rounds after it find the same
-		// thing until somebody moves the position, and saying so every time
+		// thing until somebody moves the cursor, and saying so every time
 		// would bury what else the deployment has to say.
 		if o.said() != finalizedChanged {
-			o.log.Warn("the chain no longer holds the block the position names",
+			o.log.Warn("the chain no longer holds the block the cursor sits on",
 				"network", o.network.Name, "height", from.Height)
 		}
 		o.says(finalizedChanged)

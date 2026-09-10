@@ -15,12 +15,15 @@ import (
 	"github.com/sucopay/sucopay/internal/payment"
 )
 
-// networkPosition puts a network's position where an operator says.
+// networkCursor puts a network's cursor where an operator says.
+//
+// A cursor is what moves and a position is where it is: the row holds a height
+// and the hash of the block at it, and this is what moves the row.
 //
 // It is how a deployment that has stopped is started again. A chain that no
-// longer holds the block the position names is one no round will read past,
+// longer holds the block the cursor sits on is one no round will read past,
 // and how far back to go is not something a round can work out: whoever put
-// the position there is who puts it somewhere else.
+// the cursor there is who puts it somewhere else.
 //
 // The block at the height is read from the chain and its hash written with it.
 // A height alone does not say which chain it was on, and a reader carrying on
@@ -30,15 +33,15 @@ import (
 // No lease is taken. A round advances on a condition of the position it read,
 // so one under way when this writes does not commit its advance, and the round
 // after it reads from where this put it.
-func networkPosition(ctx context.Context, args []string, stdout io.Writer) error {
+func networkCursor(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) != 2 {
 		// Counted: no error repeats a word typed after suco, for the reason
 		// at errUnknown.
-		return fmt.Errorf("network position takes the name of a network and a height, got %d arguments", len(args))
+		return fmt.Errorf("network cursor takes the name of a network and a height, got %d arguments", len(args))
 	}
 	height, err := strconv.ParseUint(args[1], 10, 64)
 	if err != nil {
-		return errors.New("network position takes a height, which is a whole number of blocks")
+		return errors.New("network cursor takes a height, which is a whole number of blocks")
 	}
 	o, err := openStore(ctx)
 	if err != nil {
@@ -79,13 +82,14 @@ func networkPosition(ctx context.Context, args []string, stdout io.Writer) error
 		return err
 	}
 
-	// Both positions on one line. Where it was is what puts it back, for an
-	// operator who has just found out they moved it to the wrong place.
+	// Where the cursor was and where it is now, on one line. Where it was is
+	// what puts it back, for an operator who has just found out they moved it
+	// to the wrong place.
 	moved := []any{
 		slog.String("network", read.Name),
 		slog.Uint64("height", block.Height),
 		// A hash is longer than a version: an EVM chain writes 66 characters,
-		// and one cut short is one nobody can put the position back from.
+		// and one cut short is one nobody can put the cursor back from.
 		slog.String("hash", invisible.Shown(block.Hash, payment.MaxTransferField)),
 	}
 	if had {
@@ -93,6 +97,6 @@ func networkPosition(ctx context.Context, args []string, stdout io.Writer) error
 			slog.Uint64("from_height", before.Height),
 			slog.String("from_hash", invisible.Shown(before.Hash, payment.MaxTransferField)))
 	}
-	log.InfoContext(ctx, "the position was put where it was asked for", moved...)
+	log.InfoContext(ctx, "the cursor was put where it was asked for", moved...)
 	return nil
 }

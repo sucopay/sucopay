@@ -108,7 +108,10 @@ func (s *Service) Find(ctx context.Context, account AccountID, id ID) (*Payment,
 // being handed out for a chain nothing has ever watched: the payer would sign,
 // the transfer would land, and nobody would ever look.
 //
-// Ever, and not lately. A reader that has stopped left its position where it
+// Position, and not the cursor whoever reads a chain calls it: the question
+// here is whether a place has ever been recorded, not what moves.
+//
+// Ever, and not lately. A reader that has stopped left its cursor where it
 // was, and the round that picks the network up again reads forward from there,
 // so a transfer that arrived while it was stopped is seen late rather than
 // missed. Refusing to issue while a provider has a bad minute would fail a

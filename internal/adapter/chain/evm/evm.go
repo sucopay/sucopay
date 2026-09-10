@@ -86,8 +86,8 @@ func noFinalBlock(err error) error {
 // A block is asked for by height, and one that came back under another one
 // would be written down under the height that was asked for. What the observer
 // takes as its next position is the block it read here, and so is what an
-// operator putting a position by hand writes: a provider answering high would
-// move a reader past blocks nobody read, and the position it lands on outlives
+// operator moving a cursor by hand writes: a provider answering high would
+// move a reader past blocks nobody read, and where it lands outlives
 // the provider that gave it.
 func (n *network) Block(ctx context.Context, height uint64) (chain.Block, error) {
 	block, err := n.blockBy(ctx, quantity(height).String())

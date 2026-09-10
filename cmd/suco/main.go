@@ -50,7 +50,7 @@ var commands = []command{
 		{name: "await", about: "make a payment payable and print what a payer signs, standing in for Checkout", run: paymentAwait},
 	}},
 	{name: "network", sub: []command{
-		{name: "position", about: "put where a network has been read up to", run: networkPosition},
+		{name: "cursor", about: "put a network's cursor at a height", run: networkCursor},
 	}},
 	{name: "asset", sub: []command{
 		{name: "accept", about: "accept an asset the document lists, paid to an address", run: assetAccept},

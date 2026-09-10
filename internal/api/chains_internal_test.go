@@ -21,7 +21,7 @@ func TestServing_DecidesAboutEveryWordANetworkCanBeIn(t *testing.T) {
 	// one who acts is the operator or the provider.
 	decided := map[string]bool{
 		"observing":         true,
-		"no-position":       true,
+		"no-cursor":         true,
 		"finalized-changed": true,
 		"finalized-behind":  true,
 		"unreachable":       false,

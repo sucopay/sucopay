@@ -23,7 +23,7 @@ import (
 // command that keeps running, and what a running process says about itself is
 // its log; init and doctor answer a person and keep printing.
 //
-// network position writes a line too, for a different reason: what it did is
+// network cursor writes a line too, for a different reason: what it did is
 // worth keeping wherever the lines are kept, not only in the terminal of
 // whoever ran it.
 func serve(ctx context.Context, args []string, stdout io.Writer) error {

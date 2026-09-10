@@ -74,7 +74,7 @@ func doctor(ctx context.Context, args []string, stdout io.Writer) error {
 			database, credentials, schema, reach = describeDatabase(ctx, db, resolved.Config)
 		}
 	}
-	// A database with no schema has no table a position could be in. The
+	// A database with no schema has no table a cursor could be in. The
 	// chains are still read: an operator who has not run serve yet wants to
 	// know whether their endpoint answers, and a line saying the table is
 	// missing would say that twice and the endpoint not at all.
@@ -167,9 +167,9 @@ func describeVersion(version string) string {
 // It reads the chains the way a start does, through the same adapters, so that
 // what an operator is told here is what an instance would meet. It writes
 // nothing: whoever is asking whether a deployment could observe a network is
-// not the one who should be moving its position.
+// not the one who should be moving its cursor.
 //
-// cursors is nil where nothing could have written a position: no database, or
+// cursors is nil where nothing could have written a cursor: no database, or
 // one nothing has applied the schema to. The chain is read either way, and
 // where the reading stands is left out.
 func describeNetworks(ctx context.Context, w io.Writer, cfg config.Config, cursors *observe.Cursors) {
@@ -203,7 +203,7 @@ func describeNetworks(ctx context.Context, w io.Writer, cfg config.Config, curso
 // standing is one network as a report says it: where the chain is, how far it
 // has been read, and how far behind that leaves the reading.
 //
-// The chain and the position are read apart, so that a failure at either says
+// The chain and the cursor are read apart, so that a failure at either says
 // which it was. Asked together they come back as one refusal, and an operator
 // whose database is short of the table reads it as an endpoint that will not
 // answer, and goes and changes their provider.
@@ -220,14 +220,14 @@ func standing(ctx context.Context, n observe.Network, report observe.Report, err
 	where := fmt.Sprintf("chain %s, latest %d, final %d",
 		invisible.Shown(report.Identity, maxDescription), report.Head.Latest.Height, report.Head.Final.Height)
 	if cursors == nil {
-		return where + ", and nowhere a position could have been written"
+		return where + ", and nowhere a cursor could have been written"
 	}
 	at, read, err := cursors.Get(ctx, payment.Network(n.Name))
 	switch {
 	case err != nil:
-		return where + ", and the position could not be read: " + invisible.Shown(err.Error(), maxReason)
+		return where + ", and the cursor could not be read: " + invisible.Shown(err.Error(), maxReason)
 	case !read:
-		return where + ", no position"
+		return where + ", no cursor"
 	}
 	// Behind the final block and not the latest: the finalised range is what a
 	// round reads, and the blocks above it are read again when they settle.

@@ -125,7 +125,7 @@ func TestReadyz_IsNotReadyWhenNoNetworkIsBeingRead(t *testing.T) {
 		{"every one of them", map[string]string{"a": "stalled", "b": "unreachable"}, http.StatusServiceUnavailable},
 		{"one of two", map[string]string{"a": "stalled", "b": "observing"}, http.StatusOK},
 		{"one the chain moved under", map[string]string{"a": "finalized-changed"}, http.StatusOK},
-		{"one no round has finished on yet", map[string]string{"a": "no-position"}, http.StatusOK},
+		{"one no round has finished on yet", map[string]string{"a": "no-cursor"}, http.StatusOK},
 		{"one whose provider is behind", map[string]string{"a": "finalized-behind"}, http.StatusOK},
 		{"none at all", map[string]string{}, http.StatusOK},
 	}
