@@ -15,6 +15,24 @@ suco は加盟店のサーバに HTTP と JSON で応答します。経路は今
 資格情報の無い要求と、効力を失った資格情報の要求は `401` です。経路のすることをその資格情報が
 してよくない要求は `403` です。
 
+## 資産と金額
+
+資産は、1 つの network 上の 1 つのトークンです。Polygon の JPYC がそうです。通貨ではありません。
+1 つの network に同じ symbol のトークンが 2 つあり得ますし、2 つの network の同じ symbol は 2 つの
+トークンです。資産を識別するのは network と reference で、reference はそのチェーンがトークンを
+識別する値です。EVM のチェーンではアドレスです。symbol は識別しません。
+
+`suco.yaml` が、そのインスタンスが受け取る資産を並べ、それぞれに名前を付けます。要求はその名前で
+指します。Payment が持つのは network と reference なので、文書がそのトークンを別の名前で載せ直しても、
+載せるのをやめても、Payment は作ったときのトークンのままです。
+
+資産は 1 単位を最小単位へ分けていて、その桁数が `decimals` です。JPYC は 18 なので、1 JPYC は
+最小単位の 1000000000000000000 です。チェーンは最小単位で数え、この API は資産の単位で数えます。
+`"1000"` は 1000 JPYC です。
+
+金額は文字列です。JSON の数を多くのクライアントが浮動小数点で読み、1000 JPYC を最小単位で書くと
+1000000000000000000000 で、double では正確に持てません。桁を 1 つ間違えた金額も正しい形をしています。
+
 ## POST /payments
 
 資格情報が名指す account の Payment を作ります。
@@ -71,11 +89,7 @@ Content-Type: application/json
 その Payment の支払いを受け取るアドレスで、`suco asset accept` がその資産に記録したものです。`amount` と
 `received` は資産の単位です。`received` は何かが届くまで `null` です。時刻は UTC です。
 
-`POST /payments` が作る Payment の `status` は `created` です。その先の状態はまだ提供していません。
-
-`amount` が文字列なのは、それが 10 進の数で、JSON の数を多くのクライアントが浮動小数点で
-読むからです。1000 JPYC を最小単位で書くと `1000000000000000000000` で、double では正確に持てず、
-桁を 1 つ間違えた金額も正しい形をしています。
+`POST /payments` が作る Payment の `status` は `created` です。
 
 Payment を 2 回作ると、Payment が 2 つできます。冪等性キーはまだありません。送ったのに応答の
 無かった要求は、送り直す前に、加盟店の側で `metadata` に入れたものを手がかりに探すことになります。
@@ -87,6 +101,31 @@ Payment を 2 回作ると、Payment が 2 つできます。冪等性キーは�
 
 他の account の Payment、誰も作っていない Payment、識別子の形をしていないものは、どれも同じ本文の
 `404` です。応答は何が存在するかを言いません。
+
+## Payment の一生
+
+| `status` | |
+|---|---|
+| `created` | 作られました。まだ何も払えません |
+| `awaiting_payment` | 支払い可能です。支払者に署名するものを渡せます |
+| `awaiting_finality` | もう払えず、飛んでいる途中の送金が届くかどうかが決まっていません |
+| `succeeded` | 払われ、確定しました |
+| `failed` | 確定しません。待っても変わりません |
+| `expired` | 支払い可能でなくなるまでに何も届きませんでした |
+
+Payment は `created` から `awaiting_payment` へ進み、そこから `succeeded`、`failed`、
+`awaiting_finality` のどれかへ進みます。`awaiting_finality` からは `succeeded` か `expired` です。
+後ろの 3 つが終点で、その先はありません。
+
+`awaiting_finality` が状態として要るのは、チェーンが「送金があった」と言う時点と「その送金は残る」と
+言う時点が別だからです。2 つの事実があり、Payment は 2 つ目で `succeeded` になります。期限の直前に
+認可された送金は期限のあとに届き得ます。この状態が無ければ、その送金の置き場は既に expired と
+呼ばれた Payment だけになり、そこは終点です。
+
+**今日の Payment は `awaiting_payment` より先へ進みません。** この API に支払い可能にする経路がまだ
+ありません。`suco payment await <id>` がそれをして、支払者が署名するものを印字します。送金はその後
+見つかり、突き合わされ、記録されますが、確定と判断する部分がまだありません。ほかにまだ無いものは
+[ROADMAP.ja.md](../ROADMAP.ja.md) にあります。
 
 ## 応答
 

@@ -15,6 +15,25 @@ far an instance has one account, made along with the tables the first time `suco
 A request without a credential, or with one that is not in force, is answered `401`. A request
 whose credential may not do what the route does is answered `403`.
 
+## Assets and amounts
+
+An asset is one token on one network: JPYC on Polygon, say. It is not a currency. Two tokens on
+one network can present the same symbol, and one symbol on two networks is two tokens, so what
+identifies an asset is its network and its reference — what that chain knows the token by, which
+on an EVM chain is an address — and never its symbol.
+
+`suco.yaml` lists the assets an instance accepts and gives each a name. A request names one by
+that name. A payment carries the network and the reference instead, so it stays in the token it
+was opened in even if the document later lists that token under another name, or stops listing it.
+
+An asset divides one unit into a smallest unit, and `decimals` says by how many places. JPYC has
+18, so one JPYC is 1000000000000000000 of its smallest unit. A chain counts in the smallest unit;
+this API counts in the asset's units, so `"1000"` is 1000 JPYC.
+
+Amounts are strings. JSON numbers are read as floating point by most clients, and 1000 JPYC in
+the smallest unit is 1000000000000000000000, which a double cannot hold exactly — an amount off
+by a factor of ten is a well-formed one.
+
 ## POST /payments
 
 Opens a payment for the account the credential names.
@@ -72,11 +91,7 @@ the token it was opened in. `destination` is the address the payment is paid to,
 `suco asset accept` recorded for the asset. `amount` and `received` are in the asset's units;
 `received` is `null` until something arrives. Times are UTC.
 
-A payment is opened with `status` `created`. The statuses after it are not served yet.
-
-`amount` is a string because it is a decimal number, and JSON numbers are read as floating
-point by most clients. 1000 JPYC in the smallest unit is `1000000000000000000000`, which a
-double cannot hold exactly, and an amount off by a factor of ten is a well-formed one.
+A payment is opened with `status` `created`.
 
 Opening a payment twice opens two payments. There is no idempotency key yet: a request that
 was sent and not answered has to be looked up on the merchant's side, by whatever the merchant
@@ -89,6 +104,32 @@ Reads one payment of the account the credential names, and answers `200` with th
 
 A payment of another account, a payment nobody opened, and an identifier of no shape are all
 answered `404`, with one body. The answer says nothing about what exists.
+
+## The life of a payment
+
+| `status` | |
+|---|---|
+| `created` | Opened. Nothing can be paid against it yet |
+| `awaiting_payment` | Payable. A payer can be given something to sign |
+| `awaiting_finality` | No longer payable, and whether a transfer already in flight arrives is not settled |
+| `succeeded` | Paid, and settled |
+| `failed` | It will not settle, and waiting longer will not change that |
+| `expired` | Nothing arrived before it stopped being payable |
+
+A payment goes from `created` to `awaiting_payment`, and from there to `succeeded`, to `failed`,
+or to `awaiting_finality`; and from `awaiting_finality` to `succeeded` or to `expired`. The last
+three are final, and nothing follows them.
+
+`awaiting_finality` is a state and not a detail, because a chain says a transfer happened before
+it says the transfer will stay. Those are two facts and a payment reaches `succeeded` on the
+second. A transfer authorised a moment before the deadline can still be arriving after it, and
+without this state the only place to put one would be a payment already called expired, which is
+final.
+
+**Today a payment goes no further than `awaiting_payment`.** Nothing over this API makes one
+payable yet: `suco payment await <id>` does, and prints what a payer signs. A transfer is then
+seen, matched and recorded, and deciding it has settled is not built.
+[ROADMAP.md](../ROADMAP.md) says what else is not.
 
 ## Responses
 
