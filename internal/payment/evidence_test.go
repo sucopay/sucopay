@@ -558,16 +558,27 @@ func TestRecord_KeepsTheAttemptConfirmingWhileAnotherRowStillMatches(t *testing.
 
 func TestRecord_RefusesAValueTheColumnCouldNotHold(t *testing.T) {
 	t.Parallel()
-	s, pool := store(t)
-	hit := spent(t, s, first)
-	nonsense := seenAt(hit, "tx1", 100, payment.WrongAsset)
-	nonsense.Transfer.Value = "many"
+	// What an adapter hands over is a string, and the column holds the digits
+	// of an asset's smallest unit. A round that wrote one of these would have
+	// stored something other than what the chain said.
+	for what, value := range map[string]string{
+		"one that is not a number":                             "many",
+		"one digit more than the widest amount there could be": strings.Repeat("9", 79),
+	} {
+		t.Run(what, func(t *testing.T) {
+			t.Parallel()
+			s, pool := store(t)
+			hit := spent(t, s, first)
+			nonsense := seenAt(hit, "tx1", 100, payment.WrongAsset)
+			nonsense.Transfer.Value = value
 
-	if err := recording(t, s, pool, 100, 100, true, nonsense); err == nil {
-		t.Fatal("a value that is not a number was written")
-	}
-	if n := rows(t, pool); n != 0 {
-		t.Errorf("%d rows after a round that was rolled back, want none", n)
+			if err := recording(t, s, pool, 100, 100, true, nonsense); err == nil {
+				t.Fatal("a value the column could not hold was written")
+			}
+			if n := rows(t, pool); n != 0 {
+				t.Errorf("%d rows after a round that was rolled back, want none", n)
+			}
+		})
 	}
 }
 
