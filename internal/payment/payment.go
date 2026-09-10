@@ -106,9 +106,12 @@ type Address string
 
 // ParseAddress reads an account as the network writes it.
 //
-// TODO(1101hirokin): the adapter has to check the shape and the checksum
-// before anything sends funds to an address this returned. A chain does not
-// give them back, and a mistyped destination is accepted here.
+// The shape and the checksum belong to the chain, so the adapter checks them,
+// and it does so where a value enters: the kind of the network an asset
+// settles on reads the address an operator accepts that asset to, and an
+// authorizer read off a chain was written by the adapter that read it. What
+// this adds holds on every chain: an address was given at all, it is within
+// the bound, and it carries no character that does not show up.
 func ParseAddress(s string) (Address, error) {
 	switch {
 	case s == "":
