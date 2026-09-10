@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -376,6 +377,64 @@ func TestIssue_ReadsBackEverythingItWasGiven(t *testing.T) {
 	}
 	if err := s.SaveAttempt(t.Context(), first, read, at); err != nil {
 		t.Errorf("the revision it was read at did not save: %v", err)
+	}
+}
+
+// Two accounts reaching for one key at the same moment is what the unique
+// index over (network, key) is there for. The loser is told the key is taken
+// rather than told about a race, and is told it without being shown the key,
+// which belongs to the payer the winner is about to give it to.
+func TestIssue_LetsExactlyOneOfTwoAccountsTakeAKey(t *testing.T) {
+	t.Parallel()
+	s, _ := store(t)
+	// A key nothing holds yet, so that the index is what settles it.
+	key := strings.Repeat("ab", 32)
+
+	accounts := []payment.AccountID{first, other}
+	made := make([]*payment.Attempt, 0, len(accounts))
+	for i, account := range accounts {
+		a, err := payment.RestoreAttempt(payment.StoredAttempt{
+			ID:          payment.AttemptID(strings.Repeat(strconv.Itoa(i+1), 32)),
+			PaymentID:   payableKept(t, s, account).ID(),
+			Scheme:      payment.EIP3009,
+			Network:     jpyc(t).Network(),
+			Key:         key,
+			ValidBefore: time.Now().Add(time.Hour).Truncate(time.Second),
+			Status:      payment.Issued,
+			CreatedAt:   time.Now(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		made = append(made, a)
+	}
+
+	begin := make(chan struct{})
+	errs := make(chan error, len(made))
+	for i, a := range made {
+		go func() {
+			<-begin
+			errs <- s.Issue(t.Context(), accounts[i], a)
+		}()
+	}
+	close(begin)
+
+	won, refused := 0, 0
+	for range made {
+		switch err := <-errs; {
+		case err == nil:
+			won++
+		case errors.Is(err, payment.ErrKeyTaken):
+			refused++
+			if strings.Contains(err.Error(), key) {
+				t.Errorf("the refusal carries the key: %v", err)
+			}
+		default:
+			t.Errorf("err = %v, want either none or %v", err, payment.ErrKeyTaken)
+		}
+	}
+	if won != 1 || refused != 1 {
+		t.Errorf("%d took the key and %d were refused, want one of each", won, refused)
 	}
 }
 
