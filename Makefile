@@ -62,6 +62,7 @@ fuzz: ## Fuzz each parser for a minute
 
 .PHONY: repo
 repo: ## Check the repository against its own rules
+	./scripts/check-deps.sh
 	./scripts/check-docs.sh
 	./scripts/check-public-only.sh
 	./scripts/check-source.sh
