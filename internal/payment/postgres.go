@@ -154,9 +154,24 @@ func (s *Postgres) Save(ctx context.Context, account AccountID, p *Payment, at R
 	if e.Produced() != (len(e.Payload) > 0) {
 		return fmt.Errorf("payment %s: an event was given %s", p.ID(), half(e))
 	}
+	if len(e.Name) > MaxEventNameBytes {
+		return fmt.Errorf("payment %s: an event's name is %d bytes, at most %d",
+			p.ID(), len(e.Name), MaxEventNameBytes)
+	}
 	if len(e.Payload) > MaxEventBytes {
 		return fmt.Errorf("payment %s: an event's body is %d bytes, at most %d",
 			p.ID(), len(e.Payload), MaxEventBytes)
+	}
+	// The column takes JSON, so a body that is not JSON fails the insert and
+	// takes a change that was fine down with it. What a caller handed over is
+	// the caller's mistake and is named as one, rather than reaching the
+	// database as whatever the driver makes of it.
+	//
+	// Asked of an event that produced one, because no body is not JSON either
+	// and a change that produced nothing would be refused for a body it never
+	// gave. The check above is what leaves those two the only cases.
+	if e.Produced() && !json.Valid(e.Payload) {
+		return fmt.Errorf("payment %s: an event's body is not JSON", p.ID())
 	}
 	// Two zero values pass this, because an empty identifier equals an empty
 	// identifier. The where clause below is what refuses them: no row carries
@@ -686,6 +701,13 @@ func unconfirm(ctx context.Context, q queries, one gone) error {
 //
 // Taken back only when nothing still stands for it: a range read twice can
 // leave one transfer gone and another recorded.
+//
+// What is counted and what is then written are read by two statements, so a
+// round running beside this one could record an arrival between them and have
+// it cleared here. Nothing runs beside it: one network is read by one round at
+// a time, held by a lease, and inside a round what vanished is settled before
+// anything new is applied. The same is true of [unconfirm]. A change to how
+// rounds are scheduled is a change to what these two rely on.
 func unreceive(ctx context.Context, q queries, one gone) error {
 	var standing int
 	if err := q.QueryRow(ctx, `

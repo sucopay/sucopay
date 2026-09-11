@@ -833,6 +833,108 @@ func TestSave_WritesNoEventWhenTheChangeWasRefused(t *testing.T) {
 	}
 }
 
+// A body the column cannot take is named as the caller's mistake, before the
+// transaction that would fail on it. The insert shares a transaction with the
+// change it describes, so a body that is not JSON would take a change that was
+// fine down with it.
+func TestSave_RefusesAnEventBodyThatIsNotJSON(t *testing.T) {
+	t.Parallel()
+	s, conns := store(t)
+	p := kept(t, s, first)
+	_, at, err := s.Find(t.Context(), first, p.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Await(); err != nil {
+		t.Fatal(err)
+	}
+
+	err = s.Save(t.Context(), first, p, at, payment.Event{
+		Name: "payment.succeeded", Payload: []byte("not json"),
+	})
+
+	if err == nil {
+		t.Fatal("a body that is not JSON was written")
+	}
+	if !strings.Contains(err.Error(), "JSON") {
+		t.Errorf("error %v does not say what is wrong with the body", err)
+	}
+	if got := eventsFor(t, conns, first, p.ID()); len(got) != 0 {
+		t.Errorf("outbox holds %v, want nothing", got)
+	}
+	back, _, err := s.Find(t.Context(), first, p.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.Status() != payment.Created {
+		t.Errorf("payment is %s, want the change refused with the event", back.Status())
+	}
+}
+
+// A name is bounded the way a body is. The column takes any length, so this is
+// the only place a caller's mistake is still a caller's mistake.
+func TestSave_RefusesAnEventNameOverTheBound(t *testing.T) {
+	t.Parallel()
+	s, conns := store(t)
+	p := kept(t, s, first)
+	_, at, err := s.Find(t.Context(), first, p.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Await(); err != nil {
+		t.Fatal(err)
+	}
+
+	err = s.Save(t.Context(), first, p, at, payment.Event{
+		Name:    strings.Repeat("a", payment.MaxEventNameBytes+1),
+		Payload: []byte(`{"id":"x"}`),
+	})
+
+	if err == nil {
+		t.Fatal("an event name over the bound was written")
+	}
+	if !strings.Contains(err.Error(), strconv.Itoa(payment.MaxEventNameBytes)) {
+		t.Errorf("error %v does not say what the bound is", err)
+	}
+	if got := eventsFor(t, conns, first, p.ID()); len(got) != 0 {
+		t.Errorf("outbox holds %v, want nothing", got)
+	}
+	back, _, err := s.Find(t.Context(), first, p.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.Status() != payment.Created {
+		t.Errorf("payment is %s, want the change refused with the event", back.Status())
+	}
+}
+
+// The bound is where it says it is. A test that only refuses what is over it
+// passes just as well against a bound one short.
+func TestSave_WritesAnEventAtTheBound(t *testing.T) {
+	t.Parallel()
+	s, conns := store(t)
+	p := kept(t, s, first)
+	_, at, err := s.Find(t.Context(), first, p.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Await(); err != nil {
+		t.Fatal(err)
+	}
+	// `{"x":"` and `"}` around the padding come to eight bytes.
+	body := []byte(`{"x":"` + strings.Repeat("a", payment.MaxEventBytes-8) + `"}`)
+	name := strings.Repeat("a", payment.MaxEventNameBytes)
+
+	err = s.Save(t.Context(), first, p, at, payment.Event{Name: name, Payload: body})
+
+	if err != nil {
+		t.Fatalf("Save = %v, want an event at the bound to be written", err)
+	}
+	if got := eventsFor(t, conns, first, p.ID()); !slices.Equal(got, []string{name}) {
+		t.Errorf("outbox holds %d events, want the one at the bound", len(got))
+	}
+}
+
 // A body of no fixed length is bounded, the way every other one this package
 // writes is. What puts it there is code rather than a stranger, and code has
 // bugs.

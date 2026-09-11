@@ -131,5 +131,10 @@ type Event struct {
 // come to and far below what a column would take.
 const MaxEventBytes = 64 << 10
 
+// MaxEventNameBytes bounds a name, for the same reason. A name is a few dotted
+// words, and the column that holds it takes any length: the bound lives here
+// because this is where a caller's mistake can still be named as one.
+const MaxEventNameBytes = 64
+
 // Produced reports whether a change produced an event.
 func (e Event) Produced() bool { return e.Name != "" }
