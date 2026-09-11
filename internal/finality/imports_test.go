@@ -13,11 +13,12 @@ import (
 // allowed is everything a file of this package may import. An allow list
 // rather than a block list, because the import worth catching is the one
 // nobody thought to forbid: this package asks a chain through the boundary and
-// nothing else. It holds no rows, so a database driver reaching it would mean
-// the deciding and the writing had been put in one place.
+// writes what the answers settle through the payment store. A database driver
+// reaching it would mean the deciding and the SQL had been put in one place.
 var allowed = []string{
-	"context", "errors", "fmt",
+	"context", "errors", "fmt", "log/slog", "time",
 	"github.com/sucopay/sucopay/internal/adapter/chain",
+	"github.com/sucopay/sucopay/internal/payment",
 }
 
 func TestImports_ReachTheBoundaryAndNothingElse(t *testing.T) {

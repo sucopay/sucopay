@@ -1,0 +1,657 @@
+package finality
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/sucopay/sucopay/internal/adapter/chain"
+	"github.com/sucopay/sucopay/internal/adapter/chain/simulated"
+	"github.com/sucopay/sucopay/internal/payment"
+	"github.com/sucopay/sucopay/internal/postgres"
+	"github.com/sucopay/sucopay/internal/postgres/postgrestest"
+)
+
+// held is the account the schema creates, which is the one every payment here
+// belongs to.
+const held = payment.AccountID("00000000-0000-0000-0000-000000000001")
+
+// second is an account of somebody else, made where a test needs one.
+const second = payment.AccountID("00000000-0000-0000-0000-000000000002")
+
+// local is the network the payments here are on.
+const local = payment.Network("local")
+
+// deciding is a worker over a chain inside the process and a database of its
+// own, with one payment awaiting payment, one attempt at it, and the transfer
+// that paid it recorded the way a round of the observer records what it read
+// in the finalised range. What the chain says about that transfer now is the
+// test's to arrange.
+type deciding struct {
+	worker  *Worker
+	chain   *simulated.Chain
+	store   *payment.Postgres
+	pool    *pgxpool.Pool
+	asset   payment.Asset
+	payment *payment.Payment
+	attempt *payment.Attempt
+	tx      string
+	log     *bytes.Buffer
+}
+
+// decide opens everything one round reads and writes, with the transfer in a
+// block the chain has not called final yet.
+func decide(t *testing.T, vanishAfter int, endpoints ...chain.Chain) *deciding {
+	t.Helper()
+	pool, err := postgres.Open(t.Context(), postgrestest.Fresh(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	if _, err := pool.Migrate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	asset, err := payment.NewAsset(local, "0x"+strings.Repeat("cd", 20), "JPYC", 18)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &deciding{
+		chain: simulated.New(), store: payment.NewPostgres(pool.Conns()), pool: pool.Conns(),
+		asset: asset, log: &bytes.Buffer{},
+	}
+	d.payment, d.attempt = d.attempted(t, held)
+	d.tx = d.recorded(t, d.paying(d.payment, d.attempt.Key()))
+	if len(endpoints) == 0 {
+		endpoints = []chain.Chain{d.chain}
+	}
+	d.worker = New(Network{Name: string(local), Endpoints: endpoints, VanishAfter: vanishAfter},
+		d.store, slog.New(slog.NewTextHandler(d.log, nil)), time.Now)
+	return d
+}
+
+// attempted stores a payment of one account, made payable, with an attempt
+// at it.
+func (d *deciding) attempted(t *testing.T, account payment.AccountID) (*payment.Payment, *payment.Attempt) {
+	t.Helper()
+	amount, err := payment.ParseUnits(d.asset, "20000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination, err := payment.ParseAddress("0x" + strings.Repeat("ab", 20))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := payment.New(payment.Request{
+		Amount:      amount,
+		Destination: destination,
+		ExpiresAt:   time.Now().Add(time.Hour),
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.store.Create(t.Context(), account, p); err != nil {
+		t.Fatal(err)
+	}
+	_, at, err := d.store.Find(t.Context(), account, p.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Await(); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.store.Save(t.Context(), account, p, at, payment.Event{}); err != nil {
+		t.Fatal(err)
+	}
+	a, err := payment.NewAttempt(p, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.store.Issue(t.Context(), account, a); err != nil {
+		t.Fatal(err)
+	}
+	return p, a
+}
+
+// paying is the transfer a payer doing what they were asked leaves behind.
+func (d *deciding) paying(p *payment.Payment, key string) chain.Transfer {
+	payer := "0x" + strings.Repeat("11", 20)
+	return chain.Transfer{
+		Scheme:     string(payment.EIP3009),
+		Asset:      d.asset.Reference(),
+		Key:        key,
+		Authorizer: payer,
+		From:       payer,
+		To:         string(p.Destination()),
+		Value:      p.Amount().Amount().String(),
+	}
+}
+
+// recorded puts transfers into one block of the chain and records them the
+// way a round that read the finalised range does, whether or not the chain
+// has called the block final. It returns the transaction of the first.
+func (d *deciding) recorded(t *testing.T, transfers ...chain.Transfer) string {
+	t.Helper()
+	for _, transfer := range transfers {
+		d.chain.Send(transfer)
+	}
+	height := d.chain.Mine()
+	keys := make([]string, 0, len(transfers))
+	for _, transfer := range transfers {
+		keys = append(keys, transfer.Key)
+	}
+	hits, err := d.store.Consumed(t.Context(), local, keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	against := make(map[string]payment.Hit, len(hits))
+	for _, hit := range hits {
+		against[hit.Attempt.Key()] = hit
+	}
+	scan, err := d.chain.Keys(t.Context(), height, height, []string{d.asset.Reference()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen []payment.Seen
+	var first string
+	for _, consumed := range scan.Consumed {
+		if first == "" {
+			first = consumed.Tx
+		}
+		carried, err := d.chain.Receipt(t.Context(), consumed.Tx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, transfer := range carried {
+			hit := against[transfer.Key]
+			read := payment.Transfer{
+				Scheme: payment.Scheme(transfer.Scheme), Asset: transfer.Asset, Key: transfer.Key,
+				Authorizer: transfer.Authorizer, From: transfer.From, To: transfer.To,
+				Value: transfer.Value, Tx: transfer.Tx, Position: transfer.Position,
+				BlockHeight: transfer.Block.Height, BlockHash: transfer.Block.Hash,
+				BlockTime: transfer.Block.Time,
+			}
+			reason, judged := payment.Judge(read, hit.Attempt, hit.Payment)
+			if !judged {
+				t.Fatalf("the transfer of %s was judged nobody's", transfer.Key)
+			}
+			seen = append(seen, payment.Seen{Hit: hit, Transfer: read, Reason: reason})
+		}
+	}
+	tx, err := d.pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.store.Record(t.Context(), tx, local, height, height, true, seen, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	return first
+}
+
+// round is one round of the worker, which fails the test rather than handing
+// back an error nobody looks at.
+func (d *deciding) round(t *testing.T) {
+	t.Helper()
+	if err := d.worker.round(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// status is where a payment has got to, read back out of the database.
+func (d *deciding) status(t *testing.T, account payment.AccountID, p *payment.Payment) payment.Status {
+	t.Helper()
+	back, _, err := d.store.Find(t.Context(), account, p.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return back.Status()
+}
+
+// received is what a payment says arrived, read back out of the database.
+func (d *deciding) received(t *testing.T) payment.Money {
+	t.Helper()
+	back, _, err := d.store.Find(t.Context(), held, d.payment.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return back.Received()
+}
+
+// attemptStatus is where the attempt has got to.
+func (d *deciding) attemptStatus(t *testing.T) payment.AttemptStatus {
+	t.Helper()
+	a, _, err := d.store.FindAttempt(t.Context(), held, d.payment.ID(), d.attempt.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a.Status()
+}
+
+// reason is what the row of a transaction reads.
+func (d *deciding) reason(t *testing.T, tx string) string {
+	t.Helper()
+	var reason string
+	if err := d.pool.QueryRow(t.Context(),
+		`select reason from observations where network = $1 and tx = $2`, local, tx).
+		Scan(&reason); err != nil {
+		t.Fatal(err)
+	}
+	return reason
+}
+
+// event is one row of the outbox.
+type event struct {
+	Name    string
+	Payload string
+}
+
+// events are the outbox rows of a payment, in the order they were written.
+func (d *deciding) events(t *testing.T, account payment.AccountID, p *payment.Payment) []event {
+	t.Helper()
+	rows, err := d.pool.Query(t.Context(),
+		`select event, payload from outbox where account_id = $1 and payment_id = $2 order by id`,
+		account, p.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []event
+	for rows.Next() {
+		var one event
+		if err := rows.Scan(&one.Name, &one.Payload); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, one)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func TestRound_PaysAPaymentWhoseTransferTheEndpointCallsFinal(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+	d.chain.Finalize(1)
+
+	d.round(t)
+
+	if got := d.status(t, held, d.payment); got != payment.Succeeded {
+		t.Errorf("the payment is %s, want succeeded", got)
+	}
+	events := d.events(t, held, d.payment)
+	if len(events) != 1 || events[0].Name != "payment.succeeded" {
+		t.Fatalf("the outbox holds %+v, want one payment.succeeded", events)
+	}
+	var told map[string]any
+	if err := json.Unmarshal([]byte(events[0].Payload), &told); err != nil {
+		t.Fatalf("the payload is not a JSON object: %v:\n%s", err, events[0].Payload)
+	}
+	for field, want := range map[string]any{
+		"id":       d.payment.ID().String(),
+		"status":   "succeeded",
+		"amount":   "20000",
+		"received": "20000",
+	} {
+		if told[field] != want {
+			t.Errorf("the payload says %s is %v, want %v", field, told[field], want)
+		}
+	}
+}
+
+// A payment past its deadline is still paid by a transfer that was on its
+// way: that is what the state it waits in is for.
+func TestRound_PaysAPaymentWaitingForFinality(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+	p, at, err := d.store.Find(t.Context(), held, d.payment.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.AwaitFinality(p.ExpiresAt()); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.store.Save(t.Context(), held, p, at, payment.Event{}); err != nil {
+		t.Fatal(err)
+	}
+	d.chain.Finalize(1)
+
+	d.round(t)
+
+	if got := d.status(t, held, d.payment); got != payment.Succeeded {
+		t.Errorf("the payment is %s, want succeeded", got)
+	}
+}
+
+// Two endpoints that do not say the same thing settle nothing, and a payment
+// nothing settled stays where it is. Succeeded cannot be taken back, so not
+// deciding is the safe side.
+func TestRound_MovesNothingWhileTheEndpointsDisagree(t *testing.T) {
+	t.Parallel()
+	behind := simulated.New()
+	d := decide(t, 2)
+	d.worker.network.Endpoints = []chain.Chain{d.chain, behind}
+	behind.Send(d.paying(d.payment, d.attempt.Key()))
+	behind.Mine()
+	d.chain.Finalize(1)
+
+	d.round(t)
+
+	if got := d.status(t, held, d.payment); got != payment.AwaitingPayment {
+		t.Errorf("the payment is %s, want it left awaiting payment", got)
+	}
+	if events := d.events(t, held, d.payment); len(events) != 0 {
+		t.Errorf("the outbox holds %+v, want nothing", events)
+	}
+}
+
+func TestRound_MovesNothingWhileTheBlockIsNotFinal(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+
+	d.round(t)
+
+	if got := d.status(t, held, d.payment); got != payment.AwaitingPayment {
+		t.Errorf("the payment is %s, want it left awaiting payment", got)
+	}
+}
+
+// A transfer in another block than the one recorded is a record that is
+// wrong, and the observer's next reading of the range is what puts it right.
+// Nothing is paid on it and nothing is taken back. It is said once, for the
+// same reason the endpoints disagreeing is.
+func TestRound_MovesNothingWhenTheTransferIsInAnotherBlock(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 1)
+	d.chain.Reorg(1, d.tx)
+	d.chain.Finalize(1)
+
+	d.round(t)
+	d.round(t)
+	d.round(t)
+
+	if got := d.status(t, held, d.payment); got != payment.AwaitingPayment {
+		t.Errorf("the payment is %s, want it left awaiting payment", got)
+	}
+	if got := d.reason(t, d.tx); got != string(payment.Matched) {
+		t.Errorf("the row reads %s, want it left matched", got)
+	}
+	if n := strings.Count(d.log.String(), "another block"); n != 1 {
+		t.Errorf("the log says the transfer is in another block %d times over three rounds, want once:\n%s", n, d.log)
+	}
+}
+
+// Not being found once is not being gone: the endpoint may be handed the block
+// later. The rounds in a row the endpoints have to say it are the network's
+// to set.
+func TestRound_MarksATransferVanishedAfterTheRoundsItIsSetTo(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+	d.chain.Reorg(1)
+	d.chain.Finalize(1)
+
+	d.round(t)
+
+	if got := d.reason(t, d.tx); got != string(payment.Matched) {
+		t.Fatalf("after one round the row reads %s, want it still matched", got)
+	}
+	if got := d.attemptStatus(t); got != payment.Confirming {
+		t.Errorf("after one round the attempt is %s, want it left confirming", got)
+	}
+
+	d.round(t)
+
+	if got := d.reason(t, d.tx); got != string(payment.Vanished) {
+		t.Errorf("after two rounds the row reads %s, want vanished", got)
+	}
+	if got := d.attemptStatus(t); got != payment.Issued {
+		t.Errorf("after two rounds the attempt is %s, want issued", got)
+	}
+	if got := d.received(t); got.IsSet() {
+		t.Errorf("after two rounds received = %v, want nothing", got)
+	}
+	if got := d.status(t, held, d.payment); got != payment.AwaitingPayment {
+		t.Errorf("the payment is %s, want it left awaiting payment", got)
+	}
+}
+
+// shortOf is the same transfer for less than the payment asked.
+func shortOf(transfer chain.Transfer) chain.Transfer {
+	transfer.Value = "1"
+	return transfer
+}
+
+// A payment holds one arrival, so a transfer short of what was asked, arriving
+// first, is what the payment says it received. A transfer that matched and is
+// final does not cover it, and settling it would say a payment was paid for
+// less than it asked. Said once, on the way in: the state does not clear
+// itself.
+func TestRound_LeavesAPaymentWhoseArrivalIsShortOfWhatItAsked(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+	theirs, attempt := d.attempted(t, held)
+	d.recorded(t, shortOf(d.paying(theirs, attempt.Key())))
+	d.recorded(t, d.paying(theirs, attempt.Key()))
+	d.chain.Finalize(3)
+
+	d.round(t)
+	d.round(t)
+	d.round(t)
+
+	if got := d.status(t, held, theirs); got != payment.AwaitingPayment {
+		t.Errorf("the payment is %s, want it left awaiting payment", got)
+	}
+	if events := d.events(t, held, theirs); len(events) != 0 {
+		t.Errorf("the outbox holds %+v, want nothing", events)
+	}
+	if n := strings.Count(d.log.String(), "payment not settled"); n != 1 {
+		t.Errorf("the log says the payment was not settled %d times over three rounds, want once:\n%s", n, d.log)
+	}
+}
+
+// answering is an endpoint that says what a test lined up, one receipt to a
+// round, with its final block far above anything recorded.
+type answering struct {
+	chain.Chain
+	receipts [][]chain.Transfer
+}
+
+func (a *answering) Receipt(context.Context, string) ([]chain.Transfer, error) {
+	next := a.receipts[0]
+	a.receipts = a.receipts[1:]
+	if next == nil {
+		return nil, chain.ErrNoTransaction
+	}
+	return next, nil
+}
+
+func (a *answering) Head(context.Context) (chain.Head, error) {
+	return chain.Head{Final: chain.Block{Height: 100}}, nil
+}
+
+// The rounds are counted in a row. A transfer that is found again between two
+// rounds that did not find it was not gone all along.
+func TestRound_CountsOnlyRoundsInARowThatDoNotFindTheTransfer(t *testing.T) {
+	t.Parallel()
+	elsewhere := []chain.Transfer{{Tx: "tx1", Block: chain.Block{Height: 1, Hash: "another"}}}
+	endpoint := &answering{receipts: [][]chain.Transfer{nil, elsewhere, nil, nil}}
+	d := decide(t, 2, endpoint)
+
+	d.round(t)
+	d.round(t)
+	d.round(t)
+
+	if got := d.reason(t, d.tx); got != string(payment.Matched) {
+		t.Fatalf("after gone, elsewhere, gone the row reads %s, want it still matched", got)
+	}
+
+	d.round(t)
+
+	if got := d.reason(t, d.tx); got != string(payment.Vanished) {
+		t.Errorf("after gone, gone the row reads %s, want vanished", got)
+	}
+}
+
+func TestRound_AsksNothingAboutAPaymentItPaid(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+	d.chain.Finalize(1)
+	d.round(t)
+	before := d.chain.Calls()["Receipt"]
+
+	d.round(t)
+
+	if after := d.chain.Calls()["Receipt"]; after != before {
+		t.Errorf("a paid payment's transfer was asked about %d more times", after-before)
+	}
+}
+
+func TestRound_PaysThePaymentsOfEveryAccount(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+	if _, err := d.pool.Exec(t.Context(),
+		`insert into accounts (id, name) values ($1, 'second')`, second); err != nil {
+		t.Fatal(err)
+	}
+	theirs, attempt := d.attempted(t, second)
+	d.recorded(t, d.paying(theirs, attempt.Key()))
+	d.chain.Finalize(2)
+
+	d.round(t)
+
+	if got := d.status(t, held, d.payment); got != payment.Succeeded {
+		t.Errorf("the first account's payment is %s, want succeeded", got)
+	}
+	if got := d.status(t, second, theirs); got != payment.Succeeded {
+		t.Errorf("the second account's payment is %s, want succeeded", got)
+	}
+}
+
+// Two transfers recorded against one payment are two candidates for one
+// change. The second finds the payment moved and is passed over, and the round
+// goes on to whatever is next.
+func TestRound_PaysAPaymentOnceWhenTwoTransfersPaidIt(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+	d.recorded(t, d.paying(d.payment, d.attempt.Key()))
+	d.chain.Finalize(2)
+
+	d.round(t)
+
+	if events := d.events(t, held, d.payment); len(events) != 1 {
+		t.Errorf("the outbox holds %+v, want one event", events)
+	}
+}
+
+// A round cut short leaves the counts of the last round that finished. The
+// rounds counted are the ones the endpoints answered, so a provider that was
+// unreachable for one of them neither advances a transfer towards being given
+// up on nor sends the count back to the start.
+func TestRound_KeepsTheCountAcrossARoundThatWasCutShort(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+	d.chain.Reorg(1)
+	d.chain.Finalize(1)
+
+	d.round(t)
+	d.chain.FailAt("Receipt", 1, errors.New("no"))
+	if err := d.worker.round(t.Context()); err == nil {
+		t.Fatal("the round that could not read the chain reported nothing")
+	}
+	d.round(t)
+
+	if got := d.reason(t, d.tx); got != string(payment.Vanished) {
+		t.Errorf("the row reads %s, want vanished after the two rounds that answered", got)
+	}
+}
+
+// An endpoint that does not answer ends the round where it is. What it was
+// asked about is not moved, and nor is anything after it: the round is asked
+// again later.
+func TestRound_MovesNothingWhenAnEndpointDoesNotAnswer(t *testing.T) {
+	t.Parallel()
+	sorry := errors.New("no")
+	d := decide(t, 2)
+	d.chain.Finalize(1)
+	d.chain.FailAt("Receipt", 1, sorry)
+
+	err := d.worker.round(t.Context())
+
+	if !errors.Is(err, sorry) {
+		t.Errorf("round = %v, want the endpoint's own error", err)
+	}
+	if got := d.status(t, held, d.payment); got != payment.AwaitingPayment {
+		t.Errorf("the payment is %s, want it left awaiting payment", got)
+	}
+}
+
+// A key belongs to a payer. What a round says about a payment it paid or a
+// transfer that vanished names the payment and the transaction, never the key.
+func TestRound_WritesNoKeyToTheLog(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 1)
+	theirs, attempt := d.attempted(t, held)
+	d.recorded(t, d.paying(theirs, attempt.Key()))
+	d.chain.Reorg(2)
+	d.chain.Finalize(2)
+
+	d.round(t)
+
+	for _, want := range []string{"payment succeeded", "transfer vanished"} {
+		if !strings.Contains(d.log.String(), want) {
+			t.Errorf("the log lacks %q:\n%s", want, d.log)
+		}
+	}
+	for _, key := range []string{d.attempt.Key(), attempt.Key()} {
+		if strings.Contains(d.log.String(), key) {
+			t.Errorf("the log carries a key:\n%s", d.log)
+		}
+	}
+}
+
+// Said once, on the way into the state. A deployment whose endpoints disagree
+// about a transfer disagrees about it every round until somebody looks, and a
+// line a round would make each time buries whatever else the log has to say.
+func TestRound_SaysOnceThatTheEndpointsDisagree(t *testing.T) {
+	t.Parallel()
+	behind := simulated.New()
+	d := decide(t, 2)
+	d.worker.network.Endpoints = []chain.Chain{d.chain, behind}
+	behind.Send(d.paying(d.payment, d.attempt.Key()))
+	behind.Mine()
+	d.chain.Finalize(1)
+
+	d.round(t)
+	d.round(t)
+	d.round(t)
+
+	if n := strings.Count(d.log.String(), "disagree"); n != 1 {
+		t.Errorf("the log says the endpoints disagree %d times over three rounds, want once:\n%s", n, d.log)
+	}
+}
+
+// A count under one would mark a transfer vanished the first time it was not
+// found, which is what the count is there to prevent.
+func TestRound_RefusesToMarkVanishedAfterNoRounds(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 0)
+	d.chain.Reorg(1)
+	d.chain.Finalize(1)
+
+	err := d.worker.round(t.Context())
+
+	if err == nil {
+		t.Fatal("a round ran with the count set to nothing")
+	}
+	if got := d.reason(t, d.tx); got != string(payment.Matched) {
+		t.Errorf("the row reads %s, want it left matched", got)
+	}
+}
