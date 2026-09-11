@@ -41,6 +41,10 @@ type Worker struct {
 	// rounds in a row they have said it. A round that ends early leaves the
 	// last full round's counts standing, so nothing is given up on because a
 	// round was cut short.
+	//
+	// It belongs to whoever is running the round, and nothing guards it.
+	// Reading it from anywhere else, such as something reporting what the
+	// worker is making of a network, needs a lock put on it first.
 	answers map[recorded]answer
 }
 
