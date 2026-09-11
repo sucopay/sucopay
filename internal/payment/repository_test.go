@@ -1,10 +1,12 @@
 package payment_test
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -117,7 +119,7 @@ func TestRepository_DoesNotSaveOverAPaymentAnotherAccountStored(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := s.Save(t.Context(), other, p, at); !errors.Is(err, payment.ErrStale) {
+	if err := s.Save(t.Context(), other, p, at, payment.Event{}); !errors.Is(err, payment.ErrStale) {
 		t.Fatalf("err = %v, want ErrStale: one account wrote to another's payment", err)
 	}
 
@@ -161,7 +163,7 @@ func TestRepository_SavesAMove(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := s.Save(t.Context(), first, loaded, at); err != nil {
+	if err := s.Save(t.Context(), first, loaded, at, payment.Event{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -195,14 +197,14 @@ func TestRepository_RefusesASaveThatLostTheRace(t *testing.T) {
 	if err := winner.Await(); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Save(t.Context(), first, winner, atWinner); err != nil {
+	if err := s.Save(t.Context(), first, winner, atWinner, payment.Event{}); err != nil {
 		t.Fatal(err)
 	}
 
 	if err := loser.Await(); err != nil {
 		t.Fatal(err)
 	}
-	err = s.Save(t.Context(), first, loser, atLoser)
+	err = s.Save(t.Context(), first, loser, atLoser, payment.Event{})
 
 	if !errors.Is(err, payment.ErrStale) {
 		t.Fatalf("err = %v, want ErrStale", err)
@@ -229,7 +231,7 @@ func TestRepository_RefusesARevisionReadForAnotherPayment(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = s.Save(t.Context(), first, loaded, atTheirs)
+	err = s.Save(t.Context(), first, loaded, atTheirs, payment.Event{})
 
 	if !errors.Is(err, payment.ErrStale) {
 		t.Fatalf("err = %v, want ErrStale", err)
@@ -329,7 +331,7 @@ func payableKept(t *testing.T, s *payment.Postgres, account payment.AccountID) *
 	if err := p.Await(); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Save(t.Context(), account, p, at); err != nil {
+	if err := s.Save(t.Context(), account, p, at, payment.Event{}); err != nil {
 		t.Fatal(err)
 	}
 	return p
@@ -631,7 +633,7 @@ func TestSaveAttempt_RefusesARevisionReadForAPayment(t *testing.T) {
 	if err := s.SaveAttempt(t.Context(), first, read, ofPayment); !errors.Is(err, payment.ErrStale) {
 		t.Errorf("saving an attempt at its payment's revision gave %v, want %v", err, payment.ErrStale)
 	}
-	if err := s.Save(t.Context(), first, p, ofAttempt); !errors.Is(err, payment.ErrStale) {
+	if err := s.Save(t.Context(), first, p, ofAttempt, payment.Event{}); !errors.Is(err, payment.ErrStale) {
 		t.Errorf("saving a payment at its attempt's revision gave %v, want %v", err, payment.ErrStale)
 	}
 }
@@ -718,5 +720,188 @@ func TestSaveAttempt_EveryFieldOfAnAttemptIsAccountedFor(t *testing.T) {
 		if !strings.Contains(set, column+" =") {
 			t.Errorf("Attempt.%s is listed as changing, but SaveAttempt does not set %s", field, column)
 		}
+	}
+}
+
+// eventsFor reads the outbox rows a payment produced, oldest first. The
+// repository hands none back, so a test that cares looks at the rows.
+func eventsFor(t *testing.T, conns *pgxpool.Pool, account payment.AccountID, id payment.ID) []string {
+	t.Helper()
+	rows, err := conns.Query(t.Context(),
+		`select event from outbox where account_id = $1 and payment_id = $2 order by id`,
+		account, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var event string
+		if err := rows.Scan(&event); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, event)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// A change and the event it produced are one write. Whatever delivers events
+// is told about a payment that moved, and about no payment that did not.
+func TestSave_WritesTheEventWithTheChange(t *testing.T) {
+	t.Parallel()
+	s, conns := store(t)
+	p := kept(t, s, first)
+	_, at, err := s.Find(t.Context(), first, p.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Await(); err != nil {
+		t.Fatal(err)
+	}
+
+	err = s.Save(t.Context(), first, p, at, payment.Event{
+		Name: "payment.awaiting_payment", Payload: []byte(`{"id":"x"}`),
+	})
+
+	if err != nil {
+		t.Fatalf("Save = %v, want none", err)
+	}
+	if got := eventsFor(t, conns, first, p.ID()); !slices.Equal(got, []string{"payment.awaiting_payment"}) {
+		t.Errorf("outbox holds %v, want the one event the change produced", got)
+	}
+}
+
+// A change that produces no event leaves the outbox alone. A payment becoming
+// payable tells a merchant nothing they did not just ask for.
+func TestSave_WritesNoEventWhenTheChangeProducedNone(t *testing.T) {
+	t.Parallel()
+	s, conns := store(t)
+	p := kept(t, s, first)
+	_, at, err := s.Find(t.Context(), first, p.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Await(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Save(t.Context(), first, p, at, payment.Event{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := eventsFor(t, conns, first, p.ID()); len(got) != 0 {
+		t.Errorf("outbox holds %v, want nothing", got)
+	}
+}
+
+// The write that lost the race leaves nothing behind. An event for a change
+// that did not happen would tell a merchant about a payment that never moved.
+func TestSave_WritesNoEventWhenTheChangeWasRefused(t *testing.T) {
+	t.Parallel()
+	s, conns := store(t)
+	p := kept(t, s, first)
+	winner, atWinner, err := s.Find(t.Context(), first, p.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	loser, atLoser, err := s.Find(t.Context(), first, p.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := winner.Await(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(t.Context(), first, winner, atWinner, payment.Event{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := loser.Await(); err != nil {
+		t.Fatal(err)
+	}
+
+	err = s.Save(t.Context(), first, loser, atLoser, payment.Event{
+		Name: "payment.awaiting_payment", Payload: []byte(`{"id":"x"}`),
+	})
+
+	if !errors.Is(err, payment.ErrStale) {
+		t.Fatalf("Save = %v, want ErrStale", err)
+	}
+	if got := eventsFor(t, conns, first, p.ID()); len(got) != 0 {
+		t.Errorf("outbox holds %v, want nothing: the change it describes was refused", got)
+	}
+}
+
+// A body of no fixed length is bounded, the way every other one this package
+// writes is. What puts it there is code rather than a stranger, and code has
+// bugs.
+func TestSave_RefusesAnEventBodyOverTheBound(t *testing.T) {
+	t.Parallel()
+	s, conns := store(t)
+	p := kept(t, s, first)
+	_, at, err := s.Find(t.Context(), first, p.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Await(); err != nil {
+		t.Fatal(err)
+	}
+	body := append([]byte(`{"x":"`), bytes.Repeat([]byte("a"), payment.MaxEventBytes)...)
+
+	err = s.Save(t.Context(), first, p, at, payment.Event{Name: "payment.succeeded", Payload: body})
+
+	if err == nil {
+		t.Fatal("an event body over the bound was written")
+	}
+	if !strings.Contains(err.Error(), strconv.Itoa(payment.MaxEventBytes)) {
+		t.Errorf("error %v does not say what the bound is", err)
+	}
+	if got := eventsFor(t, conns, first, p.ID()); len(got) != 0 {
+		t.Errorf("outbox holds %v, want nothing", got)
+	}
+}
+
+// Half an event is a caller that meant to give one. Either half is refused
+// by name, and the change the event was to describe is refused with it: a
+// caller told which half it left out has less to look for than one told what
+// the driver made of an empty value.
+func TestSave_RefusesHalfOfAnEvent(t *testing.T) {
+	t.Parallel()
+	for what, e := range map[string]payment.Event{
+		"a body and no name": {Payload: []byte(`{"id":"x"}`)},
+		"a name and no body": {Name: "payment.succeeded"},
+	} {
+		t.Run(what, func(t *testing.T) {
+			t.Parallel()
+			s, conns := store(t)
+			p := kept(t, s, first)
+			_, at, err := s.Find(t.Context(), first, p.ID())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := p.Await(); err != nil {
+				t.Fatal(err)
+			}
+
+			err = s.Save(t.Context(), first, p, at, e)
+
+			if err == nil {
+				t.Fatalf("an event with %s was written", what)
+			}
+			if !strings.Contains(err.Error(), what) {
+				t.Errorf("error %v does not say which half was left out", err)
+			}
+			if got := eventsFor(t, conns, first, p.ID()); len(got) != 0 {
+				t.Errorf("outbox holds %v, want nothing", got)
+			}
+			back, _, err := s.Find(t.Context(), first, p.ID())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if back.Status() != payment.Created {
+				t.Errorf("payment is %s, want the change refused with the event", back.Status())
+			}
+		})
 	}
 }

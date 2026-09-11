@@ -24,9 +24,9 @@ const storeTimeout = 10 * time.Second
 // Create and Save each own a transaction. Whatever has to be written with a
 // payment goes inside it rather than being left to whoever called: the outbox
 // row for the event the change produced, and the audit row recording that it
-// changed. Neither table exists yet. Owning the transaction is the part that
-// cannot be added afterwards, because a caller holding its own could always
-// commit half of what has to be whole.
+// changed. The audit table does not exist yet. Owning the transaction is the
+// part that cannot be added afterwards, because a caller holding its own
+// could always commit half of what has to be whole.
 type Postgres struct {
 	pool *pgxpool.Pool
 }
@@ -136,9 +136,21 @@ func (s *Postgres) Find(ctx context.Context, account AccountID, id ID) (*Payment
 // Status and received are the only columns it writes, because they are the only
 // fields any move changes. A test holds the two lists together, so a field added
 // to the aggregate and not to this fails rather than being dropped.
-func (s *Postgres) Save(ctx context.Context, account AccountID, p *Payment, at Revision) (err error) {
+func (s *Postgres) Save(ctx context.Context, account AccountID, p *Payment, at Revision, e Event) (err error) {
 	if p == nil {
 		return errors.New("payment: nothing to save")
+	}
+	// Half an event is a caller that meant to give one. Neither half reaches
+	// the database: a body with no name is dropped by the check below, and a
+	// name with no body fails the insert with whatever the driver makes of an
+	// empty value, taking a change that was fine down with it. Both are the
+	// caller's mistake, and both are named as one here.
+	if e.Produced() != (len(e.Payload) > 0) {
+		return fmt.Errorf("payment %s: an event was given %s", p.ID(), half(e))
+	}
+	if len(e.Payload) > MaxEventBytes {
+		return fmt.Errorf("payment %s: an event's body is %d bytes, at most %d",
+			p.ID(), len(e.Payload), MaxEventBytes)
 	}
 	// Two zero values pass this, because an empty identifier equals an empty
 	// identifier. The where clause below is what refuses them: no row carries
@@ -149,9 +161,6 @@ func (s *Postgres) Save(ctx context.Context, account AccountID, p *Payment, at R
 	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
 	defer cancel()
 
-	// Owning the transaction is not the whole of what the outbox needs: its row
-	// carries the name of an event, and nothing in this signature says which
-	// move produced this state. That parameter is still to come.
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("payment %s: %w", p.ID(), err)
@@ -178,10 +187,28 @@ func (s *Postgres) Save(ctx context.Context, account AccountID, p *Payment, at R
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("payment %s: %w", p.ID(), ErrStale)
 	}
+	// After the update and inside the same transaction: a row here describes a
+	// change, and the change is refused above when the revision had moved.
+	if e.Produced() {
+		if _, err := tx.Exec(ctx, `
+			insert into outbox (account_id, payment_id, event, payload)
+			values ($1, $2, $3, $4)`,
+			account, p.ID(), e.Name, e.Payload); err != nil {
+			return fmt.Errorf("payment %s: %w", p.ID(), err)
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("payment %s: %w", p.ID(), err)
 	}
 	return nil
+}
+
+// half says which part of an event a caller left out.
+func half(e Event) string {
+	if e.Produced() {
+		return "a name and no body"
+	}
+	return "a body and no name"
 }
 
 // attemptColumns are what a row holds of an attempt, in the order the reads

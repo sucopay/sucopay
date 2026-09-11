@@ -139,7 +139,7 @@ func payable(t *testing.T, store *payment.Postgres) (payment.AccountID, *payment
 	if err := p.Await(); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Save(t.Context(), held, p, at); err != nil {
+	if err := store.Save(t.Context(), held, p, at, payment.Event{}); err != nil {
 		t.Fatal(err)
 	}
 	return held, p

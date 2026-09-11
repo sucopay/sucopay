@@ -74,8 +74,9 @@ type Repository interface {
 	Find(ctx context.Context, account AccountID, id ID) (*Payment, Revision, error)
 
 	// Save writes back a payment that was read, and reports [ErrStale] if
-	// anything wrote to it in between.
-	Save(ctx context.Context, account AccountID, p *Payment, at Revision) error
+	// anything wrote to it in between. The event the move produced is written
+	// with it, and the zero [Event] is a move that produced none.
+	Save(ctx context.Context, account AccountID, p *Payment, at Revision, e Event) error
 }
 
 // Attempts stores attempts.
@@ -107,3 +108,28 @@ type Attempts interface {
 	// if anything wrote to it in between.
 	SaveAttempt(ctx context.Context, account AccountID, a *Attempt, at Revision) error
 }
+
+// Event is what a change to a payment produced, for whatever delivers events
+// to a merchant. Name is the word a merchant matches on, such as
+// payment.succeeded, and Payload is the body they are handed.
+//
+// The zero value is a change that produced none. Not every move is news: a
+// payment becoming payable tells a merchant nothing they did not just ask for.
+//
+// It is written in the transaction that made the change, so that a merchant is
+// never told of a change that did not happen and never left unaware of one that
+// did. That is the whole of why this is a parameter rather than a second call.
+type Event struct {
+	Name    string
+	Payload []byte
+}
+
+// MaxEventBytes bounds a payload. Every other value of no fixed length that
+// this package writes has a bound, and one written from inside the process is
+// no more trustworthy than one that came over a wire: what puts it there is
+// code, and code has bugs. The number is far above anything a payment's fields
+// come to and far below what a column would take.
+const MaxEventBytes = 64 << 10
+
+// Produced reports whether a change produced an event.
+func (e Event) Produced() bool { return e.Name != "" }

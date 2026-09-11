@@ -240,7 +240,7 @@ func spentOn(t *testing.T, s *payment.Postgres, account payment.AccountID, elsew
 	if err := p.Await(); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Save(t.Context(), account, p, at); err != nil {
+	if err := s.Save(t.Context(), account, p, at, payment.Event{}); err != nil {
 		t.Fatal(err)
 	}
 	a, err := payment.NewAttempt(p, time.Now())

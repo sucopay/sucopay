@@ -87,7 +87,8 @@ func (s *Service) Await(ctx context.Context, account AccountID, id ID) (*Payment
 	if err := p.Await(); err != nil {
 		return nil, fmt.Errorf("%s: %w", id, err)
 	}
-	if err := s.payments.Save(ctx, account, p, at); err != nil {
+	// No event: the merchant asked for this move and is holding the answer.
+	if err := s.payments.Save(ctx, account, p, at, Event{}); err != nil {
 		return nil, err
 	}
 	return p, nil

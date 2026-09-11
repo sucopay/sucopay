@@ -144,7 +144,7 @@ func TestService_RefusesToMakeAPaymentPayableTwice(t *testing.T) {
 // with that answer can be read without racing a real repository for it.
 type staleOnSave struct{ *payment.Postgres }
 
-func (staleOnSave) Save(context.Context, payment.AccountID, *payment.Payment, payment.Revision) error {
+func (staleOnSave) Save(context.Context, payment.AccountID, *payment.Payment, payment.Revision, payment.Event) error {
 	return payment.ErrStale
 }
 

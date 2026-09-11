@@ -135,7 +135,7 @@ func awaitingFor(t *testing.T, store *payment.Postgres, account payment.AccountI
 	if err := p.Await(); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Save(t.Context(), account, p, at); err != nil {
+	if err := store.Save(t.Context(), account, p, at, payment.Event{}); err != nil {
 		t.Fatal(err)
 	}
 	return p

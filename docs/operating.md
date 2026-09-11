@@ -60,7 +60,7 @@ suco.yaml
   ...
   networks.polygon.rpc.own   set                                     ${SUCO_POLYGON_RPC_URL}
 
-database: PostgreSQL 17.5, schema 0005_attempts_and_observations
+database: PostgreSQL 17.5, schema 0006_outbox
 credentials: read-write
 
 networks:
