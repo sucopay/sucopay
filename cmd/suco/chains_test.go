@@ -71,7 +71,8 @@ func TestOpenChains_OpensOneNetworkPerChainAnAssetSettlesOn(t *testing.T) {
 // is held to nothing: a simulated chain is whatever the process makes it.
 func TestOpenChains_ExpectsTheChainTheDocumentNamesAndNoOther(t *testing.T) {
 	t.Parallel()
-	evm := config.Network{Kind: "evm", ChainID: 137, RPC: "https://example.invalid/rpc", Poll: time.Second, Width: 10}
+	evm := config.Network{Kind: "evm", ChainID: 137,
+		RPC: config.Endpoints{Own: "https://example.invalid/rpc"}, Poll: time.Second, Width: 10}
 	opened, err := openChains(listing(t, map[string]config.Network{
 		"polygon": evm,
 		"local":   simulatedNetwork(),
@@ -112,7 +113,8 @@ func TestOpenChains_RepeatsNothingOfAnEndpointItRefuses(t *testing.T) {
 	t.Parallel()
 	const endpoint = "http://reader.example.invalid/v1?key=secret"
 	_, err := openChains(listing(t, map[string]config.Network{
-		"polygon": {Kind: "evm", ChainID: 137, RPC: endpoint, Poll: time.Second, Width: 10},
+		"polygon": {Kind: "evm", ChainID: 137, RPC: config.Endpoints{Own: endpoint},
+			Poll: time.Second, Width: 10},
 	}))
 
 	if err == nil {
@@ -143,5 +145,30 @@ func TestOpenChains_RefusesAnAssetOnANetworkNothingDeclares(t *testing.T) {
 		t.Fatal("an asset on a network nothing declares was opened")
 	} else if !strings.Contains(err.Error(), "elsewhere") {
 		t.Errorf("error does not name the network: %v", err)
+	}
+}
+
+// A round reads one endpoint, and which one is not a matter of taste: the
+// operator's own node answers for itself, and a deployment without one reads
+// the first of the others. The endpoint each case reaches is one Open refuses,
+// so the refusal is what says which one was read.
+func TestOpenChains_ReadsTheOwnNodeWhenThereIsOneAndTheFirstOfOthersOtherwise(t *testing.T) {
+	t.Parallel()
+	const refused = "http://reader.example.invalid/v1?key=secret"
+	const accepted = "https://reader.example.invalid/v1"
+	for what, endpoints := range map[string]config.Endpoints{
+		"own over others":     {Own: refused, Others: []string{accepted}},
+		"the first of others": {Others: []string{refused, accepted}},
+	} {
+		t.Run(what, func(t *testing.T) {
+			_, err := openChains(listing(t, map[string]config.Network{
+				"polygon": {Kind: "evm", ChainID: 137, RPC: endpoints,
+					Poll: time.Second, Width: 10},
+			}))
+
+			if err == nil {
+				t.Fatal("the endpoint this reads is not the one it was given")
+			}
+		})
 	}
 }

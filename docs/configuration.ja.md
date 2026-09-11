@@ -14,12 +14,13 @@ English: [configuration.md](configuration.md)
 値は `${NAME}` と書けます。その名前の環境変数を読みます。参照は値の全体か、値でないかの
 どちらかです。`https://${HOST}/rpc` は断ります。出所が 2 つある値には出所がありません。
 
-3 つの設定は印字しません。`suco doctor` は設定されているかどうかだけを言い、エラーにもログにも
+次の設定は印字しません。`suco doctor` は設定されているかどうかだけを言い、エラーにもログにも
 値は出ません。
 
 - `database.url`
 - `credentials.key`
-- `networks.*.rpc`
+- `networks.*.rpc.own`
+- `networks.*.rpc.others`
 
 これ以外の値はそのまま印字します。だからこそ、秘密でない設定に資格情報が入っていれば断ります。
 ユーザ名やパスワードを持つ URL は、印字せずに断ります。
@@ -72,7 +73,8 @@ network はインスタンスが読むチェーン 1 本です。名前は文書
 |---|---|---|
 | `networks.<name>.kind` | `evm` | `evm` か `simulated` |
 | `networks.<name>.chain_id` | なし | `eth_chainId` が答えるべき値。1 以上。`evm` は必須、`simulated` は持てません |
-| `networks.<name>.rpc` | なし | チェーンに届く先。`evm` は必須、`simulated` は持てません。秘密 |
+| `networks.<name>.rpc.own` | なし | 運用者が自分で動かしているノード。設定すると周はここを読みます。秘密 |
+| `networks.<name>.rpc.others` | なし | 第三者のエンドポイントの一覧。`own` が無いとき周は先頭を読みます。残りを読むものはまだありません。秘密 |
 | `networks.<name>.poll` | `12s` | 周と周の間隔。`1s` 以上 |
 | `networks.<name>.width` | `1000` | log を 1 回問い合わせる範囲の上限ブロック数。10 から 10000 |
 
@@ -114,8 +116,8 @@ reference は、そのチェーンが比較する形に読み込みます。EVM 
 ## 名前
 
 network の名前と asset の名前は、報告の中の点区切りの経路と、probe が答える鍵になります。点を
-含む名前は断ります。読み手に見えない文字を含む名前も断ります。同じに見える 2 つの名前が別物に
-なるからです。
+含む名前は断ります。角括弧を含む名前も断ります。経路は角括弧で一覧の中の位置を指すからです。
+読み手に見えない文字を含む名前も断ります。同じに見える 2 つの名前が別物になるからです。
 
 ## 文書の上限
 
@@ -145,7 +147,8 @@ networks:
   polygon:
     kind: evm
     chain_id: 137
-    rpc: ${SUCO_POLYGON_RPC_URL}
+    rpc:
+      own: ${SUCO_POLYGON_RPC_URL}
 
 assets:
   jpyc:

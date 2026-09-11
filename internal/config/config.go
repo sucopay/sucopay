@@ -143,15 +143,30 @@ type Credentials struct {
 	KeyID string
 }
 
+// Endpoints are where a network is reached. Own is a node the operator runs
+// themselves, and Others are third parties.
+//
+// They are held apart because how far an answer can be believed depends on who
+// runs the endpoint. Nothing acts on that difference yet: a round reads one
+// endpoint, and comparing what several of them say belongs to deciding that a
+// payment is final, which this build does not do.
+//
+// Every value here may carry a credential, and nothing that reads one writes
+// it anywhere.
+type Endpoints struct {
+	Own    string
+	Others []string
+}
+
 // Network is one chain the instance can observe. Kind names how to reach it:
-// "evm", a chain spoken to over JSON-RPC at RPC, whose eth_chainId has to be
-// ChainID; or "simulated", a chain that runs inside the server and has
-// neither. Poll is how often the chain is asked for new blocks and Width the
-// widest span, in blocks, one request for logs is given.
+// "evm", a chain spoken to over JSON-RPC at the endpoints in RPC, whose
+// eth_chainId has to be ChainID; or "simulated", a chain that runs inside the
+// server and has neither. Poll is how often the chain is asked for new blocks
+// and Width the widest span, in blocks, one request for logs is given.
 type Network struct {
 	Kind    string
 	ChainID uint64
-	RPC     string
+	RPC     Endpoints
 	Poll    time.Duration
 	Width   int
 }
@@ -236,7 +251,8 @@ func (ps Problems) Error() string {
 var secretPaths = []string{
 	"credentials.key",
 	"database.url",
-	"networks.*.rpc",
+	"networks.*.rpc.own",
+	"networks.*.rpc.others",
 }
 
 // Secret reports whether the value at a dotted path is a secret. Secrecy
@@ -257,9 +273,18 @@ func matchPath(pattern, path string) bool {
 		return false
 	}
 	for i := range p {
-		if p[i] != "*" && p[i] != q[i] {
+		if p[i] != "*" && p[i] != withoutIndex(q[i]) {
 			return false
 		}
 	}
 	return true
+}
+
+// withoutIndex is a path segment with any place in a list taken off, so that
+// others[0] reads as others. What is secret about a list is secret about each
+// of its elements. It reads a segment the way walking a document does, so that
+// a segment one of them takes apart is not one the other leaves whole.
+func withoutIndex(segment string) string {
+	name, _, _ := splitIndex(segment)
+	return name
 }

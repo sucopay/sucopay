@@ -15,12 +15,13 @@ A value may be written as `${NAME}`, which reads the environment variable of tha
 reference is the whole value or none of it: `https://${HOST}/rpc` is refused, because a value with
 two origins has none.
 
-Three settings never print. `suco doctor` says of each only whether it is set, and no error or log
+These settings never print. `suco doctor` says of each only whether it is set, and no error or log
 line carries one.
 
 - `database.url`
 - `credentials.key`
-- `networks.*.rpc`
+- `networks.*.rpc.own`
+- `networks.*.rpc.others`
 
 Every other value prints in full, which is what makes refusing a credential inside one safe: a URL
 carrying a username or password at any other setting is refused, and no part of it is printed.
@@ -75,7 +76,8 @@ asset refers to.
 |---|---|---|
 | `networks.<name>.kind` | `evm` | `evm` or `simulated` |
 | `networks.<name>.chain_id` | none | What `eth_chainId` has to answer. 1 or more. Required by `evm`, refused by `simulated` |
-| `networks.<name>.rpc` | none | Where the chain is reached. Required by `evm`, refused by `simulated`. Secret |
+| `networks.<name>.rpc.own` | none | A node the operator runs themselves. A round reads it when it is set. Secret |
+| `networks.<name>.rpc.others` | none | A list of third-party endpoints. A round reads the first when there is no `own`; nothing reads the rest yet. Secret |
 | `networks.<name>.poll` | `12s` | How long between rounds. At least `1s` |
 | `networks.<name>.width` | `1000` | The most blocks one request for logs asks about. 10 to 10000 |
 
@@ -119,8 +121,9 @@ back.
 ## Names
 
 A network name and an asset name become part of the dotted paths in a report and the keys a probe
-answers with. A name holding a dot is refused, and so is one holding a character a reader cannot
-see: two names that render alike would be two names.
+answers with. A name holding a dot is refused, and so is one holding a bracket, which a path uses
+to name a place in a list. So is one holding a character a reader cannot see: two names that
+render alike would be two names.
 
 ## Bounds on the document
 
@@ -151,7 +154,8 @@ networks:
   polygon:
     kind: evm
     chain_id: 137
-    rpc: ${SUCO_POLYGON_RPC_URL}
+    rpc:
+      own: ${SUCO_POLYGON_RPC_URL}
 
 assets:
   jpyc:

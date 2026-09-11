@@ -58,7 +58,8 @@ networks:
   polygon:
     kind: evm
     chain_id: 137
-    rpc: ${SUCO_POLYGON_RPC_URL}
+    rpc:
+      own: ${SUCO_POLYGON_RPC_URL}
 assets:
   jpyc:
     network: polygon

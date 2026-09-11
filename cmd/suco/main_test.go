@@ -817,7 +817,7 @@ func anAsset(network string) string {
 // anEVMNetwork is the networks section declaring one network of the evm kind
 // with the settings that kind needs, the rpc on this machine.
 func anEVMNetwork(network string) string {
-	return "networks:\n  " + network + ":\n    kind: evm\n    chain_id: 1\n    rpc: http://127.0.0.1:1\n"
+	return "networks:\n  " + network + ":\n    kind: evm\n    chain_id: 1\n    rpc:\n      own: http://127.0.0.1:1\n"
 }
 
 func TestRun_ServeStartsWithANetworkAnAssetRefersTo(t *testing.T) {
@@ -1018,7 +1018,7 @@ func TestRun_ServeSaysNothingOfTheEndpointOnAProbe(t *testing.T) {
 	deployed(t)
 	document(t, fmt.Sprintf("listen:\n  port: %d\n%s%s", port, namingADatabase(),
 		"networks:\n  local:\n    kind: evm\n    chain_id: 137\n"+
-			"    rpc: http://127.0.0.1:1/v1?key=secret\n"+anAsset("local")))
+			"    rpc:\n      own: http://127.0.0.1:1/v1?key=secret\n"+anAsset("local")))
 	_, stop := serving(t)
 	defer stop()
 

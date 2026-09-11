@@ -47,7 +47,7 @@ func openChains(cfg config.Config) ([]observe.Network, error) {
 		// it. What is added here is which network was being opened, since a
 		// deployment reads several and the refusal says nothing until it says
 		// which one.
-		read, err := kind.Open(chain.Settings{Name: name, ChainID: identity(n), RPC: n.RPC})
+		read, err := kind.Open(chain.Settings{Name: name, ChainID: identity(n), RPC: endpoint(n)})
 		if err != nil {
 			return nil, fmt.Errorf("network %s: %w", name, err)
 		}
@@ -72,4 +72,20 @@ func identity(n config.Network) string {
 		return ""
 	}
 	return strconv.FormatUint(n.ChainID, 10)
+}
+
+// endpoint is where a round reads this network. The operator's own node when
+// there is one, and the first of the others otherwise. One endpoint, and the
+// same one every round: a cursor is a place in a chain as one provider tells
+// it, and moving between providers would leave the position meaning something
+// else. The rest of the others are read by nothing in this build: comparing
+// what several endpoints say belongs to deciding that a payment is final.
+func endpoint(n config.Network) string {
+	if n.RPC.Own != "" {
+		return n.RPC.Own
+	}
+	if len(n.RPC.Others) > 0 {
+		return n.RPC.Others[0]
+	}
+	return ""
 }

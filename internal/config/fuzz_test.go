@@ -101,7 +101,7 @@ func FuzzResolve(f *testing.F) {
 	for _, seed := range []string{
 		"listen:\n  port: ${PORT}\n",
 		"database:\n  managed: false\n  url: ${SECRET}\n",
-		"networks:\n  polygon:\n    chain_id: 137\n    rpc: ${SECRET}\n",
+		"networks:\n  polygon:\n    chain_id: 137\n    rpc:\n      own: ${SECRET}\n",
 		"networks:\n  local:\n    kind: simulated\nassets:\n  jpyc:\n    network: local\n    reference: \"0x1\"\n    symbol: JPYC\n    decimals: 18\n",
 		"listen:\n  host: ${SECRET}\n",
 		"listen:\n  host: [\"a\\nb\"]\n",
@@ -113,10 +113,12 @@ func FuzzResolve(f *testing.F) {
 		// its own marker, since the fuzzer will move it to a path that is not
 		// secret, where quoting it back is right.
 		"database:\n  managed: false\n  url: [\"postgres://admin:" + written + "@db/x\"]\n",
-		// The rpc twice: a list is refused for its type and reaches a problem,
-		// a URL is accepted and reaches a report line.
+		// An endpoint three ways: one refused for the shape of what holds it,
+		// one accepted under own, and one accepted as an element of others.
+		// The first reaches a problem and the other two reach report lines.
 		"networks:\n  polygon:\n    chain_id: 137\n    rpc: [\"https://rpc/" + written + "\"]\n",
-		"networks:\n  polygon:\n    chain_id: 137\n    rpc: https://rpc/" + written + "\n",
+		"networks:\n  polygon:\n    chain_id: 137\n    rpc:\n      own: https://rpc/" + written + "\n",
+		"networks:\n  polygon:\n    chain_id: 137\n    rpc:\n      others: [\"https://rpc/" + written + "\"]\n",
 		// The credentials key cannot carry the marker: it has to decode as
 		// hexadecimal to reach a report at all. What this seed exercises is
 		// the other check, that a secret path reads as whether it is set.
@@ -152,8 +154,15 @@ func FuzzResolve(f *testing.F) {
 		// driving both sides would hide a change to it from both at once.
 		secretPath := func(path string) bool {
 			parts := strings.Split(path, ".")
-			return path == "database.url" || path == "credentials.key" ||
-				len(parts) == 3 && parts[0] == "networks" && parts[2] == "rpc"
+			if path == "database.url" || path == "credentials.key" {
+				return true
+			}
+			if len(parts) != 4 || parts[0] != "networks" || parts[2] != "rpc" {
+				return false
+			}
+			// An element of the list is as secret as the list: others[0] is
+			// an endpoint, and an endpoint carries a key.
+			return parts[3] == "own" || strings.HasPrefix(parts[3], "others")
 		}
 		if err != nil {
 			if leaked(err.Error()) {

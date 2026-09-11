@@ -55,10 +55,10 @@ Prints every setting it resolved and where each came from, then what it reaches.
 ```
 suco.yaml
 
-  assets.jpyc.decimals   18                                          file
-  assets.jpyc.network    polygon                                     file
+  assets.jpyc.decimals       18                                      file
+  assets.jpyc.network        polygon                                 file
   ...
-  networks.polygon.rpc   set                                         ${SUCO_POLYGON_RPC_URL}
+  networks.polygon.rpc.own   set                                     ${SUCO_POLYGON_RPC_URL}
 
 database: PostgreSQL 17.5, schema 0005_attempts_and_observations
 credentials: read-write

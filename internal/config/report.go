@@ -2,6 +2,7 @@ package config
 
 import (
 	"cmp"
+	"fmt"
 	"slices"
 	"strconv"
 
@@ -51,7 +52,14 @@ func (r Resolved) Report() []ReportLine {
 			values[path+".chain_id"] = strconv.FormatUint(n.ChainID, 10)
 		}
 		if takes(n.Kind, "rpc") {
-			values[path+".rpc"] = n.RPC
+			// Written whether or not it is set, the way every other secret
+			// is: a network reached only through others still has an own to
+			// report as not set, and a row missing entirely would read as a
+			// setting this kind does not take.
+			values[path+".rpc.own"] = n.RPC.Own
+			for i, endpoint := range n.RPC.Others {
+				values[fmt.Sprintf("%s.rpc.others[%d]", path, i)] = endpoint
+			}
 		}
 	}
 	for name, a := range r.Config.Assets {

@@ -143,6 +143,19 @@ func (r *reader) failed(path string) bool {
 	return false
 }
 
+// failedUnder reports whether anything at or below path was refused. What a
+// setting is missing is worth saying only when nothing under it was wrong:
+// a list whose one element was refused has no endpoint left, and saying so
+// would bury the element that caused it.
+func (r *reader) failedUnder(path string) bool {
+	for _, p := range r.problems {
+		if p.Path == path || strings.HasPrefix(p.Path, path+".") {
+			return true
+		}
+	}
+	return false
+}
+
 // raw returns the value at a dotted path, after resolving a reference. The
 // second result is false when the key is absent or the reference failed.
 func (r *reader) raw(path string) (any, bool) {
@@ -291,6 +304,11 @@ func (r *reader) section(section, what string) []string {
 		switch {
 		case strings.Contains(name, "."):
 			r.fail(section, "%s name %q contains a dot", what, name)
+		case strings.ContainsAny(name, "[]"):
+			// A path segment ending in [0] names a place in a list, so a name
+			// written that way would be read as one and every setting under it
+			// would go missing.
+			r.fail(section, "%s name %q contains a bracket", what, name)
 		case invisible.Has(name):
 			// A name is what a report, a probe and a list are keyed by, and
 			// each of those is read by somebody. A reference and a symbol are
@@ -313,9 +331,15 @@ func (r *reader) section(section, what string) []string {
 // under marks every key beneath a name as read, for a name that was refused.
 // Reporting each of them as unknown would bury the name that caused it.
 func (r *reader) under(section, name string) {
-	for _, path := range leaves(r.doc) {
-		if strings.HasPrefix(path, section+"."+name+".") {
-			r.seen[path] = true
+	r.seenUnder(section + "." + name)
+}
+
+// seenUnder marks every key below path as read, for a setting whose own
+// problem stands for all of them.
+func (r *reader) seenUnder(path string) {
+	for _, leaf := range leaves(r.doc) {
+		if strings.HasPrefix(leaf, path+".") {
+			r.seen[leaf] = true
 		}
 	}
 }
@@ -324,12 +348,74 @@ func (r *reader) networks() map[string]Network {
 	out := map[string]Network{}
 	for _, name := range r.section("networks", "network") {
 		path := "networks." + name
+		kind := r.text(path+".kind", DefaultNetworkKind)
 		out[name] = Network{
-			Kind:    r.text(path+".kind", DefaultNetworkKind),
+			Kind:    kind,
 			ChainID: r.chainID(path + ".chain_id"),
-			RPC:     r.text(path+".rpc", ""),
+			RPC:     r.endpoints(path+".rpc", takes(kind, "rpc")),
 			Poll:    r.duration(path+".poll", DefaultPoll),
 			Width:   r.integer(path+".width", DefaultWidth),
+		}
+	}
+	return out
+}
+
+// endpoints reads where a network is reached. Anything but a mapping under
+// rpc is refused there rather than leaving what is under it unread: the
+// earlier shape of this setting was a URL written straight under rpc, and a
+// document still written that way is told what takes its place.
+func (r *reader) endpoints(path string, wanted bool) Endpoints {
+	// Read without [reader.raw], which would take a value here for a single
+	// setting and put it in the message when it is not one. What sits here is
+	// a mapping whose leaves are secret, and nothing about it belongs in a
+	// problem but its shape.
+	if v, ok := walk(r.doc, strings.Split(path, ".")); ok {
+		r.seen[path] = true
+		r.sources[path] = Source{Origin: FromFile}
+		// A kind that reaches no chain is told that, rather than what shape
+		// the setting it does not take should have been written in.
+		if _, isMapping := v.(map[string]any); wanted && !isMapping {
+			r.fail(path, "want own, others, or both, not %s", kindOf(v))
+			return Endpoints{}
+		}
+	}
+	if !wanted {
+		// What the kind does not take, it does not take the parts of. The one
+		// problem says so, and reporting each key under it as unknown would
+		// bury it.
+		r.seenUnder(path)
+		return Endpoints{}
+	}
+	return Endpoints{
+		Own:    r.text(path+".own", ""),
+		Others: r.texts(path + ".others"),
+	}
+}
+
+// texts reads a list of values. Each element is read the way a single value
+// is, so that an environment reference stands in for one and a secret list
+// keeps its elements secret. A failure names the element by its place, so that
+// a document with four endpoints says which one to fix. An element already
+// refused is left out rather than carried on as an empty string, which would
+// be refused a second time for its shape.
+//
+// The message holds no part of the value: a list of endpoints is a list of
+// secrets.
+func (r *reader) texts(path string) []string {
+	v, ok := r.raw(path)
+	if !ok {
+		return nil
+	}
+	list, isList := v.([]any)
+	if !isList {
+		r.fail(path, "want a list, got %s", kindOf(v))
+		return nil
+	}
+	out := make([]string, 0, len(list))
+	for i := range list {
+		at := fmt.Sprintf("%s[%d]", path, i)
+		if s := r.text(at, ""); !r.failed(at) {
+			out = append(out, s)
 		}
 	}
 	return out
@@ -457,13 +543,35 @@ func (r *reader) validateNetwork(path string, n Network) {
 		}
 		set := r.sources[p].Origin != FromDefault
 		switch {
-		case takes(n.Kind, key) && !set:
-			r.fail(p, "required when kind is %s", n.Kind)
 		case !takes(n.Kind, key) && set:
 			r.fail(p, "not a setting when kind is %s", n.Kind)
-		case key == "rpc" && set:
-			r.validateRPC(p, n.RPC)
+		// A key this kind does not take, and does not have. Without this the
+		// next case would call it required.
+		case !takes(n.Kind, key):
+		case key == "rpc":
+			// Which endpoints reach a chain, and whether any do, are both
+			// this one's to say.
+			r.validateEndpoints(p, n.RPC)
+		case !set:
+			r.fail(p, "required when kind is %s", n.Kind)
 		}
+	}
+}
+
+// validateEndpoints holds every endpoint a network names to its shape, and
+// refuses a network that names none. A chain nothing can be asked over is one
+// the instance cannot read, and an operator finds that out here rather than
+// from a network that never answers.
+func (r *reader) validateEndpoints(path string, e Endpoints) {
+	own := r.sources[path+".own"].Origin != FromDefault
+	if own {
+		r.validateRPC(path+".own", e.Own)
+	}
+	for i, endpoint := range e.Others {
+		r.validateRPC(fmt.Sprintf("%s.others[%d]", path, i), endpoint)
+	}
+	if !own && len(e.Others) == 0 && !r.failedUnder(path) {
+		r.fail(path, "give own, others, or both")
 	}
 }
 
@@ -691,16 +799,39 @@ func reference(s string) (name string, isRef bool, err error) {
 func walk(doc map[string]any, path []string) (any, bool) {
 	var cur any = doc
 	for _, segment := range path {
+		name, place, indexed := splitIndex(segment)
 		m, ok := cur.(map[string]any)
 		if !ok {
 			return nil, false
 		}
-		cur, ok = m[segment]
+		cur, ok = m[name]
 		if !ok {
 			return nil, false
 		}
+		if !indexed {
+			continue
+		}
+		list, isList := cur.([]any)
+		if !isList || place >= len(list) {
+			return nil, false
+		}
+		cur = list[place]
 	}
 	return cur, true
+}
+
+// splitIndex takes a path segment apart into the key it names and, for a
+// segment such as others[0], the place in that key's list.
+func splitIndex(segment string) (name string, place int, indexed bool) {
+	open := strings.IndexByte(segment, '[')
+	if open < 0 || !strings.HasSuffix(segment, "]") {
+		return segment, 0, false
+	}
+	i, err := strconv.Atoi(segment[open+1 : len(segment)-1])
+	if err != nil || i < 0 {
+		return segment, 0, false
+	}
+	return segment[:open], i, true
 }
 
 var (

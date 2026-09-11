@@ -106,7 +106,7 @@ func TestRun_DoctorSaysWhereEachNetworkStands(t *testing.T) {
 		"eth_getStorageAt":     "0x" + strings.Repeat("00", 32),
 	})
 	document(t, fmt.Sprintf("%snetworks:\n  local:\n    kind: evm\n    chain_id: 137\n"+
-		"    rpc: %s\n%s", namingADatabase(), endpoint, anAsset("local")))
+		"    rpc:\n      own: %s\n%s", namingADatabase(), endpoint, anAsset("local")))
 
 	stdout, _, err := runArgs(t, "doctor")
 
@@ -163,7 +163,7 @@ func TestRun_DoctorTellsAChainItCannotReadFromACursorItCannot(t *testing.T) {
 func TestRun_DoctorSaysWhyANetworkCouldNotBeRead(t *testing.T) {
 	deployed(t)
 	document(t, fmt.Sprintf("%snetworks:\n  local:\n    kind: evm\n    chain_id: 137\n"+
-		"    rpc: http://127.0.0.1:1/v1?key=secret\n%s", namingADatabase(), anAsset("local")))
+		"    rpc:\n      own: http://127.0.0.1:1/v1?key=secret\n%s", namingADatabase(), anAsset("local")))
 
 	stdout, _, err := runArgs(t, "doctor")
 
@@ -192,7 +192,7 @@ func TestRun_DoctorSaysWhenTheChainIsNotTheOneNamed(t *testing.T) {
 		"eth_getStorageAt":     "0x" + strings.Repeat("00", 32),
 	})
 	document(t, fmt.Sprintf("%snetworks:\n  local:\n    kind: evm\n    chain_id: 137\n"+
-		"    rpc: %s\n%s", namingADatabase(), endpoint, anAsset("local")))
+		"    rpc:\n      own: %s\n%s", namingADatabase(), endpoint, anAsset("local")))
 
 	stdout, _, err := runArgs(t, "doctor")
 

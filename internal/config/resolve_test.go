@@ -376,7 +376,11 @@ func TestResolve_AcceptsADocumentWhereEveryKeyIsRead(t *testing.T) {
 		"listen":   map[string]any{"host": "0.0.0.0", "port": uint64(9000), "base_url": "https://pay.example"},
 		"database": map[string]any{"managed": true},
 		"networks": map[string]any{"polygon": map[string]any{
-			"kind": "evm", "chain_id": uint64(137), "rpc": "https://polygon.example/", "poll": "3s", "width": uint64(1000),
+			"kind": "evm", "chain_id": uint64(137), "poll": "3s", "width": uint64(1000),
+			"rpc": map[string]any{
+				"own":    "https://bor.internal:8545",
+				"others": []any{"https://polygon.example/"},
+			},
 		}},
 	}
 
@@ -385,7 +389,8 @@ func TestResolve_AcceptsADocumentWhereEveryKeyIsRead(t *testing.T) {
 	for _, path := range []string{
 		"listen.host", "listen.port", "listen.base_url",
 		"database.managed", "database.url",
-		"networks.polygon.kind", "networks.polygon.chain_id", "networks.polygon.rpc",
+		"networks.polygon.kind", "networks.polygon.chain_id",
+		"networks.polygon.rpc.own", "networks.polygon.rpc.others", "networks.polygon.rpc.others[0]",
 		"networks.polygon.poll", "networks.polygon.width",
 	} {
 		if _, ok := got.Sources[path]; !ok {
@@ -446,16 +451,18 @@ func TestResolve_NeverPutsASecretInAProblem(t *testing.T) {
 			env: noEnv,
 		},
 		{
-			name: "a reference mixed with literal text at networks rpc",
+			name: "a reference mixed with literal text at an own endpoint",
 			doc: map[string]any{"networks": map[string]any{
-				"polygon": map[string]any{"chain_id": uint64(137), "rpc": "https://rpc/" + secret + "${X}"},
+				"polygon": map[string]any{"chain_id": uint64(137),
+					"rpc": map[string]any{"own": "https://rpc/" + secret + "${X}"}},
 			}},
 			env: noEnv,
 		},
 		{
-			name: "an rpc the URL rule refuses",
+			name: "an endpoint of others the URL rule refuses",
 			doc: map[string]any{"networks": map[string]any{
-				"polygon": map[string]any{"chain_id": uint64(137), "rpc": "http://user:" + secret + "@rpc.example/"},
+				"polygon": map[string]any{"chain_id": uint64(137),
+					"rpc": map[string]any{"others": []any{"http://user:" + secret + "@rpc.example/"}}},
 			}},
 			env: noEnv,
 		},
