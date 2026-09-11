@@ -24,6 +24,11 @@ type Network struct {
 	// endpoint can be reading a state it has not finished replacing, and what
 	// is taken back here is a payment's record of money arriving.
 	VanishAfter int
+	// Wait is how long a payment that has stopped being payable is given to
+	// learn whether anything arrives, counted from its deadline. A transfer
+	// signed before the deadline can still be carried after it, and how long
+	// after is the chain's to decide.
+	Wait time.Duration
 }
 
 // Worker decides which recorded transfers settled the payments they were
@@ -78,6 +83,10 @@ func (w *Worker) round(ctx context.Context) error {
 		return fmt.Errorf("%s: a transfer is set to be given up on after %d rounds",
 			w.network.Name, w.network.VanishAfter)
 	}
+	if w.network.Wait < 1 {
+		return fmt.Errorf("%s: a payment is set to wait %s for what it is owed",
+			w.network.Name, w.network.Wait)
+	}
 	candidates, err := w.store.Candidates(ctx, payment.Network(w.network.Name))
 	if err != nil {
 		return err
@@ -100,6 +109,70 @@ func (w *Worker) round(ctx context.Context) error {
 		}
 	}
 	w.answers = said
+	return w.swept(ctx)
+}
+
+// swept moves the payments the clock has passed by: those that have reached
+// their deadline stop being payable, and those that waited out the wait with
+// nothing that could pay them are given up on.
+//
+// It runs after the deciding, so a transfer that settles a payment in this
+// round settles it before the clock is read. Reaching the end of the wait is
+// not what ends a payment; having nothing left that could pay it is.
+func (w *Worker) swept(ctx context.Context) error {
+	network := payment.Network(w.network.Name)
+	now := w.now()
+
+	reached, err := w.store.Overdue(ctx, network, now)
+	if err != nil {
+		return err
+	}
+	for _, one := range reached {
+		if err := one.Payment.AwaitFinality(now); err != nil {
+			return err
+		}
+		if err := w.told(ctx, one.Account, one.Payment, one.PaymentAt,
+			"payment awaiting finality"); err != nil {
+			return err
+		}
+	}
+
+	over, err := w.store.Unsettled(ctx, network, now.Add(-w.network.Wait))
+	if err != nil {
+		return err
+	}
+	for _, one := range over {
+		if err := one.Payment.Expire(); err != nil {
+			return err
+		}
+		if err := w.told(ctx, one.Account, one.Payment, one.PaymentAt,
+			"payment expired"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// told writes a payment's new state and the event that says so together, so a
+// merchant is told exactly what was kept, and writes a line saying what moved.
+// The network and the payment are on every line; more is the caller's to add.
+//
+// A payment that moved between being read and this is left where it is. The
+// row is read again next round, and by then it says what the writer that won
+// made of it.
+func (w *Worker) told(ctx context.Context, account payment.AccountID, p *payment.Payment,
+	at payment.Revision, said string, fields ...any) error {
+	event, err := payment.Announce(p)
+	if err != nil {
+		return err
+	}
+	if err := w.store.Save(ctx, account, p, at, event); err != nil {
+		if errors.Is(err, payment.ErrStale) {
+			return nil
+		}
+		return err
+	}
+	w.log.Info(said, append([]any{"network", w.network.Name, "payment", p.ID()}, fields...)...)
 	return nil
 }
 
@@ -152,20 +225,8 @@ func (w *Worker) pay(ctx context.Context, c payment.Candidate, said answer) erro
 		}
 		return nil
 	}
-	told, err := payment.Announce(c.Payment)
-	if err != nil {
-		return err
-	}
-	if err := w.store.Save(ctx, c.Account, c.Payment, c.PaymentAt, told); err != nil {
-		if errors.Is(err, payment.ErrStale) {
-			// The payment moved between being read and this: two transfers
-			// paid it, and the first of them settled it. Nothing more is due,
-			// and the row is read again next round.
-			return nil
-		}
-		return err
-	}
-	w.log.Info("payment succeeded", "network", w.network.Name, "payment", c.Payment.ID(),
+	// Two transfers can pay one payment. The first of them settles it, and the
+	// second finds it moved, which [Worker.told] passes over.
+	return w.told(ctx, c.Account, c.Payment, c.PaymentAt, "payment succeeded",
 		"tx", c.Tx, "height", c.BlockHeight)
-	return nil
 }

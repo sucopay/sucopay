@@ -42,7 +42,10 @@ type deciding struct {
 	payment *payment.Payment
 	attempt *payment.Attempt
 	tx      string
-	log     *bytes.Buffer
+	// at is what the worker's clock says. A test that wants the deadline of a
+	// payment behind it moves this rather than waiting.
+	at  time.Time
+	log *bytes.Buffer
 }
 
 // decide opens everything one round reads and writes, with the transfer in a
@@ -63,15 +66,16 @@ func decide(t *testing.T, vanishAfter int, endpoints ...chain.Chain) *deciding {
 	}
 	d := &deciding{
 		chain: simulated.New(), store: payment.NewPostgres(pool.Conns()), pool: pool.Conns(),
-		asset: asset, log: &bytes.Buffer{},
+		asset: asset, at: time.Now(), log: &bytes.Buffer{},
 	}
 	d.payment, d.attempt = d.attempted(t, held)
 	d.tx = d.recorded(t, d.paying(d.payment, d.attempt.Key()))
 	if len(endpoints) == 0 {
 		endpoints = []chain.Chain{d.chain}
 	}
-	d.worker = New(Network{Name: string(local), Endpoints: endpoints, VanishAfter: vanishAfter},
-		d.store, slog.New(slog.NewTextHandler(d.log, nil)), time.Now)
+	d.worker = New(Network{Name: string(local), Endpoints: endpoints,
+		VanishAfter: vanishAfter, Wait: time.Hour},
+		d.store, slog.New(slog.NewTextHandler(d.log, nil)), func() time.Time { return d.at })
 	return d
 }
 
@@ -90,8 +94,8 @@ func (d *deciding) attempted(t *testing.T, account payment.AccountID) (*payment.
 	p, err := payment.New(payment.Request{
 		Amount:      amount,
 		Destination: destination,
-		ExpiresAt:   time.Now().Add(time.Hour),
-	}, time.Now())
+		ExpiresAt:   d.at.Add(time.Hour),
+	}, d.at)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +112,7 @@ func (d *deciding) attempted(t *testing.T, account payment.AccountID) (*payment.
 	if err := d.store.Save(t.Context(), account, p, at, payment.Event{}); err != nil {
 		t.Fatal(err)
 	}
-	a, err := payment.NewAttempt(p, time.Now())
+	a, err := payment.NewAttempt(p, d.at)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +191,7 @@ func (d *deciding) recorded(t *testing.T, transfers ...chain.Transfer) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := d.store.Record(t.Context(), tx, local, height, height, true, seen, time.Now()); err != nil {
+	if err := d.store.Record(t.Context(), tx, local, height, height, true, seen, d.at); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(t.Context()); err != nil {
@@ -653,5 +657,150 @@ func TestRound_RefusesToMarkVanishedAfterNoRounds(t *testing.T) {
 	}
 	if got := d.reason(t, d.tx); got != string(payment.Matched) {
 		t.Errorf("the row reads %s, want it left matched", got)
+	}
+}
+
+// The deadline is the moment a payment stops being payable. It moves to
+// waiting for finality whether or not a transfer is on its way, because a
+// transfer that was signed before the deadline can still arrive after it.
+func TestRound_MovesAPaymentThatReachedItsDeadlineToWaitingForFinality(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+	d.at = d.at.Add(time.Hour)
+
+	d.round(t)
+
+	if got := d.status(t, held, d.payment); got != payment.AwaitingFinality {
+		t.Errorf("the payment is %s, want awaiting finality", got)
+	}
+	events := d.events(t, held, d.payment)
+	if len(events) != 1 || events[0].Name != "payment.awaiting_finality" {
+		t.Fatalf("the outbox holds %+v, want one payment.awaiting_finality", events)
+	}
+	var told map[string]any
+	if err := json.Unmarshal([]byte(events[0].Payload), &told); err != nil {
+		t.Fatalf("the payload is not a JSON object: %v:\n%s", err, events[0].Payload)
+	}
+	if told["status"] != "awaiting_finality" {
+		t.Errorf("the payload says the status is %v, want awaiting_finality", told["status"])
+	}
+}
+
+// The wait runs from the deadline. A payment reaches the end of it with
+// nothing matched against it, and there is nothing left to wait for.
+func TestRound_ExpiresAPaymentWhoseWaitIsOverWithNothingMatchedAgainstIt(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+	unpaid, _ := d.attempted(t, held)
+
+	d.at = d.at.Add(time.Hour)
+	d.round(t)
+
+	if got := d.status(t, held, unpaid); got != payment.AwaitingFinality {
+		t.Fatalf("at the deadline the payment is %s, want awaiting finality", got)
+	}
+
+	d.at = d.at.Add(time.Hour)
+	d.round(t)
+
+	if got := d.status(t, held, unpaid); got != payment.Expired {
+		t.Errorf("a wait past the deadline the payment is %s, want expired", got)
+	}
+	events := d.events(t, held, unpaid)
+	if len(events) != 2 || events[1].Name != "payment.expired" {
+		t.Errorf("the outbox holds %+v, want payment.awaiting_finality then payment.expired", events)
+	}
+}
+
+// A transfer that settles while the payment waits settles it. Reaching the end
+// of the wait is not what ends a payment; having nothing that could pay it is.
+func TestRound_SettlesAPaymentThatWasPaidWhileItWaited(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+
+	d.at = d.at.Add(time.Hour)
+	d.round(t)
+
+	if got := d.status(t, held, d.payment); got != payment.AwaitingFinality {
+		t.Fatalf("at the deadline the payment is %s, want awaiting finality", got)
+	}
+
+	d.chain.Finalize(1)
+	d.at = d.at.Add(time.Hour)
+	d.round(t)
+
+	if got := d.status(t, held, d.payment); got != payment.Succeeded {
+		t.Errorf("the payment is %s, want succeeded", got)
+	}
+	events := d.events(t, held, d.payment)
+	if len(events) != 2 || events[1].Name != "payment.succeeded" {
+		t.Errorf("the outbox holds %+v, want payment.awaiting_finality then payment.succeeded", events)
+	}
+}
+
+// One round for the deployment, not one per merchant. The round here is far
+// enough past the deadline that both sweeps take the same payment: it stops
+// being payable and is given up on without a round in between, which is what a
+// worker that was down for a while comes back to. A payment with a transfer
+// still matched against it is left waiting in that same round.
+func TestRound_SweepsTheClockOverEveryAccount(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+	if _, err := d.pool.Exec(t.Context(),
+		`insert into accounts (id, name) values ($1, 'second')`, second); err != nil {
+		t.Fatal(err)
+	}
+	mine, _ := d.attempted(t, held)
+	theirs, _ := d.attempted(t, second)
+
+	d.at = d.at.Add(2 * time.Hour)
+	d.round(t)
+
+	for account, p := range map[payment.AccountID]*payment.Payment{held: mine, second: theirs} {
+		if got := d.status(t, account, p); got != payment.Expired {
+			t.Errorf("under %s the payment is %s, want expired", account, got)
+		}
+	}
+	if got := d.status(t, held, d.payment); got != payment.AwaitingFinality {
+		t.Errorf("the payment with a transfer matched against it is %s, want it left waiting", got)
+	}
+}
+
+// A wait of nothing would end a payment in the round that stopped it being
+// payable, which is the wait's whole purpose.
+func TestRound_RefusesToRunWithNothingToWait(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+	d.worker.network.Wait = 0
+	unpaid, _ := d.attempted(t, held)
+	d.at = d.at.Add(2 * time.Hour)
+
+	err := d.worker.round(t.Context())
+
+	if err == nil {
+		t.Fatal("a round ran with nothing set to wait")
+	}
+	if got := d.status(t, held, unpaid); got != payment.AwaitingPayment {
+		t.Errorf("the payment is %s, want it left awaiting payment", got)
+	}
+}
+
+// The round decides before it reads the clock. A transfer that settles a
+// payment in the same round that its deadline passed settles it, rather than
+// moving it to waiting and leaving it there until the round after.
+func TestRound_SettlesBeforeItReadsTheClock(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+	d.chain.Finalize(1)
+	d.at = d.at.Add(time.Hour)
+
+	d.round(t)
+
+	if got := d.status(t, held, d.payment); got != payment.Succeeded {
+		t.Errorf("the payment is %s, want succeeded", got)
+	}
+	events := d.events(t, held, d.payment)
+	if len(events) != 1 || events[0].Name != "payment.succeeded" {
+		t.Errorf("the outbox holds %+v, want one payment.succeeded", events)
 	}
 }

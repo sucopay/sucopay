@@ -124,6 +124,20 @@ type Event struct {
 	Payload []byte
 }
 
+// Due is a payment a sweep of the clock picked up, with the revision it was
+// read at. The clock and not the money: what is due is a move, and the payment
+// may have nothing owing on it at all.
+//
+// It carries the account for the same reason [Hit] does. What sweeps runs for
+// the deployment, and the account is what the row hands back for the write.
+type Due struct {
+	// Account owns the payment.
+	Account AccountID
+	// Payment is what the clock has passed by, at PaymentAt.
+	Payment   *Payment
+	PaymentAt Revision
+}
+
 // MaxEventBytes bounds a payload. Every other value of no fixed length that
 // this package writes has a bound, and one written from inside the process is
 // no more trustworthy than one that came over a wire: what puts it there is

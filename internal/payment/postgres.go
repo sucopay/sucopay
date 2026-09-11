@@ -575,6 +575,89 @@ func (s *Postgres) Candidates(ctx context.Context, network Network) ([]Candidate
 	return candidates, nil
 }
 
+// dueColumns are the columns a payment is read back from for a sweep of the
+// clock, in the order [scanDue] reads them.
+const dueColumns = `p.account_id, p.id, p.asset_network, p.asset_reference,
+                    p.asset_symbol, p.asset_decimals, p.amount, p.received,
+                    p.destination, p.status, p.metadata, p.created_at,
+                    p.expires_at, p.version`
+
+// Overdue are the payments on a network that are still open for payment and
+// have reached the moment they stop being open. Reaching the deadline is
+// passing it: it is the moment payment closes, not the last moment it is open.
+//
+// Keyed by network and not by account, for the reason [Postgres.Candidates]
+// gives.
+func (s *Postgres) Overdue(ctx context.Context, network Network, at time.Time) ([]Due, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx, `
+		select `+dueColumns+`
+		  from payments p
+		 where p.asset_network = $1 and p.status = $2 and p.expires_at <= $3`,
+		network, AwaitingPayment, at)
+	if err != nil {
+		return nil, fmt.Errorf("payments on %s: %w", network, err)
+	}
+	return scanDue(rows, network)
+}
+
+// Unsettled are the payments on a network that are waiting for finality, whose
+// wait was over at the moment given, and that have no transfer still matched
+// against them.
+//
+// A matched transfer is one that may yet pay the payment, whether or not it
+// has been seen where the chain keeps it. One short of what was asked never
+// pays it, and one that is no longer on the chain no longer says anything, so
+// neither holds a payment open.
+func (s *Postgres) Unsettled(ctx context.Context, network Network, at time.Time) ([]Due, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx, `
+		select `+dueColumns+`
+		  from payments p
+		 where p.asset_network = $1 and p.status = $2 and p.expires_at <= $3
+		   and not exists (
+		       select 1 from observations o
+		        where o.account_id = p.account_id and o.payment_id = p.id
+		          and o.reason = $4)`,
+		network, AwaitingFinality, at, Matched)
+	if err != nil {
+		return nil, fmt.Errorf("payments on %s: %w", network, err)
+	}
+	return scanDue(rows, network)
+}
+
+// scanDue reads what a sweep of the clock found, and closes the rows.
+func scanDue(rows pgx.Rows, network Network) ([]Due, error) {
+	defer rows.Close()
+
+	var due []Due
+	for rows.Next() {
+		var (
+			one Due
+			row payer
+		)
+		if err := rows.Scan(&one.Account, &row.stored.ID,
+			&row.network, &row.reference, &row.symbol, &row.decimals, &row.amount,
+			&row.received, &row.stored.Destination, &row.stored.Status, &row.metadata,
+			&row.stored.CreatedAt, &row.stored.ExpiresAt, &row.version); err != nil {
+			return nil, fmt.Errorf("payments on %s: %w", network, err)
+		}
+		var err error
+		if one.Payment, one.PaymentAt, err = row.payment(); err != nil {
+			return nil, err
+		}
+		due = append(due, one)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("payments on %s: %w", network, err)
+	}
+	return due, nil
+}
+
 // Record writes what a round saw, inside the transaction that moves the
 // position with it.
 //
