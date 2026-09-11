@@ -39,8 +39,11 @@ const (
 	// in. What was recorded is not what the chain holds, and the round that
 	// reads the range again is what puts the record right.
 	Elsewhere Verdict = "elsewhere"
-	// Gone is the transfer nowhere on the chain. A transaction that was
-	// dropped carries no transfers, and so does one that reverted.
+	// Gone is the transfer nowhere on the chain, at a height the chain will
+	// not replace. A transaction that was dropped carries no transfers, and so
+	// does one that reverted. Not being there at a height the chain may still
+	// replace is Waiting: the block there now can give way to one that
+	// carries the transfer.
 	Gone Verdict = "gone"
 	// Disagreed is the endpoints not saying the same thing. Nothing is settled
 	// from it: whoever asked is told that rather than handed one of the
@@ -97,17 +100,18 @@ func Ask(ctx context.Context, endpoints []chain.Chain, r Recorded) (Verdict, err
 // the same number with another hash is another history.
 func asked(ctx context.Context, endpoint chain.Chain, r Recorded) (Verdict, error) {
 	carried, err := endpoint.Receipt(ctx, r.Tx)
-	if errors.Is(err, chain.ErrNoTransaction) {
-		return Gone, nil
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, chain.ErrNoTransaction) {
 		return "", err
 	}
-	// A transaction that is there and carried nothing. One that reverted looks
-	// like this, and so does one whose logs were all of something else; either
-	// way the transfer that was recorded is not on this chain.
+	// A transaction the chain does not hold, or one that is there and carried
+	// nothing. One that reverted looks like the second, and so does one whose
+	// logs were all of something else; either way the transfer that was
+	// recorded is not on this chain. Whether that is settled turns on the
+	// height: an endpoint whose final block is below the recorded one may
+	// still be handed the block that carries the transfer, and one that is
+	// only behind must not be read as one that has dropped it.
 	if len(carried) == 0 {
-		return Gone, nil
+		return settled(ctx, endpoint, r.Height, Gone)
 	}
 	// One transaction is in one block, so the first transfer says where the
 	// transaction is.
@@ -115,12 +119,18 @@ func asked(ctx context.Context, endpoint chain.Chain, r Recorded) (Verdict, erro
 	if at.Height != r.Height || at.Hash != r.Hash {
 		return Elsewhere, nil
 	}
+	return settled(ctx, endpoint, at.Height, Final)
+}
+
+// settled is the verdict once the endpoint's final block has reached the
+// height, and Waiting until it has.
+func settled(ctx context.Context, endpoint chain.Chain, height uint64, then Verdict) (Verdict, error) {
 	head, err := endpoint.Head(ctx)
 	if err != nil {
 		return "", err
 	}
-	if head.Final.Height < at.Height {
+	if head.Final.Height < height {
 		return Waiting, nil
 	}
-	return Final, nil
+	return then, nil
 }

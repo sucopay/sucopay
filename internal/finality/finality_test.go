@@ -90,6 +90,25 @@ func TestAsk_AnswersGoneWhenTheTransferIsNotThere(t *testing.T) {
 	}
 }
 
+// An endpoint whose final block is below the recorded one has not settled that
+// height: the block it holds there may still be replaced by one that carries
+// the transfer. Gone is for an endpoint that has settled the height and holds
+// nothing there.
+func TestAsk_AnswersWaitingWhenTheTransferIsNotThereAndTheHeightIsNotFinal(t *testing.T) {
+	t.Parallel()
+	c, r := carrying(t, "tx1")
+	c.Reorg(r.Height)
+
+	got, err := finality.Ask(t.Context(), []chain.Chain{c}, r)
+
+	if err != nil {
+		t.Fatalf("Ask = %v, want none", err)
+	}
+	if got != finality.Waiting {
+		t.Errorf("Ask = %q, want %q", got, finality.Waiting)
+	}
+}
+
 // Two endpoints saying different things settle nothing. Whoever asked is told
 // that rather than handed one of the two answers.
 func TestAsk_AnswersDisagreedWhenTheEndpointsDoNotSayTheSameThing(t *testing.T) {
@@ -161,30 +180,46 @@ func TestAsk_RefusesToAnswerWithNoEndpoints(t *testing.T) {
 	}
 }
 
-// empty is a chain holding a transaction that carried nothing. The chain in
-// the process cannot be put in that state: it knows a transaction by the
-// transfers in it, and a transaction with none is one it has never seen.
-type empty struct{ chain.Chain }
+// empty is a chain holding a transaction that carried nothing, with its final
+// block at a height of the test's choosing. The chain in the process cannot be
+// put in that state: it knows a transaction by the transfers in it, and a
+// transaction with none is one it has never seen.
+type empty struct {
+	chain.Chain
+	final uint64
+}
 
 func (empty) Receipt(context.Context, string) ([]chain.Transfer, error) { return nil, nil }
 
-func (empty) Head(context.Context) (chain.Head, error) {
-	return chain.Head{Final: chain.Block{Height: 10}}, nil
+func (e empty) Head(context.Context) (chain.Head, error) {
+	return chain.Head{Final: chain.Block{Height: e.final}}, nil
 }
 
 // A transaction that is there and carried nothing is gone as far as a recorded
-// transfer is concerned. A reverted one looks like this, and so does one whose
-// logs were all of something else.
+// transfer is concerned, once the endpoint has settled the height. A reverted
+// one looks like this, and so does one whose logs were all of something else.
 func TestAsk_AnswersGoneForATransactionThatCarriedNothing(t *testing.T) {
 	t.Parallel()
+	for name, tt := range map[string]struct {
+		final uint64
+		want  finality.Verdict
+	}{
+		"at the height":    {1, finality.Gone},
+		"past the height":  {10, finality.Gone},
+		"below the height": {0, finality.Waiting},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-	got, err := finality.Ask(t.Context(), []chain.Chain{empty{}},
-		finality.Recorded{Tx: "tx1", Height: 1, Hash: "block1"})
+			got, err := finality.Ask(t.Context(), []chain.Chain{empty{final: tt.final}},
+				finality.Recorded{Tx: "tx1", Height: 1, Hash: "block1"})
 
-	if err != nil {
-		t.Fatalf("Ask = %v, want none", err)
-	}
-	if got != finality.Gone {
-		t.Errorf("Ask = %q, want %q", got, finality.Gone)
+			if err != nil {
+				t.Fatalf("Ask = %v, want none", err)
+			}
+			if got != tt.want {
+				t.Errorf("Ask = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
