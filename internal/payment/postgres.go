@@ -108,11 +108,17 @@ func (s *Postgres) Find(ctx context.Context, account AccountID, id ID) (*Payment
 	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
 	defer cancel()
 
+	return find(ctx, s.pool, account, id)
+}
+
+// find reads one payment through whatever the caller is holding, so that a
+// round already inside a transaction reads what that transaction can see.
+func find(ctx context.Context, q queries, account AccountID, id ID) (*Payment, Revision, error) {
 	var row payer
 	// Filtered on the account as well as the identifier. A payment belonging
 	// to somebody else is not found rather than found and refused, so a caller
 	// that forgot to check cannot tell one from a payment that never existed.
-	err := s.pool.QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 		select asset_network, asset_reference, asset_symbol, asset_decimals,
 		       amount, received, destination, status, metadata,
 		       created_at, expires_at, version
@@ -167,25 +173,8 @@ func (s *Postgres) Save(ctx context.Context, account AccountID, p *Payment, at R
 	}
 	defer func() { err = unwind(ctx, tx, fmt.Sprintf("payment %s", p.ID()), err) }()
 
-	var received *string
-	if r := p.Received(); r.IsSet() {
-		d := digits(r)
-		received = &d
-	}
-	tag, err := tx.Exec(ctx, `
-		update payments
-		   set status = $4, received = $5, version = version + 1
-		 where account_id = $1 and id = $2 and version = $3`,
-		account, p.ID(), at.at, p.Status(), received)
-	if err != nil {
-		return fmt.Errorf("payment %s: %w", p.ID(), err)
-	}
-	// Nothing matched. Either the version moved or the account is not the one
-	// that owns this payment, and the two are the same answer on purpose: only
-	// a caller that read this payment can hold a revision for it, so the second
-	// is its own bug rather than somebody else probing.
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("payment %s: %w", p.ID(), ErrStale)
+	if err := savePayment(ctx, tx, account, p, at); err != nil {
+		return err
 	}
 	// After the update and inside the same transaction: a row here describes a
 	// change, and the change is refused above when the revision had moved.
@@ -199,6 +188,85 @@ func (s *Postgres) Save(ctx context.Context, account AccountID, p *Payment, at R
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("payment %s: %w", p.ID(), err)
+	}
+	return nil
+}
+
+// arrived puts what a transfer carried on the payment it was for.
+//
+// Only a transfer to the right place in the right asset is an arrival for this
+// payment. One that went somewhere else is somebody else's, and one that
+// arrived for a payment nothing could be paid for is not applied to it. What
+// is short of the amount is an arrival all the same: the difference between
+// what was asked for and what came is what makes the shortfall readable.
+//
+// A payment that already holds an arrival is left where it is. The same
+// transfer is seen again whenever a range is read twice or put back, and the
+// second reading is the same fact rather than a second arrival.
+func arrived(ctx context.Context, q queries, one Seen) error {
+	switch one.Reason {
+	case Matched, Short:
+	default:
+		return nil
+	}
+	// Read inside the transaction rather than taken from the hit, the way what
+	// takes an arrival back reads. The hit was read before the round began,
+	// and a payment two of this round's transfers are for would otherwise be
+	// written twice from two copies that each still say nothing arrived. The
+	// second write would lose on the revision and take the whole round with
+	// it, and the round after would read the same blocks and lose again.
+	p, at, err := find(ctx, q, one.Account, one.Payment.ID())
+	if err != nil {
+		return fmt.Errorf("transfer %s: %w", one.Transfer.Tx, err)
+	}
+	// A payment nothing can arrive for is left alone. Judge answers short
+	// before it looks at the status, so a transfer short of the amount is
+	// judged short whatever the payment has become, and a round that failed on
+	// one would never move its cursor past it.
+	if !p.CanReceive() || p.Received().IsSet() {
+		return nil
+	}
+	m, err := ParseMoney(p.Asset(), one.Transfer.Value)
+	if err != nil {
+		// The same value Judge already made what it could of: a value it
+		// cannot read is what it calls short, and the row holds it as the
+		// chain wrote it. Failing here would abort a round over evidence that
+		// is already recorded.
+		return nil
+	}
+	if err := p.Receive(m); err != nil {
+		return fmt.Errorf("transfer %s: %w", one.Transfer.Tx, err)
+	}
+	if err := savePayment(ctx, q, one.Account, p, at); err != nil {
+		return fmt.Errorf("transfer %s: %w", one.Transfer.Tx, err)
+	}
+	return nil
+}
+
+// savePayment writes a payment back inside a transaction the caller owns, for
+// a round that has more to write with it. [Postgres.Save] is the same write
+// with a transaction of its own and the event a move produced; a round produces
+// none, because seeing a transfer is not yet a payment having moved.
+func savePayment(ctx context.Context, q queries, account AccountID, p *Payment, at Revision) error {
+	var received *string
+	if r := p.Received(); r.IsSet() {
+		d := digits(r)
+		received = &d
+	}
+	tag, err := q.Exec(ctx, `
+		update payments
+		   set status = $4, received = $5, version = version + 1
+		 where account_id = $1 and id = $2 and version = $3`,
+		account, p.ID(), at.at, p.Status(), received)
+	if err != nil {
+		return fmt.Errorf("payment %s: %w", p.ID(), err)
+	}
+	// Nothing matched. Either the version moved or the account is not the one
+	// that owns this payment, and the two are the same answer on purpose: only
+	// a caller that read this payment can hold a revision for it, so the second
+	// is its own bug rather than somebody else probing.
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("payment %s: %w", p.ID(), ErrStale)
 	}
 	return nil
 }
@@ -451,6 +519,12 @@ func (s *Postgres) Consumed(ctx context.Context, network Network, keys []string)
 //
 // The attempts move with their rows: matched confirms one, and a row that
 // vanished takes one back to issued unless another transfer still matches it.
+//
+// The payments move with them too. What a transfer carried is put on the
+// payment it was for, and taken back when the transfer is no longer on the
+// chain, so a merchant reading one payment sees what came without reading a
+// chain.
+//
 // Every move is conditioned on the revision the caller read, so a round that
 // lost a race reports [ErrStale] and writes nothing.
 func (s *Postgres) Record(ctx context.Context, tx pgx.Tx, network Network, first, last uint64, final bool, seen []Seen, now time.Time) error {
@@ -463,6 +537,11 @@ func (s *Postgres) Record(ctx context.Context, tx pgx.Tx, network Network, first
 	}
 	if final {
 		if err := vanish(ctx, tx, network, first, last, txs, now); err != nil {
+			return err
+		}
+	}
+	for _, one := range seen {
+		if err := arrived(ctx, tx, one); err != nil {
 			return err
 		}
 	}
@@ -523,8 +602,16 @@ func recordOne(ctx context.Context, q queries, network Network, one Seen, final 
 	return nil
 }
 
+// gone is one observation that is no longer on the chain, and what it was for.
+type gone struct {
+	account AccountID
+	payment ID
+	attempt AttemptID
+}
+
 // vanish marks what was recorded in a span of finalised blocks and is no
-// longer there, and takes the attempts it was matched against back to issued.
+// longer there, and takes back what stood on it: the attempts it was matched
+// against go to issued, and what it told a payment had arrived is cleared.
 func vanish(ctx context.Context, q queries, network Network, first, last uint64, txs []string, now time.Time) error {
 	low, high, err := span(first, last)
 	if err != nil {
@@ -539,11 +626,6 @@ func vanish(ctx context.Context, q queries, network Network, first, last uint64,
 		network, low, high, txs, Vanished, now)
 	if err != nil {
 		return fmt.Errorf("observations on %s: %w", network, err)
-	}
-	type gone struct {
-		account AccountID
-		payment ID
-		attempt AttemptID
 	}
 	var lost []gone
 	for rows.Next() {
@@ -560,32 +642,73 @@ func vanish(ctx context.Context, q queries, network Network, first, last uint64,
 	}
 
 	for _, one := range lost {
-		var matched int
-		if err := q.QueryRow(ctx, `
-			select count(*)
-			  from observations
-			 where account_id = $1 and payment_id = $2 and attempt_id = $3
-			   and reason = $4`,
-			one.account, one.payment, one.attempt, Matched).Scan(&matched); err != nil {
-			return fmt.Errorf("attempt %s: %w", one.attempt, err)
-		}
-		if matched > 0 {
-			continue
-		}
-		a, at, err := findAttempt(ctx, q, one.account, one.payment, one.attempt)
-		if err != nil {
+		if err := unconfirm(ctx, q, one); err != nil {
 			return err
 		}
-		if err := a.Unconfirm(); err != nil {
-			// Issued already: nothing was confirmed against this attempt, so
-			// there is nothing to take back.
-			continue
-		}
-		if err := saveAttempt(ctx, q, one.account, a, at); err != nil {
+		if err := unreceive(ctx, q, one); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// unconfirm takes an attempt back to issued, for a transfer that is no longer
+// on the chain.
+func unconfirm(ctx context.Context, q queries, one gone) error {
+	var matched int
+	if err := q.QueryRow(ctx, `
+		select count(*)
+		  from observations
+		 where account_id = $1 and payment_id = $2 and attempt_id = $3
+		   and reason = $4`,
+		one.account, one.payment, one.attempt, Matched).Scan(&matched); err != nil {
+		return fmt.Errorf("attempt %s: %w", one.attempt, err)
+	}
+	if matched > 0 {
+		return nil
+	}
+	a, at, err := findAttempt(ctx, q, one.account, one.payment, one.attempt)
+	if err != nil {
+		return err
+	}
+	if err := a.Unconfirm(); err != nil {
+		// Issued already: nothing was confirmed against this attempt, so there
+		// is nothing to take back.
+		return nil
+	}
+	return saveAttempt(ctx, q, one.account, a, at)
+}
+
+// unreceive takes back what a payment was told arrived, for a transfer that is
+// no longer on the chain. A payment that kept it would say money came that
+// nobody sent, and a payment holds one arrival, so the write-once rule would
+// keep any later one out.
+//
+// Taken back only when nothing still stands for it: a range read twice can
+// leave one transfer gone and another recorded.
+func unreceive(ctx context.Context, q queries, one gone) error {
+	var standing int
+	if err := q.QueryRow(ctx, `
+		select count(*)
+		  from observations
+		 where account_id = $1 and payment_id = $2 and reason = any($3)`,
+		one.account, one.payment, []Reason{Matched, Short}).Scan(&standing); err != nil {
+		return fmt.Errorf("payment %s: %w", one.payment, err)
+	}
+	if standing > 0 {
+		return nil
+	}
+	p, at, err := find(ctx, q, one.account, one.payment)
+	if err != nil {
+		return err
+	}
+	if err := p.Unreceive(); err != nil {
+		// Nothing had arrived, or the payment is past the point where anything
+		// can be taken back from it. Either way the row that went is not one
+		// this field still answers for.
+		return nil
+	}
+	return savePayment(ctx, q, one.account, p, at)
 }
 
 // blockHeight is a transfer's height as the column holds one, refusing what it

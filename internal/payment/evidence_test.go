@@ -617,3 +617,293 @@ func TestRecord_RefusesWhatAProviderShouldNotBeAbleToWrite(t *testing.T) {
 		})
 	}
 }
+
+// worth is a transfer of a value the payment did not ask for, so that what
+// arrived and what was asked for can be told apart.
+func worth(s payment.Seen, value string) payment.Seen {
+	s.Transfer.Value = value
+	return s
+}
+
+// What arrived sits on the payment, so a merchant reading one payment sees it
+// without reading the chain. It is put there when the transfer is recorded
+// rather than when the payment settles: a transfer short of the amount never
+// settles anything, and the difference is what makes the shortfall readable.
+func TestRecord_PutsWhatArrivedOnThePayment(t *testing.T) {
+	t.Parallel()
+	for what, reason := range map[string]payment.Reason{
+		"matched": payment.Matched,
+		"short":   payment.Short,
+	} {
+		t.Run(what, func(t *testing.T) {
+			t.Parallel()
+			s, pool := store(t)
+			hit := spent(t, s, first)
+
+			if err := recording(t, s, pool, 100, 100, false,
+				worth(seenAt(hit, "tx1", 100, reason), "7")); err != nil {
+				t.Fatal(err)
+			}
+
+			back, _, err := s.Find(t.Context(), first, hit.Payment.ID())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := back.Received(); !got.IsSet() || got.Amount().String() != "7" {
+				t.Errorf("received = %v, want the 7 that arrived", got)
+			}
+			if got := back.Amount().Amount().String(); got == "7" {
+				t.Errorf("the payment asks for %s, which the test cannot tell from what arrived", got)
+			}
+		})
+	}
+}
+
+// A transfer that went somewhere else, or arrived for a payment nothing could
+// be paid for, is not an arrival for this payment. The row records it and the
+// payment says nothing about it.
+func TestRecord_LeavesThePaymentWithNothingArrivedForATransferThatIsNotOne(t *testing.T) {
+	t.Parallel()
+	for what, reason := range map[string]payment.Reason{
+		"wrong_to":    payment.WrongTo,
+		"wrong_asset": payment.WrongAsset,
+		"late":        payment.Late,
+	} {
+		t.Run(what, func(t *testing.T) {
+			t.Parallel()
+			s, pool := store(t)
+			hit := spent(t, s, first)
+
+			if err := recording(t, s, pool, 100, 100, false,
+				worth(seenAt(hit, "tx1", 100, reason), "7")); err != nil {
+				t.Fatal(err)
+			}
+
+			back, _, err := s.Find(t.Context(), first, hit.Payment.ID())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := back.Received(); got.IsSet() {
+				t.Errorf("received = %v, want nothing to have arrived", got)
+			}
+		})
+	}
+}
+
+// The same transfer seen again is the same arrival. A round that reads a
+// range twice, or reads one that was put back, leaves the payment where the
+// first reading left it rather than failing on a second arrival.
+func TestRecord_LeavesWhatArrivedAloneWhenTheSameTransferIsSeenAgain(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	hit := spent(t, s, first)
+	seen := worth(seenAt(hit, "tx1", 100, payment.Matched), "7")
+
+	if err := recording(t, s, pool, 100, 100, false, seen); err != nil {
+		t.Fatal(err)
+	}
+	// Read again the way a round does, so the second recording is held against
+	// a payment parsed from the row rather than the one the first left behind.
+	p, at, err := s.Find(t.Context(), first, hit.Payment.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hit.Payment, hit.PaymentAt = p, at
+	if err := recording(t, s, pool, 100, 100, false,
+		worth(seenAt(hit, "tx1", 100, payment.Matched), "7")); err != nil {
+		t.Fatalf("the same transfer seen again: %v", err)
+	}
+
+	back, _, err := s.Find(t.Context(), first, hit.Payment.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := back.Received(); !got.IsSet() || got.Amount().String() != "7" {
+		t.Errorf("received = %v, want the 7 the first reading put there", got)
+	}
+}
+
+// What arrived goes back when the transfer it came from is no longer on the
+// chain. A payment that kept it would say money came that nobody sent, and the
+// write-once rule would keep any later arrival out.
+func TestRecord_TakesBackWhatArrivedWhenTheTransferIsGone(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	hit := spent(t, s, first)
+
+	if err := recording(t, s, pool, 100, 100, true,
+		worth(seenAt(hit, "tx1", 100, payment.Matched), "7")); err != nil {
+		t.Fatal(err)
+	}
+	if err := recording(t, s, pool, 100, 100, true); err != nil {
+		t.Fatal(err)
+	}
+
+	back, _, err := s.Find(t.Context(), first, hit.Payment.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := back.Received(); got.IsSet() {
+		t.Errorf("received = %v, want nothing: the transfer it came from is gone", got)
+	}
+	if a := attemptNow(t, s, hit); a.Status() != payment.Issued {
+		t.Errorf("the attempt is %s, want it back where it was", a.Status())
+	}
+}
+
+// One row vanishing while another still stands leaves what arrived where it
+// is. A range read twice can leave a transfer recorded under one transaction
+// and gone from another.
+func TestRecord_KeepsWhatArrivedWhileAnotherRowStillStands(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	hit := spent(t, s, first)
+
+	if err := recording(t, s, pool, 100, 101, true,
+		worth(seenAt(hit, "tx1", 100, payment.Matched), "7"),
+		worth(seenAt(hit, "tx2", 101, payment.Matched), "7")); err != nil {
+		t.Fatal(err)
+	}
+	if err := recording(t, s, pool, 100, 101, true,
+		worth(seenAt(hit, "tx2", 101, payment.Matched), "7")); err != nil {
+		t.Fatal(err)
+	}
+
+	back, _, err := s.Find(t.Context(), first, hit.Payment.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := back.Received(); !got.IsSet() || got.Amount().String() != "7" {
+		t.Errorf("received = %v, want the 7 the standing row still says arrived", got)
+	}
+}
+
+// A payment nothing can arrive for is left alone rather than failing the
+// round. Judge answers short before it looks at the status, so a transfer
+// short of the amount is judged short whatever the payment has become; a
+// round that failed on one would never move its cursor past it.
+func TestRecord_LeavesAPaymentNothingCanArriveForAlone(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	hit := spent(t, s, first)
+	if err := hit.Payment.Fail(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(t.Context(), first, hit.Payment, hit.PaymentAt, payment.Event{}); err != nil {
+		t.Fatal(err)
+	}
+	again, at, err := s.Find(t.Context(), first, hit.Payment.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hit.Payment, hit.PaymentAt = again, at
+
+	err = recording(t, s, pool, 100, 100, false, worth(seenAt(hit, "tx1", 100, payment.Short), "1"))
+
+	if err != nil {
+		t.Fatalf("the round failed on a payment nothing can arrive for: %v", err)
+	}
+	if _, _, reason, _, _ := observed(t, pool, "tx1"); reason != string(payment.Short) {
+		t.Errorf("the row reads %q, want the transfer recorded all the same", reason)
+	}
+}
+
+// A hit is read before a round begins, so the payment on it can be older than
+// the row by the time the round writes. What arrived is decided from the row,
+// not from the copy: deciding from the copy would write the payment twice from
+// two readings that each still said nothing arrived, and the second would lose
+// on the revision and take the whole round with it.
+func TestRecord_DecidesWhatArrivedFromTheRowRatherThanTheHit(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	hit := spent(t, s, first)
+	// A second reading of the same attempt, so the round holds two payments
+	// that each say nothing has arrived. Reading the attempt again is what a
+	// round does for every key it finds consumed.
+	hits, err := s.Consumed(t.Context(), hit.Payment.Network(), []string{hit.Attempt.Key()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("Consumed found %d attempts for one key", len(hits))
+	}
+	again := hits[0]
+
+	// The second is short, so only the first moves the attempt: what an
+	// attempt does with two readings of itself is its own question, and this
+	// one is about the payment. A chain cannot spend one key twice, so the
+	// pairing is made here rather than found; the path is guarded for the
+	// attempt statuses that submission and finality add, which will let one
+	// payment hold more than one.
+	err = recording(t, s, pool, 100, 101, false,
+		worth(seenAt(hit, "tx1", 100, payment.Matched), "7"),
+		worth(seenAt(again, "tx2", 101, payment.Short), "7"))
+
+	if err != nil {
+		t.Fatalf("a round holding two payments read before it began: %v", err)
+	}
+	back, _, err := s.Find(t.Context(), first, hit.Payment.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := back.Received(); !got.IsSet() || got.Amount().String() != "7" {
+		t.Errorf("received = %v, want the 7 the first reading put there", got)
+	}
+}
+
+// A value the rules could not read is already evidence: Judge calls it short
+// and the row holds it as the chain wrote it. Reading it again here and
+// failing would abort a round over something already recorded.
+func TestRecord_LeavesThePaymentAloneForAValueItCannotRead(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	hit := spent(t, s, first)
+
+	err := recording(t, s, pool, 100, 100, false, worth(seenAt(hit, "tx1", 100, payment.Short), "1.5"))
+
+	if err != nil {
+		t.Fatalf("the round failed on a value the rules had already judged: %v", err)
+	}
+	back, _, err := s.Find(t.Context(), first, hit.Payment.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := back.Received(); got.IsSet() {
+		t.Errorf("received = %v, want nothing: the value could not be read", got)
+	}
+}
+
+// A payment that has been paid keeps what paid it. Restore refuses a succeeded
+// row that nothing covers, so clearing one would leave a row nothing can read
+// back. Evidence that vanished under a payment already called paid is a
+// question about that payment.
+func TestRecord_KeepsWhatPaidAPaymentThatIsAlreadyPaid(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	hit := spent(t, s, first)
+	if err := recording(t, s, pool, 100, 100, true, seenAt(hit, "tx1", 100, payment.Matched)); err != nil {
+		t.Fatal(err)
+	}
+	paid, at, err := s.Find(t.Context(), first, hit.Payment.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := paid.Succeed(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(t.Context(), first, paid, at, payment.Event{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := recording(t, s, pool, 100, 100, true); err != nil {
+		t.Fatalf("a transfer vanishing under a paid payment: %v", err)
+	}
+
+	back, _, err := s.Find(t.Context(), first, hit.Payment.ID())
+	if err != nil {
+		t.Fatalf("the paid payment cannot be read back: %v", err)
+	}
+	if got := back.Received(); !got.IsSet() {
+		t.Errorf("received = %v, want what paid it to still be there", got)
+	}
+}

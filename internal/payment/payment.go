@@ -364,11 +364,38 @@ func (p *Payment) Await() error { return p.moveTo(AwaitingPayment) }
 // says about itself change afterwards, which is the thing the lifecycle exists
 // to prevent.
 func (p *Payment) Receive(m Money) error {
-	if p.status != AwaitingPayment && p.status != AwaitingFinality {
+	if !p.CanReceive() {
 		return Problems{{Field: "received", Message: fmt.Sprintf(
 			"payment is %s, which nothing can arrive for", p.status)}}
 	}
 	return p.record(m)
+}
+
+// CanReceive reports whether money can still land on this payment. The list
+// lives here rather than at each caller, so that a status added to the
+// lifecycle is thought about in one place.
+func (p *Payment) CanReceive() bool {
+	return p.status == AwaitingPayment || p.status == AwaitingFinality
+}
+
+// Unreceive takes back what arrived, for a transfer that is no longer on the
+// chain.
+//
+// Only a payment that could still receive can un-receive. A succeeded payment
+// keeps what it was paid: [Restore] refuses a succeeded row that nothing covers,
+// so clearing one would leave a row this build cannot read back. Evidence that
+// vanished under a payment already called paid is a question about that payment
+// rather than about this field.
+func (p *Payment) Unreceive() error {
+	if !p.CanReceive() {
+		return Problems{{Field: "received", Message: fmt.Sprintf(
+			"payment is %s, which nothing can be taken back from", p.status)}}
+	}
+	if !p.received.IsSet() {
+		return Problems{{Field: "received", Message: "nothing has arrived"}}
+	}
+	p.received = Money{}
+	return nil
 }
 
 // record is Receive without the status check, for [Restore], which has to
