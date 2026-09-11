@@ -398,6 +398,28 @@ func bodyJSON(p *Payment) paymentJSON {
 	}
 }
 
+// Announce is the event a payment produces on reaching the status it is in,
+// carrying the payment as a read of it would answer. What a merchant is told
+// and what a merchant can ask for are then the same thing.
+//
+// The payload is written without escaping the characters that have a meaning
+// in a page, because it is not one: it goes to a merchant's endpoint. Escaping
+// them spends six bytes where the value had one, and a payment carrying
+// metadata at every bound this package allows would come to more than an event
+// is allowed to be.
+func Announce(p *Payment) (Event, error) {
+	var payload bytes.Buffer
+	writer := json.NewEncoder(&payload)
+	writer.SetEscapeHTML(false)
+	if err := writer.Encode(bodyJSON(p)); err != nil {
+		return Event{}, fmt.Errorf("payment %s: %w", p.ID(), err)
+	}
+	return Event{
+		Name:    "payment." + p.Status().String(),
+		Payload: bytes.TrimRight(payload.Bytes(), "\n"),
+	}, nil
+}
+
 // writeError answers with the one shape every failure has: a word for what
 // went wrong, and for a body that was refused, what was wrong with it.
 func writeError(w http.ResponseWriter, status int, word string, problems Problems) {

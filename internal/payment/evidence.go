@@ -127,6 +127,29 @@ type Hit struct {
 	PaymentAt Revision
 }
 
+// Candidate is a recorded transfer that would settle a payment: matched
+// against it, and seen where the chain said it would not be replaced. Whether
+// it still is there is what a deciding round asks the endpoints.
+//
+// It carries the account for the same reason [Hit] does, and the block it was
+// recorded in, which is what the endpoints are asked about.
+type Candidate struct {
+	// Account owns the payment.
+	Account AccountID
+	// Payment is what the transfer would settle, at PaymentAt.
+	Payment   *Payment
+	PaymentAt Revision
+	// Key is what the authorisation the transfer spent consumed.
+	Key string
+	// Tx is the transaction that carried the transfer.
+	Tx string
+	// BlockHeight is where the block the transfer was recorded in sits.
+	BlockHeight uint64
+	// BlockHash identifies that block, so that another block at that height is
+	// read as another history rather than the same one.
+	BlockHash string
+}
+
 // Seen is one transfer, judged.
 type Seen struct {
 	Hit

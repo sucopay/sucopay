@@ -522,6 +522,59 @@ func (s *Postgres) Consumed(ctx context.Context, network Network, keys []string)
 	return hits, nil
 }
 
+// Candidates are the transfers on a network that were matched against a
+// payment still open for payment, and seen where the chain said it would not
+// be replaced, each with the payment they would settle.
+//
+// Keyed by network and not by account: what decides whether a payment is paid
+// runs for a deployment and not for one merchant. The account comes back with
+// the row, and every read and write after it is that account's.
+//
+// The rows come back in no order. A caller that needs one asks for it.
+func (s *Postgres) Candidates(ctx context.Context, network Network) ([]Candidate, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx, `
+		select o.account_id, o.key, o.tx, o.block_height, o.block_hash,
+		       o.payment_id,
+		       p.asset_network, p.asset_reference, p.asset_symbol, p.asset_decimals,
+		       p.amount, p.received, p.destination, p.status, p.metadata,
+		       p.created_at, p.expires_at, p.version
+		  from observations o
+		  join payments p on p.account_id = o.account_id and p.id = o.payment_id
+		 where o.network = $1 and o.reason = $2 and o.final_at is not null
+		   and p.status = any($3)`,
+		network, Matched, []Status{AwaitingPayment, AwaitingFinality})
+	if err != nil {
+		return nil, fmt.Errorf("observations on %s: %w", network, err)
+	}
+	defer rows.Close()
+
+	var candidates []Candidate
+	for rows.Next() {
+		var (
+			c   Candidate
+			row payer
+		)
+		if err := rows.Scan(&c.Account, &c.Key, &c.Tx, &c.BlockHeight, &c.BlockHash,
+			&row.stored.ID,
+			&row.network, &row.reference, &row.symbol, &row.decimals, &row.amount,
+			&row.received, &row.stored.Destination, &row.stored.Status, &row.metadata,
+			&row.stored.CreatedAt, &row.stored.ExpiresAt, &row.version); err != nil {
+			return nil, fmt.Errorf("observations on %s: %w", network, err)
+		}
+		if c.Payment, c.PaymentAt, err = row.payment(); err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("observations on %s: %w", network, err)
+	}
+	return candidates, nil
+}
+
 // Record writes what a round saw, inside the transaction that moves the
 // position with it.
 //
@@ -657,14 +710,21 @@ func vanish(ctx context.Context, q queries, network Network, first, last uint64,
 	}
 
 	for _, one := range lost {
-		if err := unconfirm(ctx, q, one); err != nil {
-			return err
-		}
-		if err := unreceive(ctx, q, one); err != nil {
+		if err := taken(ctx, q, one); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// taken takes back what an observation stood for, once it is no longer on the
+// chain. The attempt comes first and the payment second, which is the order
+// everything that writes both uses.
+func taken(ctx context.Context, q queries, one gone) error {
+	if err := unconfirm(ctx, q, one); err != nil {
+		return err
+	}
+	return unreceive(ctx, q, one)
 }
 
 // unconfirm takes an attempt back to issued, for a transfer that is no longer
@@ -704,10 +764,11 @@ func unconfirm(ctx context.Context, q queries, one gone) error {
 //
 // What is counted and what is then written are read by two statements, so a
 // round running beside this one could record an arrival between them and have
-// it cleared here. Nothing runs beside it: one network is read by one round at
-// a time, held by a lease, and inside a round what vanished is settled before
-// anything new is applied. The same is true of [unconfirm]. A change to how
-// rounds are scheduled is a change to what these two rely on.
+// it cleared here. One network is read by one round at a time, held by a
+// lease, and inside a round what vanished is settled before anything new is
+// applied. What runs beside that round is [Postgres.Vanish], which holds the
+// attempt while it calls this. The same is true of [unconfirm]. A change to
+// how rounds are scheduled is a change to what these two rely on.
 func unreceive(ctx context.Context, q queries, one gone) error {
 	var standing int
 	if err := q.QueryRow(ctx, `
@@ -731,6 +792,66 @@ func unreceive(ctx context.Context, q queries, one gone) error {
 		return nil
 	}
 	return savePayment(ctx, q, one.account, p, at)
+}
+
+// Vanish marks one recorded transfer as no longer on the chain and takes back
+// what stood on it, in a transaction of its own.
+//
+// A transfer that is named by a network, a key and a transaction is named the
+// way a row is keyed, so a caller that read a row is naming that row back. One
+// that is not there, or that vanished already, is nothing to do: whoever asked
+// has been answered by somebody else, or is asking about a transfer this
+// network never recorded.
+//
+// The row is locked first and the attempt second, so that a round recording
+// another transfer against that attempt waits rather than landing between what
+// [unconfirm] counts and what it then writes. A round holding the payment and
+// waiting for the attempt while this holds the attempt and waits for the
+// payment is a deadlock, which PostgreSQL ends by failing one of them; both
+// come round again.
+func (s *Postgres) Vanish(ctx context.Context, network Network, key, tx string, now time.Time) (err error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	what := fmt.Sprintf("transfer %s", tx)
+	t, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("%s: %w", what, err)
+	}
+	defer func() { err = unwind(ctx, t, what, err) }()
+
+	var one gone
+	if err := t.QueryRow(ctx, `
+		select account_id, payment_id, attempt_id
+		  from observations
+		 where network = $1 and key = $2 and tx = $3 and reason <> $4
+		   for update`,
+		network, key, tx, Vanished).Scan(&one.account, &one.payment, &one.attempt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("%s: %w", what, err)
+	}
+	if _, err := t.Exec(ctx, `
+		select 1 from attempts
+		 where account_id = $1 and payment_id = $2 and id = $3
+		   for update`, one.account, one.payment, one.attempt); err != nil {
+		return fmt.Errorf("%s: %w", what, err)
+	}
+	if _, err := t.Exec(ctx, `
+		update observations
+		   set reason = $4, seen_at = $5
+		 where network = $1 and key = $2 and tx = $3`,
+		network, key, tx, Vanished, now); err != nil {
+		return fmt.Errorf("%s: %w", what, err)
+	}
+	if err := taken(ctx, t, one); err != nil {
+		return err
+	}
+	if err := t.Commit(ctx); err != nil {
+		return fmt.Errorf("%s: %w", what, err)
+	}
+	return nil
 }
 
 // blockHeight is a transfer's height as the column holds one, refusing what it

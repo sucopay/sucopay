@@ -1,6 +1,7 @@
 package payment_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -65,16 +66,18 @@ func address(t *testing.T, digit string) payment.Address {
 type handler struct {
 	h        *payment.HTTP
 	accepted *accepting
+	store    *payment.Postgres
 	pool     *pgxpool.Pool
 }
 
 func served(t *testing.T) *handler {
 	t.Helper()
-	svc, _, pool := serving(t)
+	svc, store, pool := serving(t)
 	accepted := &accepting{paidTo: map[acceptance]payment.Address{{first, jpyc(t)}: address(t, "c")}}
 	return &handler{
 		h:        payment.NewHTTP(svc, listed{"jpyc": jpyc(t), "usdc": usdc(t)}, accepted),
 		accepted: accepted,
+		store:    store,
 		pool:     pool,
 	}
 }
@@ -462,5 +465,99 @@ func TestHTTP_PaysAPaymentToTheDestinationAcceptedWhenItWasOpened(t *testing.T) 
 		if got := decoded(t, w)["destination"]; got != string(want) {
 			t.Errorf("destination = %v, want %s", got, want)
 		}
+	}
+}
+
+// An event is named for where the payment has got to, and carries the payment
+// as a merchant reads it back: one shape, whether they were told or they
+// asked.
+func TestAnnounce_NamesTheStatusAndCarriesWhatReadAnswers(t *testing.T) {
+	t.Parallel()
+	f := served(t)
+	id := f.created(t, example)
+	read, err := f.read(t, first, id)
+	if err != nil || read.Code != http.StatusOK {
+		t.Fatalf("read answered %d, %v:\n%s", read.Code, err, read.Body)
+	}
+	p, _, err := f.store.Find(t.Context(), first, payment.ID(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	e, err := payment.Announce(p)
+
+	if err != nil {
+		t.Fatalf("Announce = %v, want none", err)
+	}
+	if e.Name != "payment.created" {
+		t.Errorf("Name = %q, want payment.created", e.Name)
+	}
+	if bytes.HasSuffix(e.Payload, []byte("\n")) {
+		t.Errorf("Payload ends in the newline an encoder writes:\n%s", e.Payload)
+	}
+	var told map[string]any
+	if err := json.Unmarshal(e.Payload, &told); err != nil {
+		t.Fatalf("Payload is not a JSON object: %v:\n%s", err, e.Payload)
+	}
+	if asked := decoded(t, read); !reflect.DeepEqual(told, asked) {
+		t.Errorf("Payload:\n%s\nwant what read answered:\n%s", e.Payload, read.Body)
+	}
+}
+
+func TestAnnounce_NamesTheStatusThePaymentHasNow(t *testing.T) {
+	t.Parallel()
+	p := open(t)
+	if err := p.Await(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.AwaitFinality(p.ExpiresAt()); err != nil {
+		t.Fatal(err)
+	}
+
+	e, err := payment.Announce(p)
+
+	if err != nil {
+		t.Fatalf("Announce = %v, want none", err)
+	}
+	if e.Name != "payment.awaiting_finality" {
+		t.Errorf("Name = %q, want payment.awaiting_finality", e.Name)
+	}
+}
+
+// A payment at every bound its metadata has, written in the characters an
+// encoder made for a page would write six bytes for, is still one event the
+// store takes. A payload goes to a merchant's endpoint and not to a page.
+func TestAnnounce_IsWithinTheEventBoundForAPaymentAtItsOwn(t *testing.T) {
+	t.Parallel()
+	s, _ := store(t)
+	r := request(t)
+	r.Metadata = map[string]string{}
+	for i := range payment.MaxMetadataEntries {
+		key := fmt.Sprintf("%02d", i) + strings.Repeat("<", payment.MaxMetadataKeyBytes-2)
+		r.Metadata[key] = strings.Repeat("&", payment.MaxMetadataValueSize)
+	}
+	p, err := payment.New(r, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Create(t.Context(), first, p); err != nil {
+		t.Fatal(err)
+	}
+	_, at, err := s.Find(t.Context(), first, p.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Await(); err != nil {
+		t.Fatal(err)
+	}
+	e, err := payment.Announce(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = s.Save(t.Context(), first, p, at, e)
+
+	if err != nil {
+		t.Errorf("Save = %v, want the event taken", err)
 	}
 }
