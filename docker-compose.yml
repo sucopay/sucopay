@@ -3,6 +3,11 @@
 services:
   postgres:
     image: postgres:17-alpine
+    # The suite runs packages beside each other and tests beside each other
+    # inside them, each against a database of its own, so the connections it
+    # holds at once are counted in hundreds. PostgreSQL ships a default of 100,
+    # chosen for a server that does not know what is coming.
+    command: ["postgres", "-c", "max_connections=400"]
     environment:
       POSTGRES_USER: sucopay
       POSTGRES_PASSWORD: sucopay
