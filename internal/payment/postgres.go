@@ -766,9 +766,10 @@ func unconfirm(ctx context.Context, q queries, one gone) error {
 // round running beside this one could record an arrival between them and have
 // it cleared here. One network is read by one round at a time, held by a
 // lease, and inside a round what vanished is settled before anything new is
-// applied. What runs beside that round is [Postgres.Vanish], which holds the
-// attempt while it calls this. The same is true of [unconfirm]. A change to
-// how rounds are scheduled is a change to what these two rely on.
+// applied. What runs beside that round is [Postgres.Vanish], which holds every
+// attempt of the payment while it calls this, so nothing can record an arrival
+// against it in between. The same is true of [unconfirm]. A change to how
+// rounds are scheduled is a change to what these two rely on.
 func unreceive(ctx context.Context, q queries, one gone) error {
 	var standing int
 	if err := q.QueryRow(ctx, `
@@ -803,12 +804,15 @@ func unreceive(ctx context.Context, q queries, one gone) error {
 // has been answered by somebody else, or is asking about a transfer this
 // network never recorded.
 //
-// The row is locked first and the attempt second, so that a round recording
-// another transfer against that attempt waits rather than landing between what
-// [unconfirm] counts and what it then writes. A round holding the payment and
-// waiting for the attempt while this holds the attempt and waits for the
-// payment is a deadlock, which PostgreSQL ends by failing one of them; both
-// come round again.
+// The row is locked first and the payment's attempts second, so that a round
+// recording any transfer against that payment waits rather than landing
+// between what [unconfirm] and [unreceive] count and what they then write.
+// Every attempt and not only the one the row names: an observation names an
+// attempt, so holding them all is what holds back a row written against any of
+// them, and [unreceive] counts the rows of the whole payment. A round holding
+// the payment and waiting for an attempt while this holds the attempts and
+// waits for the payment is a deadlock, which PostgreSQL ends by failing one of
+// them; both come round again.
 func (s *Postgres) Vanish(ctx context.Context, network Network, key, tx string, now time.Time) (err error) {
 	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
 	defer cancel()
@@ -834,8 +838,8 @@ func (s *Postgres) Vanish(ctx context.Context, network Network, key, tx string, 
 	}
 	if _, err := t.Exec(ctx, `
 		select 1 from attempts
-		 where account_id = $1 and payment_id = $2 and id = $3
-		   for update`, one.account, one.payment, one.attempt); err != nil {
+		 where account_id = $1 and payment_id = $2
+		   for update`, one.account, one.payment); err != nil {
 		return fmt.Errorf("%s: %w", what, err)
 	}
 	if _, err := t.Exec(ctx, `
