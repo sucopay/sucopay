@@ -200,8 +200,8 @@ func (c *client) counted(result json.RawMessage) error {
 	return nil
 }
 
-// refused turns a status and a provider's error into what the observer reads:
-// a span to narrow, a rate to slow to, or a call that failed.
+// refused turns a status and a provider's error into what a caller reads: a
+// span to narrow, a rate to slow to, or a call that failed.
 func (c *client) refused(method string, status int, retryAfter string, raised *rpcError) error {
 	said := "no reason"
 	if raised != nil {

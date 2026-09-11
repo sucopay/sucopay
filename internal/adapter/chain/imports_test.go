@@ -9,8 +9,8 @@ import (
 	"testing"
 )
 
-// The boundary is what keeps a chain out of the observer, so nothing a chain's
-// library or a driver would bring may come in through it. The standard library
+// The boundary is what keeps a chain out of whatever reads one, so nothing a
+// chain's library or a driver would bring may come in through it. The standard library
 // and no more: an import path whose first element has a dot in it names
 // somebody else's module, or another package of this one.
 func TestImports_ReachOnlyTheStandardLibrary(t *testing.T) {

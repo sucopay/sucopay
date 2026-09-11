@@ -7,13 +7,17 @@ import (
 	"time"
 )
 
-// Chain is what the observer reads a network through. An adapter implements it
-// for one kind of chain.
+// Chain is what a network is read through. An adapter implements it for one
+// kind of chain.
 //
-// An adapter classifies what a provider answers into [ErrTooWide], [ErrNoFinal]
-// and [RateLimited] where one of them fits, and wraps rather than replaces
-// them: the observer tells them apart with errors.Is and errors.As. Any other
-// error is the call failing, and the observer tries again next time round.
+// An adapter classifies what a provider answers into [ErrTooWide],
+// [ErrNoFinal], [ErrNoTransaction] and [RateLimited] where one of them fits,
+// and wraps rather than replaces them: whoever reads a chain tells them apart
+// with errors.Is and errors.As. Any other error is the call failing, and the
+// caller tries again next time round.
+//
+// No error an adapter returns carries the endpoint it was reached at. An
+// endpoint may hold a credential, and an error is what a log keeps.
 type Chain interface {
 	// Identity is what the chain says it is, written the way a configuration
 	// document writes it, so that the two can be compared.
@@ -35,6 +39,10 @@ type Chain interface {
 	// Receipt is every transfer one transaction carried, in the order it
 	// carried them. Reading the same transaction twice gives the same
 	// transfers in the same order.
+	//
+	// A transaction the chain does not hold answers [ErrNoTransaction]. One it
+	// holds that carried no transfer answers none, which is what a reverted
+	// transaction answers.
 	Receipt(ctx context.Context, tx string) ([]Transfer, error)
 	// Implementation identifies the code behind an asset, as an opaque string:
 	// a different value means a different implementation, and the value is
@@ -51,6 +59,14 @@ var (
 	// ErrNoFinal reports that the provider does not say which block is final.
 	// The observer does not observe through it.
 	ErrNoFinal = errors.New("chain: no final block")
+	// ErrNoTransaction reports that the chain does not hold the transaction
+	// asked about. It is a fact about the chain and not a failure to reach it:
+	// whoever asks again about a transaction it recorded has to tell a
+	// transaction that is gone from a provider that cannot answer.
+	//
+	// A transaction that is there and carried nothing is not this. It answers
+	// with no transfers, which is what a reverted one does.
+	ErrNoTransaction = errors.New("chain: no such transaction")
 )
 
 // RateLimited reports that the provider refused the call for the rate of

@@ -11,7 +11,7 @@ import (
 	"github.com/sucopay/sucopay/internal/adapter/chain"
 )
 
-// The observer reads a chain in words no chain owns. The two below are words
+// A chain is read in words no chain owns. The two below are words
 // of one family of chains, and either one in this package would mean the
 // boundary had learnt the chain behind it.
 func TestSource_HoldsNoWordOfAChain(t *testing.T) {

@@ -2,6 +2,7 @@ package evm
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math/big"
 	"reflect"
@@ -339,12 +340,20 @@ func TestReceipt_RefusesWhatIsNoTransactionOnThisChain(t *testing.T) {
 	}
 }
 
-func TestReceipt_RefusesATransactionTheProviderHasNoReceiptFor(t *testing.T) {
+// A transaction the provider has no receipt for is a fact about the chain, not
+// a call that failed. Whoever asks again about a transfer it recorded has to
+// tell one that is gone from a provider that cannot answer.
+func TestReceipt_SaysTheChainHasNoSuchTransaction(t *testing.T) {
 	t.Parallel()
 	evm, _ := opening(t, map[string]string{"eth_getTransactionReceipt": answered("null")})
 
-	if transfers, err := evm.Receipt(t.Context(), tx); err == nil {
-		t.Errorf("the receipt read as %+v out of nothing", transfers)
+	transfers, err := evm.Receipt(t.Context(), tx)
+
+	if err == nil {
+		t.Fatalf("the receipt read as %+v out of nothing", transfers)
+	}
+	if !errors.Is(err, chain.ErrNoTransaction) {
+		t.Errorf("err = %v, want it to read as no such transaction", err)
 	}
 }
 

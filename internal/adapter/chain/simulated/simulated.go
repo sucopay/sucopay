@@ -259,7 +259,7 @@ func (c *Chain) Receipt(_ context.Context, tx string) ([]chain.Transfer, error) 
 			return transfers, nil
 		}
 	}
-	return nil, fmt.Errorf("simulated: no transaction %s", tx)
+	return nil, fmt.Errorf("simulated: no transaction %s: %w", tx, chain.ErrNoTransaction)
 }
 
 // Implementation is empty. Nothing here stands in front of anything else.

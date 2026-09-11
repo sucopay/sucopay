@@ -108,7 +108,7 @@ func (n *network) Receipt(ctx context.Context, tx string) ([]chain.Transfer, err
 		return nil, err
 	}
 	if read == nil {
-		return nil, fmt.Errorf("eth_getTransactionReceipt: the provider has no receipt for %s", id)
+		return nil, fmt.Errorf("eth_getTransactionReceipt: no receipt for %s: %w", id, chain.ErrNoTransaction)
 	}
 	// A receipt is asked for by name, and reading one that names another
 	// transaction would put its transfers down under the name asked for.

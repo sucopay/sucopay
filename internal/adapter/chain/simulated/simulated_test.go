@@ -180,8 +180,11 @@ func TestReorg_PutsAKeptTransferInABlockOfAnotherHash(t *testing.T) {
 	if transfers[0].Block.Hash != after.Hash {
 		t.Errorf("the kept transfer is in block %q, want %q", transfers[0].Block.Hash, after.Hash)
 	}
-	if _, err := c.Receipt(context.Background(), txOf["dropped"]); err == nil {
-		t.Error("the dropped transaction still has a receipt")
+	// A fact about the chain rather than a call that failed, so that whoever
+	// asks again about a transfer it recorded can tell one that is gone from a
+	// provider that cannot answer.
+	if _, err := c.Receipt(context.Background(), txOf["dropped"]); !errors.Is(err, chain.ErrNoTransaction) {
+		t.Errorf("the dropped transaction answers %v, want no such transaction", err)
 	}
 }
 

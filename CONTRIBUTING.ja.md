@@ -59,8 +59,8 @@ internal/payment/
 
 向きはテストで確かめます。パッケージ内のファイルの import を読み、内側のファイルに許して
 いないものがあれば失敗するテストです。`internal/accepted`、`internal/adapter/chain`、
-`internal/adapter/chain/evm`、`internal/config`、`internal/credential`、`internal/observe`、
-`internal/payment`、`internal/postgres` にそれぞれあります。
+`internal/adapter/chain/evm`、`internal/config`、`internal/credential`、`internal/finality`、
+`internal/observe`、`internal/payment`、`internal/postgres` にそれぞれあります。
 
 ## ドメインモデル
 
