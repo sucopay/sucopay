@@ -101,6 +101,22 @@ internal/payment/
 - 必須にするものには、それを生成するコマンドを用意してください。`suco serve` が
   `suco.yaml` を必須にするので、`suco init` がそれを書きます。
 
+## 設定
+
+設定は、持っている値の名前を付けます。
+
+- 最上位は何を設定するかです。`listen`、`log`、`database`、`credentials`、`networks`、`assets`。
+  `networks` と `assets` の下は、文書が選んだ名前です。
+- 葉は名詞、切り替えなら何を入れるかを表す語です。`port`、`kind`、`width`、`poll`、`managed`。
+  動詞を含む語句にはしません。`give_up_after` のような名前は時間の長さに読めて、中身は回数です。
+- 語をつなぐのは下線です。`base_url`、`chain_id`、`key_id`。
+- 葉は単位を持ちません。単位は値が持ち、どれなのかは `docs/configuration.ja.md` の表が言います。
+  `poll` は `12s`、`width` はブロックの数です。
+- 1 つの判断に属する設定は名詞の下にまとめます。`rpc.own` と `rpc.others` がそうです。離れて
+  並んだ葉が同じことについてだと読み手が知っていなければならなくなるなら、まとめます。
+- 足した設定は同じ変更で `docs/configuration.ja.md` に書きます。表とコードが合っているかを
+  確かめるものは無いので、表から漏れた設定は誰にも見つけられません。
+
 ## エラー
 
 `suco` の後ろに打たれた語を、エラーの文に繰り返しません。`credential new` はトークンをファイルに
