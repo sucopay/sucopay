@@ -530,8 +530,12 @@ func (s *Postgres) Consumed(ctx context.Context, network Network, keys []string)
 // runs for a deployment and not for one merchant. The account comes back with
 // the row, and every read and write after it is that account's.
 //
-// The rows come back in no order. A caller that needs one asks for it.
-func (s *Postgres) Candidates(ctx context.Context, network Network) ([]Candidate, error) {
+// In the order of the block and the transaction, from after the place given,
+// and at most the number asked for. Deciding asks the endpoints about every
+// row it reads, so how many are read is how much a round costs; a caller hands
+// back where it stopped so that the rows behind get their turn.
+func (s *Postgres) Candidates(ctx context.Context, network Network, from Place,
+	limit int) ([]Candidate, error) {
 	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
 	defer cancel()
 
@@ -544,8 +548,12 @@ func (s *Postgres) Candidates(ctx context.Context, network Network) ([]Candidate
 		  from observations o
 		  join payments p on p.account_id = o.account_id and p.id = o.payment_id
 		 where o.network = $1 and o.reason = $2 and o.final_at is not null
-		   and p.status = any($3)`,
-		network, Matched, []Status{AwaitingPayment, AwaitingFinality})
+		   and p.status = any($3)
+		   and (o.block_height, o.tx) > ($4, $5)
+		 order by o.block_height, o.tx
+		 limit $6`,
+		network, Matched, []Status{AwaitingPayment, AwaitingFinality},
+		from.BlockHeight, from.Tx, limit)
 	if err != nil {
 		return nil, fmt.Errorf("observations on %s: %w", network, err)
 	}
@@ -582,21 +590,52 @@ const dueColumns = `p.account_id, p.id, p.asset_network, p.asset_reference,
                     p.destination, p.status, p.metadata, p.created_at,
                     p.expires_at, p.version`
 
+// Undecided is how many transfers on a network are waiting for the endpoints
+// to be asked about them: the rows [Postgres.Candidates] reads, counted rather
+// than read. A number that keeps growing is a deployment whose settling has
+// stopped getting anywhere, which is what somebody looking at a deployment
+// from outside the process can be told.
+//
+// The same filter written twice. Counting through Candidates would mean
+// reading every row to throw it away, which is the cost this is asked in place
+// of.
+func (s *Postgres) Undecided(ctx context.Context, network Network) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	var waiting int
+	if err := s.pool.QueryRow(ctx, `
+		select count(*)
+		  from observations o
+		  join payments p on p.account_id = o.account_id and p.id = o.payment_id
+		 where o.network = $1 and o.reason = $2 and o.final_at is not null
+		   and p.status = any($3)`,
+		network, Matched, []Status{AwaitingPayment, AwaitingFinality}).Scan(&waiting); err != nil {
+		return 0, fmt.Errorf("observations on %s: %w", network, err)
+	}
+	return waiting, nil
+}
+
 // Overdue are the payments on a network that are still open for payment and
 // have reached the moment they stop being open. Reaching the deadline is
 // passing it: it is the moment payment closes, not the last moment it is open.
 //
 // Keyed by network and not by account, for the reason [Postgres.Candidates]
-// gives.
-func (s *Postgres) Overdue(ctx context.Context, network Network, at time.Time) ([]Due, error) {
+// gives. The oldest deadline first, and at most the number asked for: what is
+// read here is moved on, so a bounded sweep drains what has waited longest and
+// comes back for the rest.
+func (s *Postgres) Overdue(ctx context.Context, network Network, at time.Time,
+	limit int) ([]Due, error) {
 	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx, `
 		select `+dueColumns+`
 		  from payments p
-		 where p.asset_network = $1 and p.status = $2 and p.expires_at <= $3`,
-		network, AwaitingPayment, at)
+		 where p.asset_network = $1 and p.status = $2 and p.expires_at <= $3
+		 order by p.expires_at, p.id
+		 limit $4`,
+		network, AwaitingPayment, at, limit)
 	if err != nil {
 		return nil, fmt.Errorf("payments on %s: %w", network, err)
 	}
@@ -611,7 +650,11 @@ func (s *Postgres) Overdue(ctx context.Context, network Network, at time.Time) (
 // has been seen where the chain keeps it. One short of what was asked never
 // pays it, and one that is no longer on the chain no longer says anything, so
 // neither holds a payment open.
-func (s *Postgres) Unsettled(ctx context.Context, network Network, at time.Time) ([]Due, error) {
+//
+// The oldest deadline first, and at most the number asked for, for the reason
+// [Postgres.Overdue] gives.
+func (s *Postgres) Unsettled(ctx context.Context, network Network, at time.Time,
+	limit int) ([]Due, error) {
 	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
 	defer cancel()
 
@@ -622,8 +665,10 @@ func (s *Postgres) Unsettled(ctx context.Context, network Network, at time.Time)
 		   and not exists (
 		       select 1 from observations o
 		        where o.account_id = p.account_id and o.payment_id = p.id
-		          and o.reason = $4)`,
-		network, AwaitingFinality, at, Matched)
+		          and o.reason = $4)
+		 order by p.expires_at, p.id
+		 limit $5`,
+		network, AwaitingFinality, at, Matched, limit)
 	if err != nil {
 		return nil, fmt.Errorf("payments on %s: %w", network, err)
 	}

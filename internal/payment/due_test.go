@@ -62,7 +62,7 @@ func TestOverdue_ReadsThePaymentsOfEveryAccountThatReachedTheirDeadline(t *testi
 	s, _ := store(t)
 	mine, theirs := payableKept(t, s, first), payableKept(t, s, other)
 
-	early, err := s.Overdue(t.Context(), network, deadline.Add(-time.Second))
+	early, err := s.Overdue(t.Context(), network, deadline.Add(-time.Second), 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestOverdue_ReadsThePaymentsOfEveryAccountThatReachedTheirDeadline(t *testi
 		t.Fatalf("Overdue read %d payments a second before the deadline, want none", len(early))
 	}
 
-	over, err := s.Overdue(t.Context(), network, deadline)
+	over, err := s.Overdue(t.Context(), network, deadline, 10)
 
 	if err != nil {
 		t.Fatal(err)
@@ -103,7 +103,7 @@ func TestOverdue_LeavesOutWhatIsNotOpenForPaymentOnThisNetwork(t *testing.T) {
 	paid(t, s, first, settled.ID())
 	spentOn(t, s, first, "ethereum")
 
-	over, err := s.Overdue(t.Context(), network, deadline)
+	over, err := s.Overdue(t.Context(), network, deadline, 10)
 
 	if err != nil {
 		t.Fatal(err)
@@ -122,7 +122,7 @@ func TestUnsettled_ReadsThePaymentsOfEveryAccountWhoseWaitIsOver(t *testing.T) {
 	s, _ := store(t)
 	mine, theirs := waiting(t, s, first), waiting(t, s, other)
 
-	early, err := s.Unsettled(t.Context(), network, deadline.Add(-time.Second))
+	early, err := s.Unsettled(t.Context(), network, deadline.Add(-time.Second), 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestUnsettled_ReadsThePaymentsOfEveryAccountWhoseWaitIsOver(t *testing.T) {
 		t.Fatalf("Unsettled read %d payments a second before the wait was over, want none", len(early))
 	}
 
-	done, err := s.Unsettled(t.Context(), network, deadline)
+	done, err := s.Unsettled(t.Context(), network, deadline, 10)
 
 	if err != nil {
 		t.Fatal(err)
@@ -171,7 +171,7 @@ func TestUnsettled_LeavesOutAPaymentWithATransferStillMatchedAgainstIt(t *testin
 				t.Fatal(err)
 			}
 
-			done, err := s.Unsettled(t.Context(), network, deadline)
+			done, err := s.Unsettled(t.Context(), network, deadline, 10)
 
 			if err != nil {
 				t.Fatal(err)
@@ -214,7 +214,7 @@ func TestUnsettled_ReadsAPaymentWhoseOnlyTransfersCannotPayIt(t *testing.T) {
 		}
 	}
 
-	done, err := s.Unsettled(t.Context(), network, deadline)
+	done, err := s.Unsettled(t.Context(), network, deadline, 10)
 
 	if err != nil {
 		t.Fatal(err)
@@ -244,7 +244,7 @@ func TestUnsettled_LeavesOutWhatIsNotWaitingForFinalityOnThisNetwork(t *testing.
 		t.Fatal(err)
 	}
 
-	done, err := s.Unsettled(t.Context(), network, deadline)
+	done, err := s.Unsettled(t.Context(), network, deadline, 10)
 
 	if err != nil {
 		t.Fatal(err)
@@ -278,7 +278,7 @@ func TestUnsettled_AsksOnlyAboutTheTransfersOfItsOwnAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	done, err := s.Unsettled(t.Context(), network, deadline)
+	done, err := s.Unsettled(t.Context(), network, deadline, 10)
 
 	if err != nil {
 		t.Fatal(err)
@@ -288,5 +288,74 @@ func TestUnsettled_AsksOnlyAboutTheTransfersOfItsOwnAccount(t *testing.T) {
 	}
 	if done[0].Account != other {
 		t.Errorf("Unsettled read the payment under %s, want %s", done[0].Account, other)
+	}
+}
+
+// A sweep writes a row for every payment it picks up, so what it reads is what
+// it costs. The bound is the caller's, and the oldest deadline comes first so
+// that a bounded sweep drains what has waited longest.
+func TestOverdue_ReadsTheOldestDeadlinesAndNoMoreThanItWasAskedFor(t *testing.T) {
+	t.Parallel()
+	s, _ := store(t)
+	last := payableAt(t, s, deadline)
+	middle := payableAt(t, s, deadline.Add(-time.Minute))
+	oldest := payableAt(t, s, deadline.Add(-2*time.Minute))
+
+	over, err := s.Overdue(t.Context(), network, deadline, 2)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(over) != 2 {
+		t.Fatalf("Overdue read %d of three payments, want the two it was asked for", len(over))
+	}
+	if over[0].Payment.ID() != oldest.ID() || over[1].Payment.ID() != middle.ID() {
+		t.Errorf("Overdue read %s then %s, want %s then %s, which waited longest",
+			over[0].Payment.ID(), over[1].Payment.ID(), oldest.ID(), middle.ID())
+	}
+	if over[1].Payment.ID() == last.ID() {
+		t.Error("Overdue read the newest deadline before one that had waited longer")
+	}
+}
+
+// payableAt stores a payment a customer can pay until the moment given.
+func payableAt(t *testing.T, s *payment.Postgres, at time.Time) *payment.Payment {
+	t.Helper()
+	r := request(t)
+	r.ExpiresAt = at
+	p, err := payment.New(r, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Create(t.Context(), first, p); err != nil {
+		t.Fatal(err)
+	}
+	_, revision, err := s.Find(t.Context(), first, p.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Await(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(t.Context(), first, p, revision, payment.Event{}); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestUnsettled_ReadsNoMoreThanItWasAskedFor(t *testing.T) {
+	t.Parallel()
+	s, _ := store(t)
+	for range 3 {
+		waiting(t, s, first)
+	}
+
+	done, err := s.Unsettled(t.Context(), network, deadline, 2)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(done) != 2 {
+		t.Fatalf("Unsettled read %d of three payments, want the two it was asked for", len(done))
 	}
 }

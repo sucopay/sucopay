@@ -124,6 +124,18 @@ type Event struct {
 	Payload []byte
 }
 
+// Place is where a read of the candidates goes on from: the block and the
+// transaction of the last one a caller read. The zero value is the beginning.
+//
+// A caller reads a bounded number at a time and hands back where it stopped,
+// so that everything recorded gets its turn. Reading from the beginning every
+// time would leave whatever sits at the front, undecided, in front of
+// everything behind it for as long as it stayed undecided.
+type Place struct {
+	BlockHeight uint64
+	Tx          string
+}
+
 // Due is a payment a sweep of the clock picked up, with the revision it was
 // read at. The clock and not the money: what is due is a move, and the payment
 // may have nothing owing on it at all.

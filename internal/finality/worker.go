@@ -21,6 +21,14 @@ const maxErrorBytes = 512
 // or an override of the reading order through as the bytes it was given.
 func shown(err error) string { return invisible.Shown(err.Error(), maxErrorBytes) }
 
+// perRound bounds what one round reads and therefore how long it takes. A
+// round asks the endpoints about every candidate it reads and writes a row for
+// every payment the clock has passed, so this is the most a round can cost
+// whatever has piled up behind it. A first number, to be measured again: the
+// backlog it is there for is what a deployment has after an outage, and what
+// that looks like is not yet known.
+const perRound = 100
+
 // leaseTimeout bounds putting the lease down on the way out. A release that
 // hangs holds the name it was meant to give up.
 const leaseTimeout = 10 * time.Second
@@ -42,10 +50,11 @@ type Network struct {
 	// signed before the deadline can still be carried after it, and how long
 	// after is the chain's to decide.
 	Wait time.Duration
-	// Misses is how many rounds in a row the endpoints have to find nothing
-	// before a recorded transfer is given up on. Once is not enough: an
-	// endpoint can be reading a state it has not finished replacing, and what
-	// is taken back here is a payment's record of money arriving.
+	// Misses is how many times in a row the endpoints have to be asked about a
+	// recorded transfer and find nothing before it is given up on. Once is not
+	// enough: an endpoint can be reading a state it has not finished
+	// replacing, and what is taken back here is a payment's record of money
+	// arriving.
 	Misses int
 }
 
@@ -69,15 +78,28 @@ type Worker struct {
 	leases  Leases
 	log     *slog.Logger
 	now     func() time.Time
-	// answers is what the endpoints said about each transfer, and for how many
-	// rounds in a row they have said it. A round that ends early leaves the
-	// last full round's counts standing, so nothing is given up on because a
-	// round was cut short.
+	// perRound is the most one round reads of each of the three things it
+	// reads. Taken from the constant, and its own field so that a test can
+	// put a backlog in front of a round without making one.
+	perRound int
+	// answers is what the endpoints said about each transfer the last time
+	// they were asked, and how many times in a row they have said it. pass is
+	// what the pass going on has heard so far, and takes its place when the
+	// pass reaches the end.
 	//
-	// It belongs to whoever is running the round, and nothing guards it.
-	// Reading it from anywhere else, such as something reporting what the
-	// worker is making of a network, needs a lock put on it first.
+	// A pass is every candidate asked about once, which is one round while
+	// there are no more candidates than a round reads and several rounds when
+	// there are. Dropping what a pass did not hear is what keeps the map to
+	// the transfers that are still candidates.
+	//
+	// from is where the next round goes on from.
+	//
+	// All three belong to whoever is running the round, and nothing guards
+	// them. Reading them from anywhere else, such as something reporting what
+	// the worker is making of a network, needs a lock put on them first.
 	answers map[recorded]answer
+	pass    map[recorded]answer
+	from    payment.Place
 }
 
 // recorded names one transfer the way the row of one is named.
@@ -98,7 +120,7 @@ type answer struct {
 func New(n Network, store *payment.Postgres, leases Leases, log *slog.Logger,
 	now func() time.Time) *Worker {
 	return &Worker{network: n, store: store, leases: leases, log: log, now: now,
-		answers: map[recorded]answer{}}
+		answers: map[recorded]answer{}, pass: map[recorded]answer{}, perRound: perRound}
 }
 
 // lease is the name this worker holds a network under. Not the network's own
@@ -112,12 +134,12 @@ func (w *Worker) lease() string { return "finality:" + w.network.Name }
 // way through one. Asking for a lease this instance holds puts its deadline
 // out again, which is what keeps it while rounds keep coming.
 //
-// A round that outlasts the term is one another instance can start beside, and
-// nothing here stops it: what a round reads has no bound yet, so how long one
-// takes is how many transfers there are to ask about. What both of them write
-// is refused by the revision it was read at, and giving up on a transfer is
-// refused by the row already saying so, so the cost is asking the endpoints
-// twice rather than deciding twice.
+// What a round reads is bounded, so how long one takes is bounded by how slow
+// the endpoints are rather than by how much has piled up. A round that
+// outlasts the term even so is one another instance can start beside: what
+// both of them write is refused by the revision it was read at, and giving up
+// on a transfer is refused by the row already saying so, so the cost is asking
+// the endpoints twice rather than deciding twice.
 //
 // A round that does not finish is said and left. What it did not get to is
 // still there next time, and the alternative is an instance that stops working
@@ -154,8 +176,12 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 }
 
-// round asks the endpoints about every recorded transfer that would settle a
-// payment, and writes what their answers settle.
+// round asks the endpoints about the recorded transfers that would settle a
+// payment, writes what their answers settle, and then reads the clock.
+//
+// As many transfers as one round reads, going on from where the last round
+// stopped. A deployment with more of them than that gets through them over
+// several rounds, and comes round to the beginning when it reaches the end.
 //
 // An endpoint that does not answer ends the round where it stands. The
 // transfer it was asked about is left where it was and so is everything after
@@ -169,11 +195,11 @@ func (w *Worker) round(ctx context.Context) error {
 		return fmt.Errorf("%s: a payment is set to wait %s for what it is owed",
 			w.network.Name, w.network.Wait)
 	}
-	candidates, err := w.store.Candidates(ctx, payment.Network(w.network.Name))
+	candidates, err := w.store.Candidates(ctx, payment.Network(w.network.Name),
+		w.from, w.perRound)
 	if err != nil {
 		return err
 	}
-	said := make(map[recorded]answer, len(candidates))
 	for _, c := range candidates {
 		verdict, err := Ask(ctx, w.network.Endpoints,
 			Recorded{Tx: c.Tx, Height: c.BlockHeight, Hash: c.BlockHash})
@@ -181,16 +207,21 @@ func (w *Worker) round(ctx context.Context) error {
 			return err
 		}
 		at := recorded{key: c.Key, tx: c.Tx}
-		rounds := 1
+		asked := 1
 		if before, told := w.answers[at]; told && before.verdict == verdict {
-			rounds = before.rounds + 1
+			asked = before.rounds + 1
 		}
-		said[at] = answer{verdict: verdict, rounds: rounds}
-		if err := w.decided(ctx, c, said[at]); err != nil {
+		w.pass[at] = answer{verdict: verdict, rounds: asked}
+		if err := w.decided(ctx, c, w.pass[at]); err != nil {
 			return err
 		}
 	}
-	w.answers = said
+	if len(candidates) < w.perRound {
+		w.answers, w.pass, w.from = w.pass, map[recorded]answer{}, payment.Place{}
+	} else {
+		last := candidates[len(candidates)-1]
+		w.from = payment.Place{BlockHeight: last.BlockHeight, Tx: last.Tx}
+	}
 	return w.swept(ctx)
 }
 
@@ -205,7 +236,7 @@ func (w *Worker) swept(ctx context.Context) error {
 	network := payment.Network(w.network.Name)
 	now := w.now()
 
-	reached, err := w.store.Overdue(ctx, network, now)
+	reached, err := w.store.Overdue(ctx, network, now, w.perRound)
 	if err != nil {
 		return err
 	}
@@ -219,7 +250,7 @@ func (w *Worker) swept(ctx context.Context) error {
 		}
 	}
 
-	over, err := w.store.Unsettled(ctx, network, now.Add(-w.network.Wait))
+	over, err := w.store.Unsettled(ctx, network, now.Add(-w.network.Wait), w.perRound)
 	if err != nil {
 		return err
 	}

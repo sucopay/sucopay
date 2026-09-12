@@ -1,6 +1,7 @@
 package payment_test
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -72,7 +73,7 @@ func TestCandidates_ReadsTheMatchedFinalRowsOfEveryAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	candidates, err := s.Candidates(t.Context(), network)
+	candidates, err := s.Candidates(t.Context(), network, payment.Place{}, 10)
 
 	if err != nil {
 		t.Fatal(err)
@@ -128,7 +129,7 @@ func TestCandidates_ReadsAPaymentWaitingForFinality(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	candidates, err := s.Candidates(t.Context(), network)
+	candidates, err := s.Candidates(t.Context(), network, payment.Place{}, 10)
 
 	if err != nil {
 		t.Fatal(err)
@@ -182,7 +183,7 @@ func TestCandidates_LeavesOutWhatIsNotAMatchedFinalRowOfAnOpenPayment(t *testing
 	recordingOn(t, s, pool, "ethereum", 105, 105, true,
 		seenAt(elsewhere, "tx6", 105, payment.Matched))
 
-	candidates, err := s.Candidates(t.Context(), network)
+	candidates, err := s.Candidates(t.Context(), network, payment.Place{}, 10)
 
 	if err != nil {
 		t.Fatal(err)
@@ -331,7 +332,7 @@ func TestCandidates_ReadsTheRowAgainstThePaymentOfItsOwnAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	candidates, err := s.Candidates(t.Context(), network)
+	candidates, err := s.Candidates(t.Context(), network, payment.Place{}, 10)
 
 	if err != nil {
 		t.Fatal(err)
@@ -341,5 +342,128 @@ func TestCandidates_ReadsTheRowAgainstThePaymentOfItsOwnAccount(t *testing.T) {
 	}
 	if candidates[0].Account != first {
 		t.Errorf("Candidates read the row under %s, want %s", candidates[0].Account, first)
+	}
+}
+
+// recordMatched records one matched final transfer for a fresh payment, at a
+// height of the test's choosing, and hands back the transaction.
+func recordMatched(t *testing.T, s *payment.Postgres, pool *pgxpool.Pool, height uint64) string {
+	t.Helper()
+	hit := spent(t, s, first)
+	tx := fmt.Sprintf("tx%d", height)
+	if err := recording(t, s, pool, height, height, true,
+		seenAt(hit, tx, height, payment.Matched)); err != nil {
+		t.Fatal(err)
+	}
+	return tx
+}
+
+// A round asks the endpoints about every candidate it reads, so what it reads
+// is what it costs. The bound is the caller's.
+func TestCandidates_ReadsAtMostWhatItWasAskedFor(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	for height := uint64(100); height < 103; height++ {
+		recordMatched(t, s, pool, height)
+	}
+
+	candidates, err := s.Candidates(t.Context(), network, payment.Place{}, 2)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("Candidates read %d of three rows, want the two it was asked for", len(candidates))
+	}
+}
+
+// The block and the transaction put the rows in an order, and a caller that
+// hands back where it stopped is given what comes after. A round that read the
+// same rows every time would never reach the ones behind them.
+func TestCandidates_GoesOnFromWhereACallerStopped(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	var txs []string
+	for height := uint64(100); height < 103; height++ {
+		txs = append(txs, recordMatched(t, s, pool, height))
+	}
+
+	first, err := s.Candidates(t.Context(), network, payment.Place{}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 2 || first[0].Tx != txs[0] || first[1].Tx != txs[1] {
+		t.Fatalf("Candidates read %v, want %v in the order of their blocks", shown(first), txs[:2])
+	}
+
+	rest, err := s.Candidates(t.Context(), network,
+		payment.Place{BlockHeight: first[1].BlockHeight, Tx: first[1].Tx}, 2)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rest) != 1 || rest[0].Tx != txs[2] {
+		t.Errorf("Candidates read %v after the second, want only %s", shown(rest), txs[2])
+	}
+}
+
+// shown is the transactions a read came back with, for a failure to name.
+func shown(candidates []payment.Candidate) []string {
+	txs := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		txs = append(txs, c.Tx)
+	}
+	return txs
+}
+
+// The same rows a round would read, counted. Whoever is looking at a
+// deployment from outside the process is told how much is waiting, not which.
+func TestUndecided_CountsTheRowsWaitingForAnAnswer(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	if waiting, err := s.Undecided(t.Context(), network); err != nil || waiting != 0 {
+		t.Fatalf("Undecided = %d, %v; want none on an empty network", waiting, err)
+	}
+	for height := uint64(100); height < 102; height++ {
+		recordMatched(t, s, pool, height)
+	}
+	short := spent(t, s, first)
+	if err := recording(t, s, pool, 102, 102, true,
+		worth(seenAt(short, "tx102short", 102, payment.Short), "1")); err != nil {
+		t.Fatal(err)
+	}
+
+	waiting, err := s.Undecided(t.Context(), network)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waiting != 2 {
+		t.Errorf("Undecided = %d, want the two that would be read", waiting)
+	}
+}
+
+// Counted across accounts, like the rows it counts. A number that left one
+// merchant's transfers out would say a deployment was getting somewhere while
+// theirs sat still.
+func TestUndecided_CountsTheRowsOfEveryAccount(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	mine, theirs := spent(t, s, first), spent(t, s, other)
+	// Both in one round: a round that read the finalised range marks what it
+	// recorded there before and can no longer see as gone.
+	if err := recording(t, s, pool, 100, 100, true,
+		seenAt(mine, "tx1", 100, payment.Matched),
+		seenAt(theirs, "tx2", 100, payment.Matched)); err != nil {
+		t.Fatal(err)
+	}
+
+	waiting, err := s.Undecided(t.Context(), network)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waiting != 2 {
+		t.Errorf("Undecided = %d, want one for each account", waiting)
 	}
 }

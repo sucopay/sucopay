@@ -29,12 +29,12 @@ const second = payment.AccountID("00000000-0000-0000-0000-000000000002")
 // local is the network the payments here are on.
 const local = payment.Network("local")
 
-// deciding is a worker over a chain inside the process and a database of its
+// decider is a worker over a chain inside the process and a database of its
 // own, with one payment awaiting payment, one attempt at it, and the transfer
 // that paid it recorded the way a round of the observer records what it read
 // in the finalised range. What the chain says about that transfer now is the
 // test's to arrange.
-type deciding struct {
+type decider struct {
 	worker  *Worker
 	chain   *simulated.Chain
 	store   *payment.Postgres
@@ -95,7 +95,7 @@ func (i *instance) held() string {
 
 // decide opens everything one round reads and writes, with the transfer in a
 // block the chain has not called final yet.
-func decide(t *testing.T, misses int, endpoints ...chain.Chain) *deciding {
+func decide(t *testing.T, misses int, endpoints ...chain.Chain) *decider {
 	t.Helper()
 	pool, err := postgres.Open(t.Context(), postgrestest.Fresh(t))
 	if err != nil {
@@ -109,7 +109,7 @@ func decide(t *testing.T, misses int, endpoints ...chain.Chain) *deciding {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := &deciding{
+	d := &decider{
 		chain: simulated.New(), store: payment.NewPostgres(pool.Conns()), pool: pool.Conns(),
 		asset: asset, at: time.Now(), leases: &instance{holds: true}, log: &bytes.Buffer{},
 	}
@@ -129,7 +129,7 @@ func decide(t *testing.T, misses int, endpoints ...chain.Chain) *deciding {
 
 // attempted stores a payment of one account, made payable, with an attempt
 // at it.
-func (d *deciding) attempted(t *testing.T, account payment.AccountID) (*payment.Payment, *payment.Attempt) {
+func (d *decider) attempted(t *testing.T, account payment.AccountID) (*payment.Payment, *payment.Attempt) {
 	t.Helper()
 	amount, err := payment.ParseUnits(d.asset, "20000")
 	if err != nil {
@@ -171,7 +171,7 @@ func (d *deciding) attempted(t *testing.T, account payment.AccountID) (*payment.
 }
 
 // paying is the transfer a payer doing what they were asked leaves behind.
-func (d *deciding) paying(p *payment.Payment, key string) chain.Transfer {
+func (d *decider) paying(p *payment.Payment, key string) chain.Transfer {
 	payer := "0x" + strings.Repeat("11", 20)
 	return chain.Transfer{
 		Scheme:     string(payment.EIP3009),
@@ -187,7 +187,7 @@ func (d *deciding) paying(p *payment.Payment, key string) chain.Transfer {
 // recorded puts transfers into one block of the chain and records them the
 // way a round that read the finalised range does, whether or not the chain
 // has called the block final. It returns the transaction of the first.
-func (d *deciding) recorded(t *testing.T, transfers ...chain.Transfer) string {
+func (d *decider) recorded(t *testing.T, transfers ...chain.Transfer) string {
 	t.Helper()
 	for _, transfer := range transfers {
 		d.chain.Send(transfer)
@@ -250,7 +250,7 @@ func (d *deciding) recorded(t *testing.T, transfers ...chain.Transfer) string {
 
 // round is one round of the worker, which fails the test rather than handing
 // back an error nobody looks at.
-func (d *deciding) round(t *testing.T) {
+func (d *decider) round(t *testing.T) {
 	t.Helper()
 	if err := d.worker.round(t.Context()); err != nil {
 		t.Fatal(err)
@@ -258,7 +258,7 @@ func (d *deciding) round(t *testing.T) {
 }
 
 // status is where a payment has got to, read back out of the database.
-func (d *deciding) status(t *testing.T, account payment.AccountID, p *payment.Payment) payment.Status {
+func (d *decider) status(t *testing.T, account payment.AccountID, p *payment.Payment) payment.Status {
 	t.Helper()
 	back, _, err := d.store.Find(t.Context(), account, p.ID())
 	if err != nil {
@@ -268,7 +268,7 @@ func (d *deciding) status(t *testing.T, account payment.AccountID, p *payment.Pa
 }
 
 // received is what a payment says arrived, read back out of the database.
-func (d *deciding) received(t *testing.T) payment.Money {
+func (d *decider) received(t *testing.T) payment.Money {
 	t.Helper()
 	back, _, err := d.store.Find(t.Context(), held, d.payment.ID())
 	if err != nil {
@@ -278,7 +278,7 @@ func (d *deciding) received(t *testing.T) payment.Money {
 }
 
 // attemptStatus is where the attempt has got to.
-func (d *deciding) attemptStatus(t *testing.T) payment.AttemptStatus {
+func (d *decider) attemptStatus(t *testing.T) payment.AttemptStatus {
 	t.Helper()
 	a, _, err := d.store.FindAttempt(t.Context(), held, d.payment.ID(), d.attempt.ID())
 	if err != nil {
@@ -288,7 +288,7 @@ func (d *deciding) attemptStatus(t *testing.T) payment.AttemptStatus {
 }
 
 // reason is what the row of a transaction reads.
-func (d *deciding) reason(t *testing.T, tx string) string {
+func (d *decider) reason(t *testing.T, tx string) string {
 	t.Helper()
 	var reason string
 	if err := d.pool.QueryRow(t.Context(),
@@ -306,7 +306,7 @@ type event struct {
 }
 
 // events are the outbox rows of a payment, in the order they were written.
-func (d *deciding) events(t *testing.T, account payment.AccountID, p *payment.Payment) []event {
+func (d *decider) events(t *testing.T, account payment.AccountID, p *payment.Payment) []event {
 	t.Helper()
 	rows, err := d.pool.Query(t.Context(),
 		`select event, payload from outbox where account_id = $1 and payment_id = $2 order by id`,
@@ -855,7 +855,7 @@ func TestRound_SettlesBeforeItReadsTheClock(t *testing.T) {
 
 // running starts the worker and waits for what a test is looking for, then
 // stops it and waits for it to put its lease down.
-func (d *deciding) running(t *testing.T, until func() bool) {
+func (d *decider) running(t *testing.T, until func() bool) {
 	t.Helper()
 	ctx, stop := context.WithCancel(t.Context())
 	done := make(chan error, 1)
@@ -936,9 +936,9 @@ func TestRun_WritesNothingInvisibleToTheLog(t *testing.T) {
 // because a provider was down for a minute would need somebody to restart it.
 func TestRun_ComesRoundAgainAfterAFailure(t *testing.T) {
 	t.Parallel()
-	for what, fail := range map[string]func(*deciding){
-		"a lease it could not ask for": func(d *deciding) { d.leases.refuse = errors.New("no") },
-		"a round that did not finish":  func(d *deciding) { d.worker.network.Misses = 0 },
+	for what, fail := range map[string]func(*decider){
+		"a lease it could not ask for": func(d *decider) { d.leases.refuse = errors.New("no") },
+		"a round that did not finish":  func(d *decider) { d.worker.network.Misses = 0 },
 	} {
 		t.Run(what, func(t *testing.T) {
 			t.Parallel()
@@ -951,5 +951,65 @@ func TestRun_ComesRoundAgainAfterAFailure(t *testing.T) {
 				t.Errorf("the lease was put down %d times, want once on the way out", released)
 			}
 		})
+	}
+}
+
+// A round reads a bounded number of candidates, so a deployment with more of
+// them than that gets through them over several rounds. Reading from the
+// beginning every round would leave whatever sits at the front in front of
+// everything behind it.
+func TestRound_ComesRoundToEveryCandidateWhenOneRoundCannotReadThemAll(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+	d.worker.perRound = 1
+	theirs, attempt := d.attempted(t, held)
+	d.recorded(t, d.paying(theirs, attempt.Key()))
+	d.chain.Finalize(2)
+
+	d.round(t)
+
+	if got := d.status(t, held, d.payment); got != payment.Succeeded {
+		t.Fatalf("after one round the first payment is %s, want succeeded", got)
+	}
+	if got := d.status(t, held, theirs); got != payment.AwaitingPayment {
+		t.Fatalf("after one round the second payment is %s, want it not yet read", got)
+	}
+
+	d.round(t)
+
+	if got := d.status(t, held, theirs); got != payment.Succeeded {
+		t.Errorf("after two rounds the second payment is %s, want succeeded", got)
+	}
+}
+
+// The count is of times the endpoints were asked and found nothing, not of
+// rounds. A transfer read every other round is asked about every other round,
+// and what it takes to be given up on is the same number of answers.
+func TestRound_CountsTheTimesItAskedWhenARoundCannotReadThemAll(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+	d.worker.perRound = 1
+	theirs, attempt := d.attempted(t, held)
+	second := d.recorded(t, d.paying(theirs, attempt.Key()))
+	d.chain.Reorg(1)
+	d.chain.Finalize(d.chain.Mine())
+
+	for range 3 {
+		d.round(t)
+	}
+
+	for _, tx := range []string{d.tx, second} {
+		if got := d.reason(t, tx); got != string(payment.Matched) {
+			t.Fatalf("after one answer each, %s reads %s, want it still matched", tx, got)
+		}
+	}
+
+	d.round(t)
+	d.round(t)
+
+	for _, tx := range []string{d.tx, second} {
+		if got := d.reason(t, tx); got != string(payment.Vanished) {
+			t.Errorf("after two answers each, %s reads %s, want vanished", tx, got)
+		}
 	}
 }
