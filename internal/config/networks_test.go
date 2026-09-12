@@ -176,6 +176,27 @@ func TestResolve_AcceptsAnEndpointOverHTTPSOrOverHTTPToThisMachine(t *testing.T)
 	}
 }
 
+// An operator running a node can name third-party endpoints beside it, and a
+// document holding both is read as both: which of them is asked is decided
+// where the endpoints are opened, not here.
+func TestResolve_ReadsANetworkHoldingAnOwnNodeAndOthers(t *testing.T) {
+	t.Parallel()
+	others := []string{"https://first.example/", "https://second.example/"}
+	doc := evmNetwork(map[string]any{"rpc": map[string]any{
+		"own": polygonRPC, "others": []any{others[0], others[1]},
+	}})
+
+	got := mustResolve(t, doc, noEnv).Config
+
+	rpc := got.Networks["polygon"].RPC
+	if rpc.Own != polygonRPC {
+		t.Errorf("networks.polygon.rpc.own = %q, want %q", rpc.Own, polygonRPC)
+	}
+	if !slices.Equal(rpc.Others, others) {
+		t.Errorf("networks.polygon.rpc.others = %v, want %v", rpc.Others, others)
+	}
+}
+
 // The element that is wrong is named by its place in the list. A message that
 // said only networks.polygon.rpc.others would leave an operator with four
 // endpoints to compare by eye.

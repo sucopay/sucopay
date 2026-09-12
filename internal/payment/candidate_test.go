@@ -238,6 +238,44 @@ func TestVanish_MarksTheRowAndTakesBackTheAttemptAndWhatArrived(t *testing.T) {
 	}
 }
 
+// finalAt is when the observer stamped the row as seen inside the finalised
+// range, which is the mark a round reads to pick what to ask about.
+func finalAt(t *testing.T, pool *pgxpool.Pool, tx string) time.Time {
+	t.Helper()
+	var stamped *time.Time
+	if err := pool.QueryRow(t.Context(), `
+		select final_at from observations where network = $1 and tx = $2`,
+		network, tx).Scan(&stamped); err != nil {
+		t.Fatal(err)
+	}
+	if stamped == nil {
+		t.Fatalf("the row for %s says nothing about being seen inside the finalised range", tx)
+	}
+	return *stamped
+}
+
+// The mark belongs to the reading that wrote it. A round reads it to pick what
+// to ask the endpoints about and writes nothing over it, so a transfer that was
+// given up on still says when the chain had settled the block it was seen in.
+func TestVanish_KeepsTheMarkSayingWhenTheRowWasSeenFinal(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	hit := spent(t, s, first)
+	if err := recording(t, s, pool, 100, 100, true,
+		seenAt(hit, "tx1", 100, payment.Matched)); err != nil {
+		t.Fatal(err)
+	}
+	stamped := finalAt(t, pool, "tx1")
+
+	if err := s.Vanish(t.Context(), network, hit.Attempt.Key(), "tx1", now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := finalAt(t, pool, "tx1"); !got.Equal(stamped) {
+		t.Errorf("the row reads %s, want the %s the observer wrote", got, stamped)
+	}
+}
+
 // Two transfers can pay one payment, and one of them going leaves the other
 // standing. What it says arrived stays on the payment.
 func TestVanish_KeepsWhatAnotherStandingRowSaysArrived(t *testing.T) {
