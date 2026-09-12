@@ -19,8 +19,8 @@ find out by running it.
 ## What it does not do yet
 
 A payment reaches `succeeded`. The confirmation policy is set per network, and a payment past
-its deadline waits before it becomes `expired`. That path has been run against a chain inside
-the process and not yet against a live one.
+its deadline waits before it becomes `expired`. That path has been run end to end against a
+chain inside the process, and one step at a time against Polygon on a payment somebody made.
 
 - [ ] Payments: lifecycle, expiry, under/overpayment, idempotency
 - [x] Finality: confirmation policy per network

@@ -25,8 +25,9 @@ A payment goes from the customer's wallet to yours with nothing in between; what
 watch the chain and tell you it arrived.
 
 > **Pre-alpha.** A transfer is seen, matched, recorded, and decided, and a payment reaches
-> `succeeded`. That path has been run against a chain inside the process and not yet against a
-> live one. [ROADMAP.md](ROADMAP.md) says what works today and what does not.
+> `succeeded`. That path has been run end to end against a chain inside the process, and one
+> step at a time against Polygon on a payment somebody made. [ROADMAP.md](ROADMAP.md) says
+> what works today and what does not.
 
 ## Getting started
 
