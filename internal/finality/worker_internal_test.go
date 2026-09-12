@@ -877,6 +877,11 @@ func (d *decider) running(t *testing.T, until func() bool) {
 
 // The lease is asked for under a name of its own. Whoever reads the chain
 // holds the network's own name, and the two run beside each other.
+//
+// A name no network could have, and not merely one no network here does: a
+// deployment that named a network after this prefix would otherwise have one
+// of the two silently never run, and never running is what holding no lease
+// looks like from the inside.
 func TestRun_HoldsTheNetworkUnderANameOfItsOwn(t *testing.T) {
 	t.Parallel()
 	d := decide(t, 2)
@@ -884,8 +889,13 @@ func TestRun_HoldsTheNetworkUnderANameOfItsOwn(t *testing.T) {
 
 	d.running(t, func() bool { return d.status(t, held, d.payment) == payment.Succeeded })
 
-	if name := d.leases.held(); name == string(local) || !strings.Contains(name, string(local)) {
+	name := d.leases.held()
+	if name == string(local) || !strings.Contains(name, string(local)) {
 		t.Errorf("the lease was asked for under %q, want a name of its own naming %s", name, local)
+	}
+	// A dot is what a document refuses in a network's name.
+	if !strings.Contains(name, ".") {
+		t.Errorf("the lease name %q holds nothing a network's name could not", name)
 	}
 	if _, released := d.leases.asked(); released != 1 {
 		t.Errorf("the lease was put down %d times on the way out, want once", released)

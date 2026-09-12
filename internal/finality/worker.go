@@ -199,7 +199,12 @@ func New(n Network, store *payment.Postgres, leases Leases, log *slog.Logger,
 // lease is the name this worker holds a network under. Not the network's own
 // name: whoever reads the chain holds that one, and the two run beside each
 // other.
-func (w *Worker) lease() string { return "finality:" + w.network.Name }
+//
+// Separated by a dot, which is the one character a network's name cannot hold:
+// a document is refused for a name with one in it, because a name is a path
+// segment in every setting under it. So no name this builds is a name a
+// network could have, and the two never take each other's lease.
+func (w *Worker) lease() string { return "finality." + w.network.Name }
 
 // Run decides and sweeps until the context ends.
 //
