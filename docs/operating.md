@@ -151,7 +151,9 @@ nonce 0x11becaaf611be4cfb6bd8a5287bf3688f85dbbbd2af45aa10ac31a7b4513ae01
 ```
 
 The nonce is the key the reader matches a transfer to. `validBefore` is the payment's deadline,
-truncated to the second the chain compares.
+truncated to the second the chain compares. What the payer signs is theirs to write, so a transfer
+can come back carrying a later deadline than the one printed here. One carried at or after the
+deadline printed here is recorded against the payment and does not pay it.
 
 **What it prints goes to a person at a terminal and nowhere that keeps it.** Anybody who reads it
 can tell what is being paid where, and can sign for the payer if they also hold the payer's key.

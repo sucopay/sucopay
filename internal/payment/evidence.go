@@ -54,7 +54,8 @@ const (
 	WrongTo Reason = "wrong_to"
 	// Short is a transfer of less than the payment asks for.
 	Short Reason = "short"
-	// Late is a transfer that passed every rule against a payment nothing can
+	// Late is a transfer that moved what it had to move: carried after the
+	// deadline the payment issued, or arriving for a payment nothing can
 	// arrive for any more.
 	Late Reason = "late"
 	// Vanished is a transfer that was recorded and is no longer on the chain
@@ -69,15 +70,16 @@ func (r Reason) String() string { return string(r) }
 // whether the transfer is that attempt's at all.
 //
 // The rules are read in order, and the first one a transfer fails is what it
-// is worth: another asset's contract, another destination, too little. A
-// transfer that passes them all is matched, unless nothing can arrive for the
-// payment any more, which is late.
+// is worth: another asset's contract, another destination, too little, carried
+// after the deadline this payment issued. A transfer that passes them all is
+// matched, unless nothing can arrive for the payment any more, which is late
+// as well.
 //
-// A payment waiting for finality still takes one. The key an attempt holds
-// dies at the payment's deadline, so a transfer the chain carried at all was
-// authorised while the payment was open, and the wait is for that transfer to
-// settle. What is late is a transfer against a payment that has finished
-// waiting, or one that was already paid.
+// A payment waiting for finality still takes one. A transfer carried before
+// the deadline is one the payment offered, whenever it is read, and the wait
+// is for exactly that transfer to settle. What is late is a transfer carried
+// after the deadline, or one against a payment that has finished waiting or
+// was already paid.
 //
 // The false is a transfer of a key this attempt does not hold. Whoever reads a
 // chain pairs a transfer with the attempt whose key it consumed, and a pair
@@ -109,6 +111,18 @@ func Judge(t Transfer, a *Attempt, p *Payment) (Reason, bool) {
 	}
 	if short, err := paid.Cmp(p.Amount()); err != nil || short < 0 {
 		return Short, true
+	}
+	// Rule 5. The payer signs the authorization, so when it dies is theirs to
+	// set the way the destination and the amount are: the same key signed with
+	// a later deadline is one the asset honours, and this payment never
+	// offered that. The moment compared is the one the chain stamped on the
+	// block the transfer was carried in, which is the moment the asset
+	// compares to the deadline it was handed. A transfer carrying no moment
+	// passes this, and never reaches a row: [screen] refuses one, so a reader
+	// that does not stamp a transfer fails to record it rather than quietly
+	// leaving this rule off.
+	if !t.BlockTime.Before(a.ValidBefore()) {
+		return Late, true
 	}
 	if !p.CanReceive() {
 		return Late, true
@@ -182,6 +196,13 @@ const MaxTransferField = 256
 // one every time. Ranging over a map would name a different one each run, and
 // a refusal read from a log is a refusal somebody is going to act on.
 func screen(t Transfer) error {
+	// Every transfer is in a block, and the moment the chain stamped on that
+	// block is what holds one to the deadline it was authorised against. A
+	// reader that hands one over without it would turn that rule off rather
+	// than fail, so what cannot be judged is refused here instead.
+	if t.BlockTime.IsZero() {
+		return fmt.Errorf("transfer %s: the block it was carried in has no time on it", t.Tx)
+	}
 	for _, field := range []struct{ name, value string }{
 		{"asset", t.Asset}, {"key", t.Key}, {"authorizer", t.Authorizer},
 		{"from", t.From}, {"to", t.To}, {"value", t.Value}, {"tx", t.Tx},

@@ -72,6 +72,9 @@ func TestJudge_ReadsTheRulesInOrderAndSaysWhatFirstFailed(t *testing.T) {
 		{"another asset and another destination", func(t *testing.T, transfer *payment.Transfer) {
 			transfer.Asset, transfer.To = usdc(t).Reference(), "0xsomebodyelse"
 		}, payment.WrongAsset},
+		{"too little and carried late", func(_ *testing.T, t *payment.Transfer) {
+			t.Value, t.BlockTime = "1", time.Now().Add(2*time.Hour)
+		}, payment.Short},
 		{"more than the payment asks for", func(_ *testing.T, t *payment.Transfer) { t.Value = "100000" }, payment.Matched},
 	}
 	for _, c := range cases {
@@ -127,10 +130,39 @@ func TestJudge_CallsATransferLateWhenNothingCanArriveForThePaymentAnyMore(t *tes
 	}
 }
 
-// The key an attempt holds dies at the payment's deadline, so a transfer the
-// chain carried at all was authorised while the payment was open. A payment
-// that stopped being payable is waiting for that transfer, and a round that
-// reads it while the payment waits reads the payment's own.
+// The payer signs the authorization, so when it dies is theirs to choose as
+// much as where the money goes and how much of it: the same nonce signed with
+// a later deadline is honoured by the asset, and the payment it names never
+// offered that. The moment compared is the one the chain stamped on the block
+// the transfer was carried in, which is the moment the asset compares too.
+func TestJudge_CallsATransferLateWhenItWasCarriedPastTheDeadlineThePaymentIssued(t *testing.T) {
+	t.Parallel()
+	for what, tt := range map[string]struct {
+		carried func(deadline time.Time) time.Time
+		want    payment.Reason
+	}{
+		"a second before the deadline": {func(d time.Time) time.Time { return d.Add(-time.Second) }, payment.Matched},
+		"at the deadline":              {func(d time.Time) time.Time { return d }, payment.Late},
+		"an hour after it":             {func(d time.Time) time.Time { return d.Add(time.Hour) }, payment.Late},
+	} {
+		t.Run(what, func(t *testing.T) {
+			t.Parallel()
+			transfer, a, p := judged(t)
+			transfer.BlockTime = tt.carried(a.ValidBefore())
+
+			reason, evidence := payment.Judge(transfer, a, p)
+
+			if !evidence || reason != tt.want {
+				t.Errorf("Judge = %q, %v; want %q for a transfer carried %s", reason, evidence, tt.want, what)
+			}
+		})
+	}
+}
+
+// When a transfer was carried is one question and when it was read is
+// another. A payment that stopped being payable is waiting for a transfer
+// carried before its deadline, so a round that reads one while the payment
+// waits reads the payment's own.
 func TestJudge_MatchesATransferAgainstAPaymentWaitingForFinality(t *testing.T) {
 	t.Parallel()
 	transfer, a, p := judged(t)
@@ -631,6 +663,12 @@ func TestRecord_RefusesWhatAProviderShouldNotBeAbleToWrite(t *testing.T) {
 		}},
 		{"a reference holding one", func(t *payment.Transfer) {
 			t.Asset = "jpyc-contract\u200b"
+		}},
+		// Without it nothing holds the transfer to the deadline it was
+		// authorised against, and a round that wrote it down anyway would
+		// leave that rule off for the row it wrote.
+		{"a block with no time on it", func(t *payment.Transfer) {
+			t.BlockTime = time.Time{}
 		}},
 	}
 	for _, c := range cases {
