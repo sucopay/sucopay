@@ -49,6 +49,16 @@ func takes(kind, key string) bool {
 // asking a provider about blocks that have not been produced.
 const minPoll = time.Second
 
+// minFinalityWait is the shortest wait a document may set. Below it, a payment
+// paid a moment before its deadline is ended before the chain could have
+// carried the transfer, let alone stopped replacing the block it is in.
+const minFinalityWait = time.Minute
+
+// minFinalityRecheck is the shortest a document may set between rounds, for
+// the reason minPoll gives: a round is several calls to somebody else's
+// endpoint.
+const minFinalityRecheck = time.Second
+
 // Resolve builds a [Config] from a decoded configuration document and the
 // environment. It reports every problem it finds as one [Problems] error.
 //
@@ -355,6 +365,11 @@ func (r *reader) networks() map[string]Network {
 			RPC:     r.endpoints(path+".rpc", takes(kind, "rpc")),
 			Poll:    r.duration(path+".poll", DefaultPoll),
 			Width:   r.integer(path+".width", DefaultWidth),
+			Finality: Finality{
+				Wait:    r.duration(path+".finality.wait", DefaultFinalityWait),
+				Recheck: r.duration(path+".finality.recheck", DefaultFinalityRecheck),
+				Misses:  r.integer(path+".finality.misses", DefaultFinalityMisses),
+			},
 		}
 	}
 	return out
@@ -527,6 +542,15 @@ func (r *reader) validateNetwork(path string, n Network) {
 	}
 	if !r.failed(path+".width") && (n.Width < MinWidth || n.Width > MaxWidth) {
 		r.fail(path+".width", "outside %d-%d: %d", MinWidth, MaxWidth, n.Width)
+	}
+	if !r.failed(path+".finality.wait") && n.Finality.Wait < minFinalityWait {
+		r.fail(path+".finality.wait", "below %s: %s", minFinalityWait, n.Finality.Wait)
+	}
+	if !r.failed(path+".finality.recheck") && n.Finality.Recheck < minFinalityRecheck {
+		r.fail(path+".finality.recheck", "below %s: %s", minFinalityRecheck, n.Finality.Recheck)
+	}
+	if !r.failed(path+".finality.misses") && n.Finality.Misses < MinFinalityMisses {
+		r.fail(path+".finality.misses", "below %d: %d", MinFinalityMisses, n.Finality.Misses)
 	}
 	if r.failed(path + ".kind") {
 		return

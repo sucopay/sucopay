@@ -13,6 +13,7 @@ import (
 	"github.com/sucopay/sucopay/internal/accepted"
 	"github.com/sucopay/sucopay/internal/api"
 	"github.com/sucopay/sucopay/internal/credential"
+	"github.com/sucopay/sucopay/internal/finality"
 	"github.com/sucopay/sucopay/internal/invisible"
 	"github.com/sucopay/sucopay/internal/observe"
 	"github.com/sucopay/sucopay/internal/payment"
@@ -54,6 +55,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		payments    api.Payments
 		chains      api.Chains
 		observers   observe.Observers
+		workers     []*finality.Worker
 	)
 	if cfg.Database.URL != "" {
 		db, err := postgres.Open(ctx, cfg.Database.URL)
@@ -100,6 +102,18 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 			observers = append(observers, observe.New(n, db.Conns(), store, log, time.Now))
 		}
 		chains = observers
+
+		// One holder for every network this instance settles, because one
+		// process is one instance. The names differ, so nothing here competes
+		// with itself.
+		settling, err := openSettling(cfg)
+		if err != nil {
+			return err
+		}
+		leases := observe.NewLeases(db.Conns())
+		for _, n := range settling {
+			workers = append(workers, finality.New(n, store, leases, log, time.Now))
+		}
 	}
 
 	addr := net.JoinHostPort(cfg.Listen.Host, strconv.Itoa(cfg.Listen.Port))
@@ -128,6 +142,16 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 			defer rounds.Done()
 			if err := o.Run(reading); err != nil {
 				log.ErrorContext(ctx, "a network stopped being read",
+					slog.String("error", invisible.Shown(err.Error(), maxDescription)))
+			}
+		}()
+	}
+	for _, w := range workers {
+		rounds.Add(1)
+		go func() {
+			defer rounds.Done()
+			if err := w.Run(reading); err != nil {
+				log.ErrorContext(ctx, "a network stopped being settled",
 					slog.String("error", invisible.Shown(err.Error(), maxDescription)))
 			}
 		}()

@@ -9,6 +9,7 @@ import (
 	"github.com/sucopay/sucopay/internal/adapter/chain"
 	"github.com/sucopay/sucopay/internal/adapter/chain/kinds"
 	"github.com/sucopay/sucopay/internal/config"
+	"github.com/sucopay/sucopay/internal/finality"
 	"github.com/sucopay/sucopay/internal/observe"
 	"github.com/sucopay/sucopay/internal/payment"
 )
@@ -24,20 +25,13 @@ import (
 // In the order of the names, so that what a deployment starts, and the order
 // it says so in, read the same each time.
 func openChains(cfg config.Config) ([]observe.Network, error) {
-	assets := map[string]map[string]payment.Asset{}
-	for name, asset := range cfg.Assets {
-		on := string(asset.Network())
-		if _, declared := cfg.Networks[on]; !declared {
-			return nil, fmt.Errorf("asset %s is on %s, which the document does not declare", name, on)
-		}
-		if assets[on] == nil {
-			assets[on] = map[string]payment.Asset{}
-		}
-		assets[on][name] = asset
+	names, assets, err := settled(cfg)
+	if err != nil {
+		return nil, err
 	}
 
-	out := make([]observe.Network, 0, len(assets))
-	for _, name := range slices.Sorted(maps.Keys(assets)) {
+	out := make([]observe.Network, 0, len(names))
+	for _, name := range names {
 		n := cfg.Networks[name]
 		kind, known := kinds.Lookup(n.Kind)
 		if !known {
@@ -63,6 +57,84 @@ func openChains(cfg config.Config) ([]observe.Network, error) {
 	return out, nil
 }
 
+// settled are the networks the document's assets settle on, in name order,
+// with the assets on each. By the assets rather than by the networks, for the
+// reason [openChains] gives.
+func settled(cfg config.Config) ([]string, map[string]map[string]payment.Asset, error) {
+	assets := map[string]map[string]payment.Asset{}
+	for name, asset := range cfg.Assets {
+		on := string(asset.Network())
+		if _, declared := cfg.Networks[on]; !declared {
+			return nil, nil, fmt.Errorf("asset %s is on %s, which the document does not declare", name, on)
+		}
+		if assets[on] == nil {
+			assets[on] = map[string]payment.Asset{}
+		}
+		assets[on][name] = asset
+	}
+	return slices.Sorted(maps.Keys(assets)), assets, nil
+}
+
+// openSettling makes the adapters each network is asked through when a
+// recorded transfer is asked about again, and hands back what decides for each
+// network.
+//
+// The same networks [openChains] reads, and not the same endpoints. What reads
+// a chain reads one endpoint, because a cursor is a place in a chain as one
+// provider tells it. What decides asks every endpoint it has, because a
+// deployment that asks one endpoint is a deployment that believes it.
+func openSettling(cfg config.Config) ([]finality.Network, error) {
+	names, _, err := settled(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]finality.Network, 0, len(names))
+	for _, name := range names {
+		n := cfg.Networks[name]
+		kind, known := kinds.Lookup(n.Kind)
+		if !known {
+			return nil, fmt.Errorf("network %s is of kind %s, which this build cannot open", name, n.Kind)
+		}
+		asked := make([]chain.Chain, 0, 1)
+		for _, url := range endpoints(n) {
+			// The endpoint is a secret, and what is added here is which
+			// network was being opened, for the reason [openChains] gives.
+			read, err := kind.Open(chain.Settings{Name: name, ChainID: identity(n), RPC: url})
+			if err != nil {
+				return nil, fmt.Errorf("network %s: %w", name, err)
+			}
+			asked = append(asked, read)
+		}
+		out = append(out, finality.Network{
+			Name:      name,
+			Endpoints: asked,
+			Recheck:   n.Finality.Recheck,
+			Wait:      n.Finality.Wait,
+			Misses:    n.Finality.Misses,
+		})
+	}
+	return out, nil
+}
+
+// endpoints are the ones a network's settling is decided through. The
+// operator's own node alone when there is one: a node the operator runs is the
+// one they already trust, and asking others beside it would hold a payment
+// behind whichever of them is slowest. All of the others when there is no own
+// node, because agreement between them is what stands in for that trust.
+//
+// One endpoint with nothing in it where the document names none, which is a
+// kind that reaches no chain.
+func endpoints(n config.Network) []string {
+	if n.RPC.Own != "" {
+		return []string{n.RPC.Own}
+	}
+	if len(n.RPC.Others) > 0 {
+		return n.RPC.Others
+	}
+	return []string{""}
+}
+
 // identity is what the chain is expected to call itself, written the way it
 // writes it, and nothing where the document names none. Zero stands for none:
 // a kind that has no chain to identify cannot be given a chain id, which the
@@ -78,8 +150,8 @@ func identity(n config.Network) string {
 // there is one, and the first of the others otherwise. One endpoint, and the
 // same one every round: a cursor is a place in a chain as one provider tells
 // it, and moving between providers would leave the position meaning something
-// else. The rest of the others are read by nothing in this build: comparing
-// what several endpoints say belongs to deciding that a payment is final.
+// else. The rest of the others are asked by [openSettling], where several
+// answers to one question are the point.
 func endpoint(n config.Network) string {
 	if n.RPC.Own != "" {
 		return n.RPC.Own

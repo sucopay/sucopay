@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -44,13 +45,57 @@ type deciding struct {
 	tx      string
 	// at is what the worker's clock says. A test that wants the deadline of a
 	// payment behind it moves this rather than waiting.
-	at  time.Time
-	log *bytes.Buffer
+	at     time.Time
+	leases *instance
+	log    *bytes.Buffer
+}
+
+// instance is the lease as one instance sees it: whether this instance holds
+// the name, and a count of what it was asked for.
+type instance struct {
+	mu       sync.Mutex
+	holds    bool
+	refuse   error
+	name     string
+	acquired int
+	released int
+}
+
+func (i *instance) Acquire(_ context.Context, name string) (bool, error) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.acquired, i.name = i.acquired+1, name
+	if i.refuse != nil {
+		return false, i.refuse
+	}
+	return i.holds, nil
+}
+
+func (i *instance) Release(_ context.Context, _ string) error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.released++
+	return nil
+}
+
+// asked is how many times the lease was asked for, and how many times it was
+// put down.
+func (i *instance) asked() (acquired, released int) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.acquired, i.released
+}
+
+// held is the name the lease was asked for under.
+func (i *instance) held() string {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.name
 }
 
 // decide opens everything one round reads and writes, with the transfer in a
 // block the chain has not called final yet.
-func decide(t *testing.T, vanishAfter int, endpoints ...chain.Chain) *deciding {
+func decide(t *testing.T, misses int, endpoints ...chain.Chain) *deciding {
 	t.Helper()
 	pool, err := postgres.Open(t.Context(), postgrestest.Fresh(t))
 	if err != nil {
@@ -66,7 +111,7 @@ func decide(t *testing.T, vanishAfter int, endpoints ...chain.Chain) *deciding {
 	}
 	d := &deciding{
 		chain: simulated.New(), store: payment.NewPostgres(pool.Conns()), pool: pool.Conns(),
-		asset: asset, at: time.Now(), log: &bytes.Buffer{},
+		asset: asset, at: time.Now(), leases: &instance{holds: true}, log: &bytes.Buffer{},
 	}
 	d.payment, d.attempt = d.attempted(t, held)
 	d.tx = d.recorded(t, d.paying(d.payment, d.attempt.Key()))
@@ -74,8 +119,11 @@ func decide(t *testing.T, vanishAfter int, endpoints ...chain.Chain) *deciding {
 		endpoints = []chain.Chain{d.chain}
 	}
 	d.worker = New(Network{Name: string(local), Endpoints: endpoints,
-		VanishAfter: vanishAfter, Wait: time.Hour},
-		d.store, slog.New(slog.NewTextHandler(d.log, nil)), func() time.Time { return d.at })
+		Misses: misses, Wait: time.Hour, Recheck: time.Millisecond},
+		// JSON, which is what a deployment writes with. The text handler
+		// escapes what a reader cannot see and would hide a line that did not.
+		d.store, d.leases, slog.New(slog.NewJSONHandler(d.log, nil)),
+		func() time.Time { return d.at })
 	return d
 }
 
@@ -802,5 +850,106 @@ func TestRound_SettlesBeforeItReadsTheClock(t *testing.T) {
 	events := d.events(t, held, d.payment)
 	if len(events) != 1 || events[0].Name != "payment.succeeded" {
 		t.Errorf("the outbox holds %+v, want one payment.succeeded", events)
+	}
+}
+
+// running starts the worker and waits for what a test is looking for, then
+// stops it and waits for it to put its lease down.
+func (d *deciding) running(t *testing.T, until func() bool) {
+	t.Helper()
+	ctx, stop := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- d.worker.Run(ctx) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for !until() {
+		if time.Now().After(deadline) {
+			stop()
+			<-done
+			t.Fatal("the worker did not get there")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	stop()
+	if err := <-done; err != nil {
+		t.Fatalf("Run = %v, want none", err)
+	}
+}
+
+// The lease is asked for under a name of its own. Whoever reads the chain
+// holds the network's own name, and the two run beside each other.
+func TestRun_HoldsTheNetworkUnderANameOfItsOwn(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+	d.chain.Finalize(1)
+
+	d.running(t, func() bool { return d.status(t, held, d.payment) == payment.Succeeded })
+
+	if name := d.leases.held(); name == string(local) || !strings.Contains(name, string(local)) {
+		t.Errorf("the lease was asked for under %q, want a name of its own naming %s", name, local)
+	}
+	if _, released := d.leases.asked(); released != 1 {
+		t.Errorf("the lease was put down %d times on the way out, want once", released)
+	}
+}
+
+// One instance decides for a network. The spare asks for the lease, is told
+// no, and reads nothing.
+func TestRun_LeavesTheNetworkAloneWhileAnotherInstanceHoldsTheLease(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+	d.chain.Finalize(1)
+	d.leases.holds = false
+	// What the recording in decide asked the chain, which is not this round's.
+	before := d.chain.Calls()["Receipt"]
+
+	d.running(t, func() bool { acquired, _ := d.leases.asked(); return acquired >= 3 })
+
+	if got := d.status(t, held, d.payment); got != payment.AwaitingPayment {
+		t.Errorf("the payment is %s, want it left awaiting payment", got)
+	}
+	if asked := d.chain.Calls()["Receipt"] - before; asked != 0 {
+		t.Errorf("the chain was asked about %d transfers without the lease, want none", asked)
+	}
+}
+
+// What somebody else's failure put in the line is bounded and has nothing
+// invisible left in it. slog's JSON handler, which is what a deployment writes
+// with, passes a character a reader cannot see through as the bytes it was
+// given.
+func TestRun_WritesNothingInvisibleToTheLog(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+	d.leases.refuse = errors.New("before\u202eafter")
+
+	d.running(t, func() bool { acquired, _ := d.leases.asked(); return acquired >= 2 })
+
+	if strings.Contains(d.log.String(), "\u202e") {
+		t.Errorf("the log carries a character that overrides the reading order:\n%s", d.log)
+	}
+	if !strings.Contains(d.log.String(), "before") {
+		t.Errorf("the log lost what the failure said:\n%s", d.log)
+	}
+}
+
+// A lease that cannot be asked for, and a round that cannot finish, both leave
+// the worker coming round again. An instance that stopped working on a network
+// because a provider was down for a minute would need somebody to restart it.
+func TestRun_ComesRoundAgainAfterAFailure(t *testing.T) {
+	t.Parallel()
+	for what, fail := range map[string]func(*deciding){
+		"a lease it could not ask for": func(d *deciding) { d.leases.refuse = errors.New("no") },
+		"a round that did not finish":  func(d *deciding) { d.worker.network.Misses = 0 },
+	} {
+		t.Run(what, func(t *testing.T) {
+			t.Parallel()
+			d := decide(t, 2)
+			fail(d)
+
+			d.running(t, func() bool { acquired, _ := d.leases.asked(); return acquired >= 3 })
+
+			if _, released := d.leases.asked(); released != 1 {
+				t.Errorf("the lease was put down %d times, want once on the way out", released)
+			}
+		})
 	}
 }

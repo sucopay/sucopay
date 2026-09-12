@@ -473,3 +473,86 @@ func TestReport_ShowsTheSettingsANetworksKindTakes(t *testing.T) {
 		}
 	}
 }
+
+// finality is a network whose settling is written out, for the tests that read
+// those settings back.
+func finality(fields map[string]any) map[string]any {
+	return evmNetwork(map[string]any{"finality": fields})
+}
+
+func TestResolve_GivesFinalityItsDefaults(t *testing.T) {
+	t.Parallel()
+	got := mustResolve(t, evmNetwork(nil), noEnv)
+
+	network := got.Config.Networks["polygon"]
+	if network.Finality.Wait != config.DefaultFinalityWait {
+		t.Errorf("finality.wait = %v, want %v", network.Finality.Wait, config.DefaultFinalityWait)
+	}
+	if network.Finality.Recheck != config.DefaultFinalityRecheck {
+		t.Errorf("finality.recheck = %v, want %v", network.Finality.Recheck, config.DefaultFinalityRecheck)
+	}
+	if network.Finality.Misses != config.DefaultFinalityMisses {
+		t.Errorf("finality.misses = %d, want %d", network.Finality.Misses, config.DefaultFinalityMisses)
+	}
+	for _, path := range []string{
+		"networks.polygon.finality.wait",
+		"networks.polygon.finality.recheck",
+		"networks.polygon.finality.misses",
+	} {
+		if source, _ := got.SourceOf(path); source.Origin != config.FromDefault {
+			t.Errorf("%s came from %v, want default", path, source.Origin)
+		}
+	}
+}
+
+func TestResolve_ReadsWhatADocumentSaysAboutFinality(t *testing.T) {
+	t.Parallel()
+	got := mustResolve(t, finality(map[string]any{
+		"wait": "45m", "recheck": "30s", "misses": uint64(4)}), noEnv).Config
+
+	network := got.Networks["polygon"]
+	if network.Finality.Wait != 45*time.Minute {
+		t.Errorf("finality.wait = %v, want 45m", network.Finality.Wait)
+	}
+	if network.Finality.Recheck != 30*time.Second {
+		t.Errorf("finality.recheck = %v, want 30s", network.Finality.Recheck)
+	}
+	if network.Finality.Misses != 4 {
+		t.Errorf("finality.misses = %d, want 4", network.Finality.Misses)
+	}
+}
+
+// A wait shorter than the time a chain takes to carry a transfer expires
+// payments that were paid, and a recheck spent on nothing is somebody else's
+// endpoint spent on nothing.
+func TestResolve_KeepsTheFinalityDurationsAboveTheirFloors(t *testing.T) {
+	t.Parallel()
+	for setting, value := range map[string]string{"wait": "30s", "recheck": "500ms"} {
+		t.Run(setting, func(t *testing.T) {
+			t.Parallel()
+			_, err := config.Resolve(finality(map[string]any{setting: value}), noEnv)
+
+			wantProblemAt(t, err, "networks.polygon.finality."+setting)
+		})
+	}
+}
+
+// Not finding a transfer once is not the transfer being gone: the endpoint may
+// be reading a state it has not finished replacing. A document that asks to
+// give up the first time is asking for the thing the count exists to prevent.
+func TestResolve_RefusesToGiveUpOnATransferTheFirstTimeNothingIsFound(t *testing.T) {
+	t.Parallel()
+	got := mustResolve(t, finality(map[string]any{
+		"misses": uint64(config.MinFinalityMisses)}), noEnv).Config
+	if got.Networks["polygon"].Finality.Misses != config.MinFinalityMisses {
+		t.Errorf("finality.misses = %d, want %d",
+			got.Networks["polygon"].Finality.Misses, config.MinFinalityMisses)
+	}
+
+	_, err := config.Resolve(finality(map[string]any{"misses": uint64(1)}), noEnv)
+
+	p := wantProblemAt(t, err, "networks.polygon.finality.misses")
+	if !strings.Contains(p.Message, strconv.Itoa(config.MinFinalityMisses)) {
+		t.Errorf("message %q does not show the fewest a document may set", p.Message)
+	}
+}

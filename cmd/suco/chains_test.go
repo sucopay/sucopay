@@ -172,3 +172,77 @@ func TestOpenChains_ReadsTheOwnNodeWhenThereIsOneAndTheFirstOfOthersOtherwise(t 
 		})
 	}
 }
+
+// The same networks a round reads, in the same order, with the settling each
+// was given.
+func TestOpenSettling_DecidesForEveryChainAnAssetSettlesOn(t *testing.T) {
+	t.Parallel()
+	settling := simulatedNetwork()
+	settling.Finality = config.Finality{Wait: time.Hour, Recheck: 30 * time.Second, Misses: 4}
+
+	opened, err := openSettling(listing(t, map[string]config.Network{
+		"beta": settling, "alpha": settling,
+	}))
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(opened) != 2 {
+		t.Fatalf("openSettling opened %d networks, want two", len(opened))
+	}
+	if opened[0].Name != "alpha" || opened[1].Name != "beta" {
+		t.Errorf("opened %s then %s, want them in the order of their names",
+			opened[0].Name, opened[1].Name)
+	}
+	for _, n := range opened {
+		if n.Wait != time.Hour || n.Recheck != 30*time.Second || n.Misses != 4 {
+			t.Errorf("%s settles on %v, %v, %d; want the document's hour, 30s and 4",
+				n.Name, n.Wait, n.Recheck, n.Misses)
+		}
+	}
+}
+
+// One question, and as many answers as the deployment has reason to compare.
+// The operator's own node answers alone; without one, every third party the
+// document names is asked.
+func TestOpenSettling_AsksTheOwnNodeAloneAndEveryOtherWhenThereIsNone(t *testing.T) {
+	t.Parallel()
+	for what, tt := range map[string]struct {
+		rpc  config.Endpoints
+		want int
+	}{
+		"the own node alone":       {config.Endpoints{Own: "one", Others: []string{"two", "three"}}, 1},
+		"every one of the others":  {config.Endpoints{Others: []string{"two", "three"}}, 2},
+		"one that reaches nowhere": {config.Endpoints{}, 1},
+	} {
+		t.Run(what, func(t *testing.T) {
+			t.Parallel()
+			n := simulatedNetwork()
+			n.RPC = tt.rpc
+
+			opened, err := openSettling(listing(t, map[string]config.Network{"polygon": n}))
+
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := len(opened[0].Endpoints); got != tt.want {
+				t.Errorf("openSettling opened %d endpoints, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOpenSettling_RefusesAnAssetOnANetworkNothingDeclares(t *testing.T) {
+	t.Parallel()
+	cfg := listing(t, map[string]config.Network{"polygon": simulatedNetwork()})
+	delete(cfg.Networks, "polygon")
+
+	_, err := openSettling(cfg)
+
+	if err == nil {
+		t.Fatal("a network the document does not declare was opened")
+	}
+	if !strings.Contains(err.Error(), "polygon") {
+		t.Errorf("error %q does not name the network", err)
+	}
+}

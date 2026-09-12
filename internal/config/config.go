@@ -34,6 +34,26 @@ const (
 	// MaxWidth is the widest span a document may set, the largest cap
 	// measured.
 	MaxWidth = 10000
+	// DefaultFinalityWait is how long a payment that has stopped being payable
+	// waits to learn whether anything arrives, when the document sets none.
+	// Well past the worst lag measured between endpoints, which was 1509
+	// blocks: the one mistake this value can make is ending a payment that was
+	// paid, because a provider was behind.
+	DefaultFinalityWait = 2 * time.Hour
+	// DefaultFinalityRecheck is how long the worker waits between rounds when
+	// the document sets none. Longer than the poll, because a round asks two
+	// questions of every transfer it is deciding about, and a block does not
+	// become final any sooner for being asked about more often.
+	DefaultFinalityRecheck = time.Minute
+	// DefaultFinalityMisses is how many rounds in a row have to find nothing
+	// before a recorded transfer is given up on, when the document sets none.
+	// Ten rounds of the default recheck is ten minutes of a transfer being
+	// nowhere, which no endpoint that is merely behind stays for.
+	DefaultFinalityMisses = 10
+	// MinFinalityMisses is the fewest a document may set. One would give up on
+	// a transfer the first time an endpoint did not have it, and an endpoint
+	// can be reading a state it has not finished replacing.
+	MinFinalityMisses = 2
 )
 
 // Origin says where a resolved value came from.
@@ -164,11 +184,22 @@ type Endpoints struct {
 // server and has neither. Poll is how often the chain is asked for new blocks
 // and Width the widest span, in blocks, one request for logs is given.
 type Network struct {
-	Kind    string
-	ChainID uint64
-	RPC     Endpoints
-	Poll    time.Duration
-	Width   int
+	Kind     string
+	ChainID  uint64
+	RPC      Endpoints
+	Poll     time.Duration
+	Width    int
+	Finality Finality
+}
+
+// Finality is how a network's payments are settled and given up on: how long
+// one waits after its deadline, how long the worker waits between rounds, and
+// how many rounds in a row have to find nothing before a recorded transfer is
+// treated as gone.
+type Finality struct {
+	Wait    time.Duration
+	Recheck time.Duration
+	Misses  int
 }
 
 // Assets are the tokens the instance accepts payment in, keyed by the name a

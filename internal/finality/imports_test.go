@@ -18,6 +18,7 @@ import (
 var allowed = []string{
 	"context", "errors", "fmt", "log/slog", "time",
 	"github.com/sucopay/sucopay/internal/adapter/chain",
+	"github.com/sucopay/sucopay/internal/invisible",
 	"github.com/sucopay/sucopay/internal/payment",
 }
 

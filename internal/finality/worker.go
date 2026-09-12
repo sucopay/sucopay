@@ -8,8 +8,22 @@ import (
 	"time"
 
 	"github.com/sucopay/sucopay/internal/adapter/chain"
+	"github.com/sucopay/sucopay/internal/invisible"
 	"github.com/sucopay/sucopay/internal/payment"
 )
+
+// maxErrorBytes bounds what somebody else's failure can put in a line.
+const maxErrorBytes = 512
+
+// shown renders an error for a log line. What reaches one of these carries the
+// text a provider wrote, nothing bounds how long that is, and slog's JSON
+// handler, which is what a deployment writes with, passes a zero-width space
+// or an override of the reading order through as the bytes it was given.
+func shown(err error) string { return invisible.Shown(err.Error(), maxErrorBytes) }
+
+// leaseTimeout bounds putting the lease down on the way out. A release that
+// hangs holds the name it was meant to give up.
+const leaseTimeout = 10 * time.Second
 
 // Network is what deciding one network needs: the endpoints to ask, and how
 // long a recorded transfer has to go unfound before it is given up on.
@@ -19,16 +33,28 @@ type Network struct {
 	Name string
 	// Endpoints are what is asked. [Ask] holds them to one answer.
 	Endpoints []chain.Chain
-	// VanishAfter is the rounds in a row the endpoints have to say a transfer
-	// is not there before the row is marked as gone. Once is not enough: an
-	// endpoint can be reading a state it has not finished replacing, and what
-	// is taken back here is a payment's record of money arriving.
-	VanishAfter int
+	// Recheck is how long the worker waits between rounds. Each round asks
+	// the endpoints about every transfer that would settle a payment, so this
+	// is also how often a payment that has been paid learns that it has.
+	Recheck time.Duration
 	// Wait is how long a payment that has stopped being payable is given to
 	// learn whether anything arrives, counted from its deadline. A transfer
 	// signed before the deadline can still be carried after it, and how long
 	// after is the chain's to decide.
 	Wait time.Duration
+	// Misses is how many rounds in a row the endpoints have to find nothing
+	// before a recorded transfer is given up on. Once is not enough: an
+	// endpoint can be reading a state it has not finished replacing, and what
+	// is taken back here is a payment's record of money arriving.
+	Misses int
+}
+
+// Leases hand a name to one instance at a time. Asking for one this instance
+// already holds puts its deadline out again, which is how a round that is
+// still going keeps it.
+type Leases interface {
+	Acquire(ctx context.Context, name string) (bool, error)
+	Release(ctx context.Context, name string) error
 }
 
 // Worker decides which recorded transfers settled the payments they were
@@ -40,6 +66,7 @@ type Network struct {
 type Worker struct {
 	network Network
 	store   *payment.Postgres
+	leases  Leases
 	log     *slog.Logger
 	now     func() time.Time
 	// answers is what the endpoints said about each transfer, and for how many
@@ -68,8 +95,63 @@ type answer struct {
 
 // New opens a worker over a network. The clock is the caller's, so that a test
 // can say when a round ran.
-func New(n Network, store *payment.Postgres, log *slog.Logger, now func() time.Time) *Worker {
-	return &Worker{network: n, store: store, log: log, now: now, answers: map[recorded]answer{}}
+func New(n Network, store *payment.Postgres, leases Leases, log *slog.Logger,
+	now func() time.Time) *Worker {
+	return &Worker{network: n, store: store, leases: leases, log: log, now: now,
+		answers: map[recorded]answer{}}
+}
+
+// lease is the name this worker holds a network under. Not the network's own
+// name: whoever reads the chain holds that one, and the two run beside each
+// other.
+func (w *Worker) lease() string { return "finality:" + w.network.Name }
+
+// Run decides and sweeps until the context ends.
+//
+// The lease is asked for at the top of every round rather than renewed part
+// way through one. Asking for a lease this instance holds puts its deadline
+// out again, which is what keeps it while rounds keep coming.
+//
+// A round that outlasts the term is one another instance can start beside, and
+// nothing here stops it: what a round reads has no bound yet, so how long one
+// takes is how many transfers there are to ask about. What both of them write
+// is refused by the revision it was read at, and giving up on a transfer is
+// refused by the row already saying so, so the cost is asking the endpoints
+// twice rather than deciding twice.
+//
+// A round that does not finish is said and left. What it did not get to is
+// still there next time, and the alternative is an instance that stops working
+// on a network because a provider was down for a minute.
+func (w *Worker) Run(ctx context.Context) error {
+	defer func() {
+		// Put down on the way out so that another instance does not wait out
+		// the term for a network nobody is deciding for.
+		release, stop := context.WithTimeout(context.WithoutCancel(ctx), leaseTimeout)
+		defer stop()
+		if err := w.leases.Release(release, w.lease()); err != nil {
+			w.log.Warn("the lease was not put down", "network", w.network.Name, "error", shown(err))
+		}
+	}()
+
+	for {
+		held, err := w.leases.Acquire(ctx, w.lease())
+		switch {
+		case err != nil:
+			w.log.Warn("the lease could not be asked for", "network", w.network.Name, "error", shown(err))
+		case !held:
+			// Another instance is deciding for this network. Nothing to say:
+			// the deployment is working, and this instance is the spare.
+		default:
+			if err := w.round(ctx); err != nil {
+				w.log.Warn("the round did not finish", "network", w.network.Name, "error", shown(err))
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(w.network.Recheck):
+		}
+	}
 }
 
 // round asks the endpoints about every recorded transfer that would settle a
@@ -79,9 +161,9 @@ func New(n Network, store *payment.Postgres, log *slog.Logger, now func() time.T
 // transfer it was asked about is left where it was and so is everything after
 // it: a reader that cannot read decides nothing, and the round comes again.
 func (w *Worker) round(ctx context.Context) error {
-	if w.network.VanishAfter < 1 {
+	if w.network.Misses < 1 {
 		return fmt.Errorf("%s: a transfer is set to be given up on after %d rounds",
-			w.network.Name, w.network.VanishAfter)
+			w.network.Name, w.network.Misses)
 	}
 	if w.network.Wait < 1 {
 		return fmt.Errorf("%s: a payment is set to wait %s for what it is owed",
@@ -182,7 +264,7 @@ func (w *Worker) decided(ctx context.Context, c payment.Candidate, said answer) 
 	case Final:
 		return w.pay(ctx, c, said)
 	case Gone:
-		if said.rounds < w.network.VanishAfter {
+		if said.rounds < w.network.Misses {
 			return nil
 		}
 		if err := w.store.Vanish(ctx, payment.Network(w.network.Name),
@@ -221,7 +303,7 @@ func (w *Worker) pay(ctx context.Context, c payment.Candidate, said answer) erro
 		// a payment holds one arrival.
 		if said.rounds == 1 {
 			w.log.Warn("payment not settled by a final transfer", "network", w.network.Name,
-				"payment", c.Payment.ID(), "tx", c.Tx, "error", err)
+				"payment", c.Payment.ID(), "tx", c.Tx, "error", shown(err))
 		}
 		return nil
 	}
