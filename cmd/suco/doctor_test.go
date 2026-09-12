@@ -241,3 +241,26 @@ func TestRun_DoctorShowsAReferenceTheWayTheChainWritesIt(t *testing.T) {
 		t.Errorf("assets.jpyc.reference reads %q, want it in lower case", line)
 	}
 }
+
+// A report says how much is waiting for the endpoints to be asked about it.
+// The worker is in the process that serves, so what a report can say about the
+// settling is what the database holds for it.
+func TestRun_DoctorSaysWhatIsWaitingToSettle(t *testing.T) {
+	deployed(t)
+	endpoint := answering(t, map[string]any{
+		"eth_chainId":          "0x89",
+		"eth_getBlockByNumber": block("0x10"),
+		"eth_getStorageAt":     "0x" + strings.Repeat("00", 32),
+	})
+	document(t, fmt.Sprintf("%snetworks:\n  local:\n    kind: evm\n    chain_id: 137\n"+
+		"    rpc:\n      own: %s\n%s", namingADatabase(), endpoint, anAsset("local")))
+
+	stdout, _, err := runArgs(t, "doctor")
+
+	if err != nil {
+		t.Fatalf("err = %v, want none", err)
+	}
+	if networks := networksIn(t, stdout); !strings.Contains(networks, "0 waiting to settle") {
+		t.Errorf("the report does not say what is waiting to settle:\n%s", networks)
+	}
+}

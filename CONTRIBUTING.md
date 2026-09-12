@@ -114,13 +114,14 @@ A setting is named for the value it holds.
   `width`, `poll`, `managed`. Not a phrase with a verb in it. A name like `give_up_after` reads
   as a length of time and holds a count.
 - Words are joined with an underscore: `base_url`, `chain_id`, `key_id`.
-- A leaf carries no unit. The value carries it, and the table in `docs/configuration.ja.md` says
-  which: `poll` is `12s`, `width` is a number of blocks.
+- A leaf carries no unit. The value carries it, and the configuration reference says which:
+  `poll` is `12s`, `width` is a number of blocks.
 - Settings that belong to one decision are grouped under a noun, as `rpc.own` and `rpc.others`
   are. Group them when a reader would otherwise have to know that leaves sitting apart are about
   the same thing.
-- Document a new setting in `docs/configuration.ja.md` in the same change. Nothing checks that
-  the table and the code agree, so a setting left out of it is one nobody can find.
+- Document a new setting in `docs/configuration.md` and `docs/configuration.ja.md` in the same
+  change. Nothing checks that the tables and the code agree, so a setting left out of one of them
+  is one half the readers cannot find.
 
 ## Errors
 

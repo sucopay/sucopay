@@ -38,14 +38,27 @@ func reading() *words {
 // probing asks /readyz of a deployment over a reachable database.
 func probing(t *testing.T, chains api.Chains) *httptest.ResponseRecorder {
 	t.Helper()
+	return probingSettled(t, chains, nil)
+}
+
+// probingSettled is the same, of a deployment that also settles what it read.
+func probingSettled(t *testing.T, chains api.Chains, decides api.Settling) *httptest.ResponseRecorder {
+	t.Helper()
 	rec := httptest.NewRecorder()
 	api.Handler(quiet(), api.Dependencies{
 		Database:    func(context.Context) error { return nil },
 		Credentials: inForce{what: "read-write"},
 		Chains:      chains,
+		Settling:    decides,
 	}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	return rec
 }
+
+// settles is a deployment settling what it recorded, in the word apiece a
+// probe answers with.
+type settles map[string]string
+
+func (s settles) Words() map[string]string { return s }
 
 // answered is the body of a probe, with the two nested objects read out.
 type answered struct {
@@ -54,6 +67,7 @@ type answered struct {
 	Credentials string            `json:"credentials"`
 	Networks    map[string]string `json:"networks"`
 	Assets      map[string]string `json:"assets"`
+	Finality    map[string]string `json:"finality"`
 }
 
 func answer(t *testing.T, rec *httptest.ResponseRecorder) answered {
@@ -160,5 +174,49 @@ func TestReadyz_AnswersWithOneWordPerNetworkAndNothingOfTheEndpoint(t *testing.T
 		if strings.Contains(body, secret) {
 			t.Errorf("body = %s, which holds %q", body, secret)
 		}
+	}
+}
+
+// Reading a network and settling what was read are two things, and a probe
+// answers for both. One can be going while the other is not.
+func TestReadyz_SaysWhatEachNetworksSettlingHasComeTo(t *testing.T) {
+	t.Parallel()
+
+	rec := probingSettled(t, reading(), settles{"polygon": "deciding"})
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("/readyz = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if body := answer(t, rec); body.Finality["polygon"] != "deciding" {
+		t.Errorf("finality = %v, want polygon deciding", body.Finality)
+	}
+}
+
+// Said and not acted on. A deployment that settles nothing still sees payments
+// arrive and still records them, and the funds are at the merchant's address
+// either way; what is stuck is the judgement. Taking the API out of service
+// over it would stop the payments that are still being made.
+func TestReadyz_IsReadyWhileNothingIsBeingSettled(t *testing.T) {
+	t.Parallel()
+
+	rec := probingSettled(t, reading(), settles{"polygon": "stalled"})
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("/readyz = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if body := answer(t, rec); body.Finality["polygon"] != "stalled" {
+		t.Errorf("finality = %v, want polygon stalled", body.Finality)
+	}
+}
+
+// An instance settling nothing says nothing about it, rather than answering
+// with an empty object somebody has to work out the meaning of.
+func TestReadyz_SaysNothingOfSettlingWhereNothingSettles(t *testing.T) {
+	t.Parallel()
+
+	rec := probingSettled(t, reading(), nil)
+
+	if body := answer(t, rec); body.Finality != nil {
+		t.Errorf("finality = %v, want nothing", body.Finality)
 	}
 }

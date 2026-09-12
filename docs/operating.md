@@ -17,11 +17,13 @@ instance that is working, which does not bring the database back.
 
 ```json
 {"status":"ok","database":"reachable","credentials":"read-write",
- "networks":{"polygon":"observing"},"assets":{"jpyc":"unchanged"}}
+ "networks":{"polygon":"observing"},"assets":{"jpyc":"unchanged"},
+ "finality":{"polygon":"deciding"}}
 ```
 
-`networks` and `assets` are left out by an instance configured without a database, which reads no
-chain. `credentials` is left out where there is no store to ask.
+`networks`, `assets` and `finality` are left out by an instance configured without a database,
+which reads no chain and settles nothing. `credentials` is left out where there is no store to
+ask.
 
 One word for each network:
 
@@ -39,6 +41,20 @@ One word for each network:
 Sixty seconds is twice the term of the lease one instance holds on a network, which leaves whoever
 takes over time to finish a round of their own.
 
+Reading a chain and deciding what settled are two things, and `finality` answers for the second.
+One word for each network:
+
+| | |
+|---|---|
+| `deciding` | A round asked the endpoints and wrote what their answers settled |
+| `no-round` | No round has finished since this instance started. Nothing is wrong; nothing has happened yet |
+| `waiting` | Another instance holds the network. This one is the spare, and the deployment is settling it |
+| `unreachable` | The last round did not finish, which is almost always a provider that did not answer |
+| `stalled` | Rounds have stopped finishing. A round cannot end the loop it is in, so this is a worker stuck inside one |
+
+`deciding` stands for three rounds of `networks.<name>.finality.recheck`, so that one slow round
+does not take a working deployment out of its word.
+
 One word for each asset, `unchanged` or `changed`. It is `changed` once the code the chain runs
 for that asset is not the code it ran when the instance started, which is what an upgrade of a
 proxy does.
@@ -47,6 +63,11 @@ proxy does.
 every configured network is `unreachable`, `stalled`, `chain-mismatch` or `no-finalized`. The
 other four words leave it `ok`: the API is running, and the one who can act is the operator or
 the provider.
+
+No word under `finality` makes it `unavailable`. A deployment that settles nothing still sees
+payments arrive and still records them, and the funds are at the merchant's address either way.
+What is stuck is the judgement, and taking the API out of service over it would stop the payments
+that are still being made.
 
 ## suco doctor
 
@@ -60,13 +81,19 @@ suco.yaml
   ...
   networks.polygon.rpc.own   set                                     ${SUCO_POLYGON_RPC_URL}
 
-database: PostgreSQL 17.5, schema 0006_outbox
+database: PostgreSQL 17.5, schema 0007_worker_indexes
 credentials: read-write
 
 networks:
-  polygon  evm  chain 137, latest 78123, final 78100, position 78090, behind 10
+  polygon  evm  chain 137, latest 78123, final 78100, position 78090, behind 10, 2 waiting to settle
     jpyc        implementation 0xa1b2c3...
 ```
+
+`waiting to settle` is how many recorded transfers are waiting for the endpoints to be asked about
+them. The worker is in the process that serves, so a report counts what the database holds for it
+rather than asking a worker that is not there. A number that keeps growing between reports is a
+deployment whose settling has stopped getting anywhere, and `/readyz` says which of the words
+above it is in.
 
 `behind` counts from the final block rather than the latest, because the finalised range is what
 a round reads. A network that could not be read says so in place of the numbers, with the

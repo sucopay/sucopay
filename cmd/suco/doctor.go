@@ -59,9 +59,10 @@ func doctor(ctx context.Context, args []string, stdout io.Writer) error {
 	// Opened once. What the server says about itself, what credentials are in
 	// force, and how far each network has been read all come off it.
 	var (
-		db      *postgres.Pool
-		schema  string
-		cursors *observe.Cursors
+		db       *postgres.Pool
+		schema   string
+		cursors  *observe.Cursors
+		payments *payment.Postgres
 	)
 	database, reach := "none configured", error(nil)
 	var credentials credential.InForce
@@ -80,6 +81,7 @@ func doctor(ctx context.Context, args []string, stdout io.Writer) error {
 	// missing would say that twice and the endpoint not at all.
 	if db != nil && schema != "" {
 		cursors = observe.NewCursors(db.Conns())
+		payments = payment.NewPostgres(db.Conns())
 	}
 
 	var tail bytes.Buffer
@@ -90,7 +92,7 @@ func doctor(ctx context.Context, args []string, stdout io.Writer) error {
 	// The networks after the database, because how far each has been read is
 	// written there. A network that could not be read is said and not failed
 	// on: the instance still serves, and its probe is what says it is unfit.
-	describeNetworks(ctx, &tail, resolved.Config, cursors)
+	describeNetworks(ctx, &tail, resolved.Config, cursors, payments)
 	tail.WriteString("\n")
 	if _, err := stdout.Write(tail.Bytes()); err != nil {
 		return fmt.Errorf("writing the report: %w", err)
@@ -172,7 +174,8 @@ func describeVersion(version string) string {
 // cursors is nil where nothing could have written a cursor: no database, or
 // one nothing has applied the schema to. The chain is read either way, and
 // where the reading stands is left out.
-func describeNetworks(ctx context.Context, w io.Writer, cfg config.Config, cursors *observe.Cursors) {
+func describeNetworks(ctx context.Context, w io.Writer, cfg config.Config,
+	cursors *observe.Cursors, payments *payment.Postgres) {
 	networks, err := openChains(cfg)
 	if err != nil {
 		// A kind nothing can open, or an endpoint the adapter refuses. The
@@ -192,8 +195,8 @@ func describeNetworks(ctx context.Context, w io.Writer, cfg config.Config, curso
 		// is a call to the provider, and asking again for the lines below
 		// would double what a report costs whoever is paying for the endpoint.
 		report, err := observe.Probe(ctx, n, nil)
-		fmt.Fprintf(tw, "  %s\t%s\t%s\n", invisible.Quote(n.Name), cfg.Networks[n.Name].Kind,
-			standing(ctx, n, report, err, cursors))
+		fmt.Fprintf(tw, "  %s\t%s\t%s%s\n", invisible.Quote(n.Name), cfg.Networks[n.Name].Kind,
+			standing(ctx, n, report, err, cursors), undecided(ctx, payments, n.Name))
 		for _, name := range slices.Sorted(maps.Keys(n.Assets)) {
 			fmt.Fprintf(tw, "    %s\t\t%s\n", invisible.Quote(name), behind(report, err, name))
 		}
@@ -236,6 +239,22 @@ func standing(ctx context.Context, n observe.Network, report observe.Report, err
 		lag = report.Head.Final.Height - at.Height
 	}
 	return fmt.Sprintf("%s, position %d, behind %d", where, at.Height, lag)
+}
+
+// undecided is how many of a network's recorded transfers are waiting for the
+// endpoints to be asked about them, which is what a report can say about the
+// settling without a worker to ask. Nothing where there is no database to
+// count in, and nothing where the count fails: the network's own line has
+// already said whatever is wrong with reading it.
+func undecided(ctx context.Context, payments *payment.Postgres, network string) string {
+	if payments == nil {
+		return ""
+	}
+	waiting, err := payments.Undecided(ctx, payment.Network(network))
+	if err != nil {
+		return ", and what is waiting to settle could not be counted"
+	}
+	return fmt.Sprintf(", %d waiting to settle", waiting)
 }
 
 // behind is what a report says of one asset: the code the chain runs for it,

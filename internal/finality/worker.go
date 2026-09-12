@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/sucopay/sucopay/internal/adapter/chain"
@@ -20,6 +21,69 @@ const maxErrorBytes = 512
 // handler, which is what a deployment writes with, passes a zero-width space
 // or an override of the reading order through as the bytes it was given.
 func shown(err error) string { return invisible.Shown(err.Error(), maxErrorBytes) }
+
+// The words one round leaves behind for whoever asks whether this deployment
+// is settling what it recorded. One network has one of them at a time.
+const (
+	// deciding is a round that asked the endpoints and wrote what their
+	// answers settled. It stands only while rounds keep finishing: one that
+	// has not for [staleAfter] is stalled.
+	deciding = "deciding"
+	// noRound is a network no round has finished on since this instance
+	// started. It says nothing is wrong, only that nothing has happened yet.
+	noRound = "no-round"
+	// waiting is another instance holding the lease on this network. This one
+	// is the spare, and what it would have to say about the network is what
+	// the instance that is working on it knows.
+	waiting = "waiting"
+	// unreachable is a round that did not finish, which is almost always a
+	// provider that did not answer: everything else a round does is a
+	// database this probe reports on separately.
+	unreachable = "unreachable"
+	// stalled is a network whose rounds have stopped finishing, which is a
+	// worker that stopped rather than a chain that is quiet. A round cannot
+	// end the loop it is in, so a worker that stops is one stuck inside a
+	// round, and the word for that is not the one the last round left.
+	stalled = "stalled"
+)
+
+// staleAfter is how many rounds may be missed before what the last one said
+// stops standing. Three, so that one slow round does not take a working
+// deployment out of its word.
+const staleAfter = 3
+
+// Word is what this network's settling has come to, for whoever is answering
+// somebody else's question about this deployment.
+func (w *Worker) Word() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.word == deciding && w.now().Sub(w.finished) > staleAfter*w.network.Recheck {
+		return stalled
+	}
+	return w.word
+}
+
+// says what the network has come to.
+func (w *Worker) says(word string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.word = word
+	if word == deciding {
+		w.finished = w.now()
+	}
+}
+
+// Workers are the workers of one deployment, one to a network.
+type Workers []*Worker
+
+// Words are what every network of the deployment has come to.
+func (s Workers) Words() map[string]string {
+	words := make(map[string]string, len(s))
+	for _, w := range s {
+		words[w.network.Name] = w.Word()
+	}
+	return words
+}
 
 // perRound bounds what one round reads and therefore how long it takes. A
 // round asks the endpoints about every candidate it reads and writes a row for
@@ -100,6 +164,12 @@ type Worker struct {
 	answers map[recorded]answer
 	pass    map[recorded]answer
 	from    payment.Place
+
+	// What a round leaves behind is read by whoever is answering somebody
+	// else's question about this deployment, which is another goroutine.
+	mu       sync.Mutex
+	word     string
+	finished time.Time
 }
 
 // recorded names one transfer the way the row of one is named.
@@ -120,7 +190,10 @@ type answer struct {
 func New(n Network, store *payment.Postgres, leases Leases, log *slog.Logger,
 	now func() time.Time) *Worker {
 	return &Worker{network: n, store: store, leases: leases, log: log, now: now,
-		answers: map[recorded]answer{}, pass: map[recorded]answer{}, perRound: perRound}
+		answers: map[recorded]answer{}, pass: map[recorded]answer{}, perRound: perRound,
+		// Nothing has been decided for this network yet, and a network
+		// nothing has been decided for is not one to say anything else about.
+		word: noRound}
 }
 
 // lease is the name this worker holds a network under. Not the network's own
@@ -161,11 +234,13 @@ func (w *Worker) Run(ctx context.Context) error {
 		case err != nil:
 			w.log.Warn("the lease could not be asked for", "network", w.network.Name, "error", shown(err))
 		case !held:
-			// Another instance is deciding for this network. Nothing to say:
-			// the deployment is working, and this instance is the spare.
+			w.says(waiting)
 		default:
 			if err := w.round(ctx); err != nil {
+				w.says(unreachable)
 				w.log.Warn("the round did not finish", "network", w.network.Name, "error", shown(err))
+			} else {
+				w.says(deciding)
 			}
 		}
 		select {

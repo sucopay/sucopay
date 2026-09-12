@@ -1013,3 +1013,67 @@ func TestRound_CountsTheTimesItAskedWhenARoundCannotReadThemAll(t *testing.T) {
 		}
 	}
 }
+
+// What a probe is answered with about this network, and what makes it change.
+// A deployment that is not settling what it recorded is one somebody has to
+// act on, and the word is how they find out.
+func TestWord_SaysWhatTheNetworkHasComeTo(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+
+	if got := d.worker.Word(); got != noRound {
+		t.Errorf("before any round the word is %q, want %q", got, noRound)
+	}
+
+	d.round(t)
+	d.worker.says(deciding)
+	if got := d.worker.Word(); got != deciding {
+		t.Errorf("after a round the word is %q, want %q", got, deciding)
+	}
+
+	d.at = d.at.Add(staleAfter*d.worker.network.Recheck + time.Second)
+	if got := d.worker.Word(); got != stalled {
+		t.Errorf("after the rounds it may miss the word is %q, want %q", got, stalled)
+	}
+}
+
+// One word for every network this instance settles, which is what the probe
+// hands on.
+func TestWords_NameEveryNetworkTheDeploymentSettles(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+
+	words := Workers{d.worker}.Words()
+
+	if len(words) != 1 || words[string(local)] != noRound {
+		t.Errorf("Words = %v, want %s under %s", words, noRound, local)
+	}
+}
+
+// The spare says so. A deployment where another instance holds the network is
+// a deployment that is settling it.
+func TestRun_SaysAnotherInstanceHoldsTheNetwork(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+	d.chain.Finalize(1)
+	d.leases.holds = false
+
+	d.running(t, func() bool { return d.worker.Word() == waiting })
+
+	if got := d.worker.Word(); got != waiting {
+		t.Errorf("the word is %q, want %q", got, waiting)
+	}
+}
+
+// A round that did not finish is almost always a provider that did not answer.
+func TestRun_SaysARoundThatCouldNotFinish(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+	d.worker.network.Misses = 0
+
+	d.running(t, func() bool { return d.worker.Word() == unreachable })
+
+	if got := d.worker.Word(); got != unreachable {
+		t.Errorf("the word is %q, want %q", got, unreachable)
+	}
+}

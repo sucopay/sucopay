@@ -55,7 +55,8 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		payments    api.Payments
 		chains      api.Chains
 		observers   observe.Observers
-		workers     []*finality.Worker
+		workers     finality.Workers
+		decides     api.Settling
 	)
 	if cfg.Database.URL != "" {
 		db, err := postgres.Open(ctx, cfg.Database.URL)
@@ -114,10 +115,12 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		for _, n := range settling {
 			workers = append(workers, finality.New(n, store, leases, log, time.Now))
 		}
+		decides = workers
 	}
 
 	addr := net.JoinHostPort(cfg.Listen.Host, strconv.Itoa(cfg.Listen.Port))
-	deps := api.Dependencies{Database: ready, Credentials: credentials, Payments: payments, Chains: chains}
+	deps := api.Dependencies{Database: ready, Credentials: credentials, Payments: payments,
+		Chains: chains, Settling: decides}
 	server, err := api.Listen(addr, api.Handler(log, deps), log)
 	if err != nil {
 		return err

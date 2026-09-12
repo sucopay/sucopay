@@ -77,9 +77,12 @@ asset refers to.
 | `networks.<name>.kind` | `evm` | `evm` or `simulated` |
 | `networks.<name>.chain_id` | none | What `eth_chainId` has to answer. 1 or more. Required by `evm`, refused by `simulated` |
 | `networks.<name>.rpc.own` | none | A node the operator runs themselves. A round reads it when it is set. Secret |
-| `networks.<name>.rpc.others` | none | A list of third-party endpoints. A round reads the first when there is no `own`; nothing reads the rest yet. Secret |
+| `networks.<name>.rpc.others` | none | A list of third-party endpoints. With no `own`, a round reads the first and the settling asks all of them. Secret |
 | `networks.<name>.poll` | `12s` | How long between rounds. At least `1s` |
 | `networks.<name>.width` | `1000` | The most blocks one request for logs asks about. 10 to 10000 |
+| `networks.<name>.finality.wait` | `2h` | How long a payment past its deadline waits for what it is owed. At least `1m` |
+| `networks.<name>.finality.recheck` | `1m` | How long between asking the endpoints again about what was recorded. At least `1s` |
+| `networks.<name>.finality.misses` | `10` | How many times in a row the endpoints have to find nothing before a transfer is treated as gone. At least `2` |
 
 `simulated` is a chain inside the process, for trying the rest of a deployment out. It makes one
 block and nothing arrives on it.
@@ -94,6 +97,27 @@ of its own can set it down; 3 seconds is four times that.
 
 `width` is capped by the provider, each at its own value. A provider that refuses a span makes the
 next round ask for half as much, down to 10 blocks, and 100 rounds later it doubles back up.
+
+The three under `finality` decide when a transfer on the chain counts as having paid.
+
+`wait` is how long a payment past its deadline waits for what it is owed. A transfer signed just
+before the deadline reaches the chain after it. The default of two hours is well past the worst
+lag measured between endpoints, 1509 blocks; setting it short ends payments that were paid.
+
+`recheck` is how long between rounds. It is longer than `poll` because a round asks two questions
+of every transfer it is deciding about.
+
+`misses` is a count, not a length of time. A transfer the endpoints are asked about and do not
+find, that many times in a row, is treated as gone. It cannot be 1: not finding a transfer once
+may be that endpoint reading a state it has not finished replacing.
+
+A network with an `own` node is asked only there. A node the operator runs is the one they
+already trust. A network without one asks all of the `others`, and counts a transfer as having
+paid only when their answers agree.
+
+Reading blocks and deciding what settled are two different things. A round reads one endpoint: a
+cursor is a place in a chain as one provider tells it, so changing providers part way would leave
+the position meaning something else.
 
 A network no asset refers to is refused. Nothing would read it.
 

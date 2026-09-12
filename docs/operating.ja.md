@@ -17,11 +17,12 @@ English: [operating.md](operating.md)
 
 ```json
 {"status":"ok","database":"reachable","credentials":"read-write",
- "networks":{"polygon":"observing"},"assets":{"jpyc":"unchanged"}}
+ "networks":{"polygon":"observing"},"assets":{"jpyc":"unchanged"},
+ "finality":{"polygon":"deciding"}}
 ```
 
-データベースを設定していないインスタンスはチェーンを読まないので、`networks` と `assets` は
-出ません。資格情報の store が無ければ `credentials` も出ません。
+データベースを設定していないインスタンスはチェーンを読まず、確定も判定しないので、`networks`
+と `assets` と `finality` は出ません。資格情報の store が無ければ `credentials` も出ません。
 
 network ごとに 1 語です。
 
@@ -39,6 +40,20 @@ network ごとに 1 語です。
 60 秒は、1 つのインスタンスが network に対して持つ lease の期限の 2 倍です。引き継いだ側が
 最初の 1 周を終える時間が入っています。
 
+チェーンを読むことと、確定を判定することは別です。後者を答えるのが `finality` で、これも
+network ごとに 1 語です。
+
+| | |
+|---|---|
+| `deciding` | 周がエンドポイントに問い直し、その答えが決めたことを書きました |
+| `no-round` | このインスタンスが起きてから周が 1 度も終わっていません。異常ではなく、まだ何も起きていない状態です |
+| `waiting` | 別のインスタンスがその network を持っています。こちらは控えで、配備としては判定が動いています |
+| `unreachable` | 直前の周が終わりませんでした。ほとんどの場合、答えないプロバイダです |
+| `stalled` | 周が終わらなくなりました。周は自分の入っているループを終われないので、これは周の中で止まった worker です |
+
+`deciding` が立っているのは `networks.<name>.finality.recheck` の 3 周ぶんです。1 周遅れただけの
+配備が言葉を失わない長さにしてあります。
+
 asset ごとにも 1 語で、`unchanged` か `changed` です。そのチェーンが asset に対して動かすコードが、
 インスタンスの起動時のものと違えば `changed` になります。proxy の差し替えがこれにあたります。
 
@@ -46,6 +61,10 @@ asset ごとにも 1 語で、`unchanged` か `changed` です。そのチェー
 `stalled`、`chain-mismatch`、`no-finalized` のどれかであるときに `unavailable` になり、応答は
 `503` です。残りの 4 語では `ok` のままです。API は動いていて、動けるのは運用者かプロバイダ
 だからです。
+
+`finality` の語は `unavailable` にしません。判定が動いていない配備でも、送金は見つかり、記録され
+ます。資金はどちらにしても加盟店のアドレスにあります。止まっているのは判断のほうで、そこで API
+を止めると、まだ行われている支払いまで止まります。
 
 ## suco doctor
 
@@ -59,13 +78,18 @@ suco.yaml
   ...
   networks.polygon.rpc.own   set                                     ${SUCO_POLYGON_RPC_URL}
 
-database: PostgreSQL 17.5, schema 0006_outbox
+database: PostgreSQL 17.5, schema 0007_worker_indexes
 credentials: read-write
 
 networks:
-  polygon  evm  chain 137, latest 78123, final 78100, position 78090, behind 10
+  polygon  evm  chain 137, latest 78123, final 78100, position 78090, behind 10, 2 waiting to settle
     jpyc        implementation 0xa1b2c3...
 ```
+
+`waiting to settle` は、エンドポイントへの問い直しを待っている記録済みの送金の数です。worker は
+serve のプロセスの中にいるので、報告は worker に訊く代わりにデータベースが持っているものを
+数えます。報告のたびに増えていく配備は、確定の判定が進まなくなった配備です。どの語なのかは
+`/readyz` が言います。
 
 `behind` は latest ではなく確定ブロックからの差です。周が読むのは確定済みの範囲だからです。
 読めなかった network は、数字の代わりにその旨を出します。プロバイダ自身の code と文言が入り、

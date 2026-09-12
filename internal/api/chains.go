@@ -56,3 +56,31 @@ func words(chains Chains) (networks, assets map[string]string) {
 	}
 	return chains.Words()
 }
+
+// Settling is what each network's settling has come to, in the one word apiece
+// a probe answers with.
+//
+// Separate from [Chains] because they answer different questions about one
+// network: whether a transfer would be seen arriving on it, and whether one
+// that was seen would be settled. A deployment can be doing either without the
+// other.
+//
+// None of these words takes an instance out of service. A deployment that
+// settles nothing still sees payments arrive and still records them, and the
+// funds are at the merchant's address either way. What is stuck is the
+// judgement, and taking the API out of service over it would stop the payments
+// that are still being made.
+//
+// Nil in an instance with no database, which settles nothing.
+type Settling interface {
+	Words() map[string]string
+}
+
+// settling is what the deployment's networks have come to, and nothing where
+// nothing is settled.
+func settling(s Settling) map[string]string {
+	if s == nil {
+		return nil
+	}
+	return s.Words()
+}

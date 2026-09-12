@@ -30,6 +30,7 @@ type Dependencies struct {
 	Credentials Credentials
 	Payments    Payments
 	Chains      Chains
+	Settling    Settling
 }
 
 // Handler returns the routes an instance serves, each behind what it asks of
@@ -62,6 +63,7 @@ type readyJSON struct {
 	Credentials string            `json:"credentials,omitempty"`
 	Networks    map[string]string `json:"networks,omitempty"`
 	Assets      map[string]string `json:"assets,omitempty"`
+	Finality    map[string]string `json:"finality,omitempty"`
 }
 
 // ready answers whether the instance can serve, which is what a load balancer
@@ -74,7 +76,8 @@ type readyJSON struct {
 // were it not ready, there would be no reaching it to make one. Nor does
 // the word prove that authentication works: a deployment whose key was
 // swapped holds credentials that write and refuses every request.
-func ready(log *slog.Logger, database Ready, credentials Credentials, chains Chains) http.HandlerFunc {
+func ready(log *slog.Logger, database Ready, credentials Credentials, chains Chains,
+	decides Settling) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if database == nil {
 			writeJSON(w, http.StatusOK, readyJSON{Status: "ok", Database: "none configured"})
@@ -96,6 +99,8 @@ func ready(log *slog.Logger, database Ready, credentials Credentials, chains Cha
 			return
 		}
 		body.Networks, body.Assets = words(chains)
+		// Said and not acted on, for the reason [Settling] gives.
+		body.Finality = settling(decides)
 		if !serving(body.Networks) {
 			// One word for each network and no reason for any of them. A
 			// network is named in the document and read through an endpoint
