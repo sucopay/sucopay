@@ -24,9 +24,9 @@ suco Pay is software you run on your own infrastructure. It holds no keys and ch
 A payment goes from the customer's wallet to yours with nothing in between; what suco Pay does is
 watch the chain and tell you it arrived.
 
-> **Pre-alpha.** No payment reaches `succeeded` yet: a transfer is seen, matched and recorded, and
-> deciding it has settled is not built. [ROADMAP.md](ROADMAP.md) says what works today and what
-> does not.
+> **Pre-alpha.** A transfer is seen, matched, recorded, and decided, and a payment reaches
+> `succeeded`. That path has been run against a chain inside the process and not yet against a
+> live one. [ROADMAP.md](ROADMAP.md) says what works today and what does not.
 
 ## Getting started
 

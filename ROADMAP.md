@@ -18,12 +18,12 @@ find out by running it.
 
 ## What it does not do yet
 
-Nothing marks a payment `succeeded`. A transfer is seen, matched and recorded; deciding that it
-has settled is the confirmation policy below, and that is not built. A payment stays
-`awaiting_payment` until it is.
+A payment reaches `succeeded`. The confirmation policy is set per network, and a payment past
+its deadline waits before it becomes `expired`. That path has been run against a chain inside
+the process and not yet against a live one.
 
 - [ ] Payments: lifecycle, expiry, under/overpayment, idempotency
-- [ ] Finality: confirmation policy per network
+- [x] Finality: confirmation policy per network
 - [ ] Checkout: hosted and embeddable
 - [ ] Webhooks: signed, retried, with delivery history
 - [ ] Refunds: records and transfer intents
