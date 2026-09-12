@@ -91,25 +91,57 @@ func TestJudge_ReadsTheRulesInOrderAndSaysWhatFirstFailed(t *testing.T) {
 	}
 }
 
-func TestJudge_CallsATransferLateWhenThePaymentIsNotOpenForPayment(t *testing.T) {
+// A payment that has finished waiting takes nothing more, and neither does one
+// that was paid. A transfer that arrives for one of those is recorded and left
+// against it, and what to do about the money is the merchant's to decide.
+func TestJudge_CallsATransferLateWhenNothingCanArriveForThePaymentAnyMore(t *testing.T) {
 	t.Parallel()
-	p := awaiting(t, time.Now().Add(time.Hour))
-	a, err := payment.NewAttempt(p, time.Now())
-	if err != nil {
-		t.Fatal(err)
+	for what, end := range map[string]func(*payment.Payment) error{
+		"one that finished waiting": func(p *payment.Payment) error {
+			if err := p.AwaitFinality(p.ExpiresAt()); err != nil {
+				return err
+			}
+			return p.Expire()
+		},
+		"one that was paid": func(p *payment.Payment) error {
+			if err := p.Receive(p.Amount()); err != nil {
+				return err
+			}
+			return p.Succeed()
+		},
+		"one that failed": func(p *payment.Payment) error { return p.Fail() },
+	} {
+		t.Run(what, func(t *testing.T) {
+			t.Parallel()
+			transfer, a, p := judged(t)
+			if err := end(p); err != nil {
+				t.Fatal(err)
+			}
+
+			reason, evidence := payment.Judge(transfer, a, p)
+
+			if !evidence || reason != payment.Late {
+				t.Errorf("Judge = %q, %v; want %q on a %s payment", reason, evidence, payment.Late, p.Status())
+			}
+		})
 	}
-	transfer := payment.Transfer{
-		Scheme: a.Scheme(), Asset: p.Asset().Reference(), Key: a.Key(), Authorizer: theSigner,
-		To: string(p.Destination()), Value: p.Amount().Amount().String(), Tx: "tx1",
-	}
-	if err := p.Fail(); err != nil {
+}
+
+// The key an attempt holds dies at the payment's deadline, so a transfer the
+// chain carried at all was authorised while the payment was open. A payment
+// that stopped being payable is waiting for that transfer, and a round that
+// reads it while the payment waits reads the payment's own.
+func TestJudge_MatchesATransferAgainstAPaymentWaitingForFinality(t *testing.T) {
+	t.Parallel()
+	transfer, a, p := judged(t)
+	if err := p.AwaitFinality(p.ExpiresAt()); err != nil {
 		t.Fatal(err)
 	}
 
 	reason, evidence := payment.Judge(transfer, a, p)
 
-	if !evidence || reason != payment.Late {
-		t.Errorf("Judge = %q, %v; want %q on a %s payment", reason, evidence, payment.Late, p.Status())
+	if !evidence || reason != payment.Matched {
+		t.Errorf("Judge = %q, %v; want %q on a %s payment", reason, evidence, payment.Matched, p.Status())
 	}
 }
 

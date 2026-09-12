@@ -480,6 +480,45 @@ func TestTick_WritesWhatItSawAheadOfFinalityWithoutCallingItFinal(t *testing.T) 
 	}
 }
 
+// A payment whose deadline has passed is waiting for the transfer that was in
+// flight when it passed, and the rounds keep reading the range ahead of
+// finality until the chain settles the block it is in. What those rounds read
+// is the payment's own transfer: writing it down as a late arrival would take
+// it out of what can settle the payment, and a payment somebody paid in time
+// would end expired with the money already at the merchant's address.
+func TestTick_LeavesATransferMatchedAgainstAPaymentWaitingForFinality(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	w.tick(t)
+	w.chain.Send(w.sending(w.attempt.Key()))
+	w.chain.Mine()
+	w.tick(t)
+
+	p, at, err := w.store.Find(t.Context(), held, w.payment.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.AwaitFinality(p.ExpiresAt()); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.store.Save(t.Context(), held, p, at, payment.Event{}); err != nil {
+		t.Fatal(err)
+	}
+
+	w.tick(t)
+
+	rows := w.rows(t)
+	if len(rows) != 1 {
+		t.Fatalf("the rounds wrote %d observations, want 1", len(rows))
+	}
+	if rows[0].Reason != payment.Matched.String() {
+		t.Errorf("the observation says %q, want it left matched", rows[0].Reason)
+	}
+	if got := w.status(t); got != payment.Confirming {
+		t.Errorf("the attempt is %s, want it left confirming", got)
+	}
+}
+
 // The read ahead of finality is the one that finds a payment early, and the
 // one a provider is likeliest to refuse: a node behind the one that answered
 // for the newest block has not got there yet. The round is a success without

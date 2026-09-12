@@ -54,8 +54,8 @@ const (
 	WrongTo Reason = "wrong_to"
 	// Short is a transfer of less than the payment asks for.
 	Short Reason = "short"
-	// Late is a transfer that passed every rule against a payment that was
-	// not open for payment.
+	// Late is a transfer that passed every rule against a payment nothing can
+	// arrive for any more.
 	Late Reason = "late"
 	// Vanished is a transfer that was recorded and is no longer on the chain
 	// where it was seen.
@@ -70,8 +70,14 @@ func (r Reason) String() string { return string(r) }
 //
 // The rules are read in order, and the first one a transfer fails is what it
 // is worth: another asset's contract, another destination, too little. A
-// transfer that passes them all is matched, unless the payment was not open
-// for payment when it arrived, which is late.
+// transfer that passes them all is matched, unless nothing can arrive for the
+// payment any more, which is late.
+//
+// A payment waiting for finality still takes one. The key an attempt holds
+// dies at the payment's deadline, so a transfer the chain carried at all was
+// authorised while the payment was open, and the wait is for that transfer to
+// settle. What is late is a transfer against a payment that has finished
+// waiting, or one that was already paid.
 //
 // The false is a transfer of a key this attempt does not hold. Whoever reads a
 // chain pairs a transfer with the attempt whose key it consumed, and a pair
@@ -104,7 +110,7 @@ func Judge(t Transfer, a *Attempt, p *Payment) (Reason, bool) {
 	if short, err := paid.Cmp(p.Amount()); err != nil || short < 0 {
 		return Short, true
 	}
-	if p.Status() != AwaitingPayment {
+	if !p.CanReceive() {
 		return Late, true
 	}
 	return Matched, true
