@@ -24,10 +24,12 @@ payment は `succeeded` に届きます。確定の判定は network ごとに�
 - [ ] Payment: ライフサイクル、期限、過払いと不足、冪等性
 - [x] Finality: ネットワークごとに設定する確定判定
 - [ ] 支払い画面: ホスト型と埋め込み型
+- [ ] フロントエンド SDK: 加盟店のページが支払い画面を埋め込むためのもの
 - [ ] Webhook: 署名、リトライ、送信履歴
 - [ ] Refund: 記録と送金指示の作成
 - [ ] 照合: 内部状態とチェーンの定期突合
 - [ ] Console: Payment と Transaction の照会、返金、Webhook 送信履歴
+- [ ] バックエンド SDK: PHP と Java と Go、API の記述からの生成
 - [x] CLI: `init` `serve` `doctor` `credential` `asset` `payment` `network`
 
 ## 決まっていること、決まっていないこと

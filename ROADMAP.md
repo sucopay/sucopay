@@ -25,10 +25,12 @@ the process and not yet against a live one.
 - [ ] Payments: lifecycle, expiry, under/overpayment, idempotency
 - [x] Finality: confirmation policy per network
 - [ ] Checkout: hosted and embeddable
+- [ ] Frontend SDK: what a merchant's page embeds checkout with
 - [ ] Webhooks: signed, retried, with delivery history
 - [ ] Refunds: records and transfer intents
 - [ ] Reconciliation: periodic diff between internal state and the chain
 - [ ] Console: payments, transactions, refunds, webhook deliveries
+- [ ] Backend SDKs: PHP, Java and Go, from a description of the API
 - [x] CLI: `init` `serve` `doctor` `credential` `asset` `payment` `network`
 
 ## What is settled and what is not
