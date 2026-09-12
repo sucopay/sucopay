@@ -113,7 +113,10 @@ may be that endpoint reading a state it has not finished replacing.
 
 A network with an `own` node is asked only there. A node the operator runs is the one they
 already trust. A network without one asks all of the `others`, and counts a transfer as having
-paid only when their answers agree.
+paid only when their answers agree. Every one of them is asked, so a longer list is more answers
+that have to agree: one that does not answer leaves the network `unreachable` until it does, and
+answers that differ leave the payment where it is. The transfer stays recorded either way, and
+the funds are at the merchant's address.
 
 Reading blocks and deciding what settled are two different things. A round reads one endpoint: a
 cursor is a place in a chain as one provider tells it, so changing providers part way would leave
