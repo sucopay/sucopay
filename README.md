@@ -74,7 +74,8 @@ Then, with a database configured:
 ```bash
 ./suco credential new --read-write          # writes a token file for the API
 ./suco asset accept jpyc 0xYourWalletHere   # where a payment in jpyc is paid to
-./suco payment await <id>                   # prints what a payer signs, until Checkout exists
+./suco payment await <id>                   # prints what a payer signs, until the payment page
+                                            # (suco Flow) exists
 ```
 
 Your server opens payments and reads them back over the API. `suco serve` reads the chain round

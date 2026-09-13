@@ -138,7 +138,7 @@ suco payment await <id>
 ```
 
 Makes one payment payable and prints the seven values a payer signs to pay it. It stands in for
-Checkout until there is a Checkout.
+suco Flow, the payment page, until there is one.
 
 ```
 contract 0xe7c3d8c9a439fede00d2600032d5db0be71c3c29
