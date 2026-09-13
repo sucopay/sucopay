@@ -73,8 +73,7 @@ assets:
 ```bash
 ./suco credential new --read-write          # API の資格情報のファイルを書き出します
 ./suco asset accept jpyc 0xYourWalletHere   # jpyc の payment を払う先
-./suco payment await <id>                   # 支払いのページ（suco Flow）ができるまでの、
-                                            # 署名する値の印字
+./suco payment await <id>                   # suco Checkout ができるまでの、署名する値の印字
 ```
 
 加盟店のサーバは API で payment を作り、読み戻します。`suco serve` はチェーンを周ごとに読み、

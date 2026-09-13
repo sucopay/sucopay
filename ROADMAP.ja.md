@@ -23,8 +23,8 @@ payment は `succeeded` に届きます。確定の判定は network ごとに�
 
 - [ ] Payment: ライフサイクル、期限、過払いと不足、冪等性
 - [x] Finality: ネットワークごとに設定する確定判定
-- [ ] suco Flow: 配備が返す支払いのページ
-- [ ] suco Component: 加盟店のページが埋め込む部品
+- [ ] suco Checkout: 配備が返す支払いのページ。加盟店は支払者をここへ送ります
+- [ ] suco Component: 同じ支払いを、加盟店のページの中に埋め込む部品
 - [ ] suco Link: 特定の商品を買う固定の URL
 - [ ] フロントエンド SDK: 加盟店のページが suco Component を埋め込むためのもの
 - [ ] Webhook: 署名、リトライ、送信履歴

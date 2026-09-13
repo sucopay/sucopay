@@ -24,8 +24,8 @@ chain inside the process, and one step at a time against Polygon on a payment so
 
 - [ ] Payments: lifecycle, expiry, under/overpayment, idempotency
 - [x] Finality: confirmation policy per network
-- [ ] suco Flow: the payment page a deployment serves
-- [ ] suco Component: what a merchant's own page embeds
+- [ ] suco Checkout: a payment page a deployment serves, that a merchant sends payers to
+- [ ] suco Component: the same payment, embedded in a merchant's own page
 - [ ] suco Link: a fixed URL that buys one specific item
 - [ ] Frontend SDK: what a merchant's page embeds suco Component with
 - [ ] Webhooks: signed, retried, with delivery history
