@@ -47,7 +47,7 @@ var commands = []command{
 		{name: "revoke", about: "take one credential out of force", run: credentialRevoke},
 	}},
 	{name: "payment", sub: []command{
-		{name: "await", about: "make a payment payable and print what a payer signs, standing in for Checkout", run: paymentAwait},
+		{name: "await", about: "make a payment payable and print what a payer signs, standing in for suco Checkout", run: paymentAwait},
 	}},
 	{name: "network", sub: []command{
 		{name: "cursor", about: "put a network's cursor at a height", run: networkCursor},

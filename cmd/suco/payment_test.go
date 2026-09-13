@@ -167,7 +167,7 @@ func TestRun_HelpSaysWhatPaymentAwaitIsFor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stdout, "Checkout") {
+	if !strings.Contains(stdout, "suco Checkout") {
 		t.Errorf("the usage text does not say what payment await stands in for:\n%s", stdout)
 	}
 }
