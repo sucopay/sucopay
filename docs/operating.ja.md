@@ -97,6 +97,9 @@ serve のプロセスの中にいるので、報告は worker に訊く代わり
 数えます。報告のたびに増えていく配備は、確定の判定が進まなくなった配備です。どの語なのかは
 `/readyz` が言います。
 
+`doctor` はテストネットの chain id の後に `chain 80002 (Polygon Amoy, a testnet)` の形で名前を
+添えます。本番の前の段から写した文書をここで捕まえるためです。
+
 `others` だけで届く network は、その何本が答えるかを `3 of 4 others answer` の形で言います。答える
 本数が一致に要る数とちょうど同じなら `no spare` が、足りなければ `too few to settle` が続きます。
 エンドポイントが食い違っている送金は、待っている数の後に `2 waiting to settle, 1 disagreed about`

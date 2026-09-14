@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -227,6 +228,52 @@ func TestRun_DoctorCountsWhatTheEndpointsDisagreeAbout(t *testing.T) {
 	}
 	if networks := networksIn(t, stdout); !strings.Contains(networks, "1 waiting to settle, 1 disagreed about") {
 		t.Errorf("the report does not count what the endpoints disagree about:\n%s", networks)
+	}
+}
+
+// A document copied from the step before production, with the network's name
+// changed and nothing else, points at a testnet. The report says so, and says
+// nothing of the kind for the chain money is on.
+func TestRun_DoctorNamesATestnet(t *testing.T) {
+	cases := map[string]struct {
+		id   string
+		want string
+	}{
+		"Polygon": {"137", "chain 137, latest"},
+		// By the number and not by the table, so that a wrong number in
+		// the table is a failure here and not a report agreeing with itself.
+		"Polygon Amoy by its number": {"80002", "chain 80002 (Polygon Amoy, a testnet)"},
+	}
+	for id, name := range testnets {
+		cases[name] = struct {
+			id   string
+			want string
+		}{id, fmt.Sprintf("chain %s (%s, a testnet)", id, name)}
+	}
+	for what, tt := range cases {
+		t.Run(what, func(t *testing.T) {
+			deployed(t)
+			id, err := strconv.ParseUint(tt.id, 10, 64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			endpoint := answering(t, map[string]any{
+				"eth_chainId":          fmt.Sprintf("0x%x", id),
+				"eth_getBlockByNumber": block("0x10"),
+				"eth_getStorageAt":     "0x" + strings.Repeat("00", 32),
+			})
+			document(t, fmt.Sprintf("%snetworks:\n  local:\n    kind: evm\n    chain_id: %s\n"+
+				"    rpc:\n      own: %s\n%s", namingADatabase(), tt.id, endpoint, anAsset("local")))
+
+			stdout, _, err := runArgs(t, "doctor")
+
+			if err != nil {
+				t.Fatalf("err = %v, want none", err)
+			}
+			if networks := networksIn(t, stdout); !strings.Contains(networks, tt.want) {
+				t.Errorf("the report does not say %q:\n%s", tt.want, networks)
+			}
+		})
 	}
 }
 

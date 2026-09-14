@@ -231,8 +231,9 @@ func standing(ctx context.Context, n observe.Network, report observe.Report, err
 		return fmt.Sprintf("chain-mismatch: it calls itself %s and the document names %s",
 			invisible.Shown(report.Identity, maxDescription), n.Want)
 	}
-	where := fmt.Sprintf("chain %s, latest %d, final %d",
-		invisible.Shown(report.Identity, maxDescription), report.Head.Latest.Height, report.Head.Final.Height)
+	where := fmt.Sprintf("chain %s%s, latest %d, final %d",
+		invisible.Shown(report.Identity, maxDescription), testnet(report.Identity),
+		report.Head.Latest.Height, report.Head.Final.Height)
 	if cursors == nil {
 		return where + ", and nowhere a cursor could have been written"
 	}
@@ -279,6 +280,29 @@ func others(ctx context.Context, n finality.Network) string {
 		return said + ", no spare"
 	}
 	return said
+}
+
+// testnets are the chains JPYC's faucet hands out test money on, by the chain
+// id each answers with, as the faucet's own page lists them.
+// A testnet is named as one so that a document which was copied from the
+// step before production, with the name changed and nothing else, is caught
+// by a report and not by a payment that never arrives.
+var testnets = map[string]string{
+	"80002":    "Polygon Amoy",
+	"43113":    "Avalanche Fuji",
+	"11155111": "Ethereum Sepolia",
+	"5042002":  "Arc Testnet",
+	"1001":     "Kaia Kairos",
+}
+
+// testnet is what follows a chain id that is a testnet's, and nothing after
+// any other.
+func testnet(identity string) string {
+	name, known := testnets[identity]
+	if !known {
+		return ""
+	}
+	return fmt.Sprintf(" (%s, a testnet)", name)
 }
 
 // undecided is how many of a network's recorded transfers are waiting for the

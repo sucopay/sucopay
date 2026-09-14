@@ -102,6 +102,9 @@ rather than asking a worker that is not there. A number that keeps growing betwe
 deployment whose settling has stopped getting anywhere, and `/readyz` says which of the words
 above it is in.
 
+`doctor` names a testnet as one after its chain id, as `chain 80002 (Polygon Amoy, a testnet)`,
+so that a document copied from the step before production is caught here.
+
 A network reached only through `others` says how many of them answer, as `3 of 4 others answer`.
 `no spare` follows when exactly as many answer as agreement takes, and `too few to settle` below
 that. Transfers the endpoints disagree about are counted after what is waiting, as

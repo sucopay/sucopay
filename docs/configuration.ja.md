@@ -139,6 +139,32 @@ reference は、そのチェーンが比較する形に読み込みます。EVM 
 して読みます。大文字混じりの形は checksum を持っていて、合わない reference は断ります。打ち
 間違いを捕まえる最後の瞬間です。チェーンは資金を返しません。
 
+## テストネット
+
+本番の前の段は、Polygon Amoy で本物の wallet を使い、JPYC は
+[JPYC の faucet](https://faucet.jpyc.co.jp/) から受け取ります。suco が起動するものではなく、
+設定です。
+
+```yaml
+networks:
+  polygon-amoy:
+    kind: evm
+    chain_id: 80002
+    rpc:
+      own: ${SUCO_POLYGON_AMOY_RPC_URL}
+assets:
+  jpyc:
+    network: polygon-amoy
+    reference: "0xE7C3D8C9a439feDe00D2600032D5dB0Be71C3c29"
+    symbol: JPYC
+    decimals: 18
+```
+
+network の名前は `polygon-amoy` で、値だけ変えた `polygon` にはしません。JPYC は Amoy でも
+Polygon と同じアドレスにあるので、本番の名前で書いたテストネットの文書はそれ自体では矛盾せず、
+写した先でも誤ったままです。`doctor` は文書の名前に関わらず、network の行でテストネットを
+名指します。
+
 ## 名前
 
 network の名前と asset の名前は、報告の中の点区切りの経路と、probe が答える鍵になります。点を

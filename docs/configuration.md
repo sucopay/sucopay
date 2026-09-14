@@ -148,6 +148,31 @@ carries. That form also carries a checksum, and a reference whose checksum does 
 refused. It is the last moment a mistyped one can be caught, since a chain does not give funds
 back.
 
+## A testnet
+
+The step before production is a real wallet on Polygon Amoy, with JPYC from
+[JPYC's faucet](https://faucet.jpyc.co.jp/). It is a configuration, not something suco starts:
+
+```yaml
+networks:
+  polygon-amoy:
+    kind: evm
+    chain_id: 80002
+    rpc:
+      own: ${SUCO_POLYGON_AMOY_RPC_URL}
+assets:
+  jpyc:
+    network: polygon-amoy
+    reference: "0xE7C3D8C9a439feDe00D2600032D5dB0Be71C3c29"
+    symbol: JPYC
+    decimals: 18
+```
+
+The network is named `polygon-amoy` and never `polygon` with other values. JPYC sits at the same
+address on Amoy as on Polygon, so a testnet document written under the production name would be
+consistent with itself and wrong, and would keep being wrong after it was copied. `doctor` names
+a testnet as one on the network's line, whatever the document calls it.
+
 ## Names
 
 A network name and an asset name become part of the dotted paths in a report and the keys a probe
