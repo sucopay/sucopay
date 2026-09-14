@@ -7,6 +7,10 @@ English: [SECURITY.md](SECURITY.md)
 GitHub の[非公開の脆弱性報告](https://docs.github.com/code-security/security-advisories/guidance-on-reporting-and-writing/privately-reporting-a-security-vulnerability)から
 報告してください。脆弱性の詳細を issue、Discussions、その他の公開の場に書かないでください。
 
+使えない場合は、Discussions に「非公開の連絡先が要る」とだけ書いてください。見つけたことは
+書かないでください。maintainer が非公開の advisory を開いて、そこへ招きます。メールの連絡先は
+ありません。見つけたことを第三者の AI のサービスに貼るのもやめてください。それも公開の場です。
+
 ## 対象範囲
 
 次の報告を優先して扱います。

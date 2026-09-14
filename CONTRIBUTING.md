@@ -228,6 +228,12 @@ Considered publishing after commit and reconciling the gap. Rejected: the
 window is unbounded when the process dies between the two writes.
 ```
 
+## AI tools
+
+Use them if you like. What you submit is yours: you have read it, you can explain it, and you
+answer for it. Say in the PR that a tool helped, and with what. Nothing is added to the commit
+itself.
+
 ## Before you open a PR
 
 - Open an issue first for anything that changes the API, the payment state machine, or adds a

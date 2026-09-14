@@ -8,6 +8,11 @@ Report privately through GitHub's [private vulnerability
 reporting](https://docs.github.com/code-security/security-advisories/guidance-on-reporting-and-writing/privately-reporting-a-security-vulnerability).
 Do not put vulnerability details in an issue, a discussion, or anywhere else public.
 
+If you cannot use it, open a discussion that says only that you need a private channel, and
+nothing about what you found. A maintainer will open a private advisory and invite you to it.
+There is no mailbox. Do not paste what you found into a third-party AI service either; that is
+another public place.
+
 ## Scope
 
 Reports we most want:

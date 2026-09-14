@@ -227,6 +227,11 @@ Considered publishing after commit and reconciling the gap. Rejected: the
 window is unbounded when the process dies between the two writes.
 ```
 
+## AI の道具
+
+使って構いません。出すものはあなたのものです。読んだ上で、説明でき、責任を負います。道具が
+手伝ったなら、何をどこまでかを PR に書いてください。commit そのものには何も足しません。
+
 ## PR の事前確認
 
 - API、Payment の状態機械、Core に依存を追加する場合は、先に issue を立ててください。
