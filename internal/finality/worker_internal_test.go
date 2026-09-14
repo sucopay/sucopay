@@ -118,7 +118,7 @@ func decide(t *testing.T, misses int, endpoints ...chain.Chain) *decider {
 	if len(endpoints) == 0 {
 		endpoints = []chain.Chain{d.chain}
 	}
-	d.worker = New(Network{Name: string(local), Endpoints: endpoints,
+	d.worker = New(Network{Name: string(local), Endpoints: endpoints, Agreements: 1,
 		Misses: misses, Recheck: time.Millisecond},
 		// JSON, which is what a deployment writes with. The text handler
 		// escapes what a reader cannot see and would hide a line that did not.
@@ -265,9 +265,22 @@ func (d *decider) readTo(t *testing.T, at time.Time) {
 // back an error nobody looks at.
 func (d *decider) round(t *testing.T) {
 	t.Helper()
-	if err := d.worker.round(t.Context()); err != nil {
+	if _, err := d.worker.round(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// disagreeing puts a second endpoint beside the chain, holding the transfer
+// in a block it has not finalised, and holds the two to agreeing. The chain
+// says final and this one says waiting.
+func (d *decider) disagreeing() *simulated.Chain {
+	behind := simulated.New()
+	d.worker.network.Endpoints = []chain.Chain{d.chain, behind}
+	d.worker.network.Agreements = 2
+	behind.Send(d.paying(d.payment, d.attempt.Key()))
+	behind.Mine()
+	d.chain.Finalize(1)
+	return behind
 }
 
 // status is where a payment has got to, read back out of the database.
@@ -401,12 +414,8 @@ func TestRound_PaysAPaymentWaitingForFinality(t *testing.T) {
 // deciding is the safe side.
 func TestRound_MovesNothingWhileTheEndpointsDisagree(t *testing.T) {
 	t.Parallel()
-	behind := simulated.New()
 	d := decide(t, 2)
-	d.worker.network.Endpoints = []chain.Chain{d.chain, behind}
-	behind.Send(d.paying(d.payment, d.attempt.Key()))
-	behind.Mine()
-	d.chain.Finalize(1)
+	d.disagreeing()
 
 	d.round(t)
 
@@ -628,8 +637,8 @@ func TestRound_KeepsTheCountAcrossARoundThatWasCutShort(t *testing.T) {
 
 	d.round(t)
 	d.chain.FailAt("Receipt", 1, errors.New("no"))
-	if err := d.worker.round(t.Context()); err == nil {
-		t.Fatal("the round that could not read the chain reported nothing")
+	if short, err := d.worker.round(t.Context()); err != nil || !short {
+		t.Fatalf("the round nothing answered in reported %v, %v; want short and no error", short, err)
 	}
 	d.round(t)
 
@@ -641,20 +650,99 @@ func TestRound_KeepsTheCountAcrossARoundThatWasCutShort(t *testing.T) {
 // An endpoint that does not answer ends the round where it is. What it was
 // asked about is not moved, and nor is anything after it: the round is asked
 // again later.
-func TestRound_MovesNothingWhenAnEndpointDoesNotAnswer(t *testing.T) {
+func TestRound_LeavesATransferNoEndpointAnsweredAboutAndSaysSo(t *testing.T) {
 	t.Parallel()
-	sorry := errors.New("no")
 	d := decide(t, 2)
 	d.chain.Finalize(1)
-	d.chain.FailAt("Receipt", 1, sorry)
+	d.chain.FailAt("Receipt", 1, errors.New("no"))
 
-	err := d.worker.round(t.Context())
+	short, err := d.worker.round(t.Context())
 
-	if !errors.Is(err, sorry) {
-		t.Errorf("round = %v, want the endpoint's own error", err)
+	if err != nil || !short {
+		t.Errorf("round = %v, %v; want short and no error", short, err)
 	}
 	if got := d.status(t, held, d.payment); got != payment.AwaitingPayment {
 		t.Errorf("the payment is %s, want it left awaiting payment", got)
+	}
+}
+
+// One endpoint down does not stop a network from settling: the next one is
+// asked in its place, and two agreeing is what settles.
+func TestRound_PaysWithOneEndpointDown(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+	d.chain.Finalize(1)
+	agreeing := simulated.New()
+	agreeing.Send(d.paying(d.payment, d.attempt.Key()))
+	agreeing.Finalize(agreeing.Mine())
+	d.worker.network.Endpoints = []chain.Chain{down{}, d.chain, agreeing}
+	d.worker.network.Agreements = 2
+
+	d.round(t)
+
+	if got := d.status(t, held, d.payment); got != payment.Succeeded {
+		t.Errorf("the payment is %s, want it paid on the two that answered", got)
+	}
+}
+
+// down is an endpoint that answers nothing, whatever it is asked.
+type down struct{ chain.Chain }
+
+func (down) Receipt(context.Context, string) ([]chain.Transfer, error) {
+	return nil, errors.New("no")
+}
+
+func (down) Head(context.Context) (chain.Head, error) { return chain.Head{}, errors.New("no") }
+
+func TestRun_SaysTooFewWhenFewerEndpointsAnswerThanAgreementTakes(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+	d.chain.Finalize(1)
+	d.worker.network.Endpoints = []chain.Chain{d.chain, down{}}
+	d.worker.network.Agreements = 2
+
+	d.running(t, func() bool { return d.worker.Word() == tooFew })
+
+	if got := d.status(t, held, d.payment); got != payment.AwaitingPayment {
+		t.Errorf("the payment is %s, want it left awaiting payment", got)
+	}
+}
+
+// Disagreement does not resolve itself, so a candidate the endpoints
+// disagree about is put to them less often the longer they do: after the
+// k-th time, k rounds go by unasked. Never dropped.
+func TestRound_AsksADisagreeingCandidateLessOften(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+	behind := d.disagreeing()
+
+	for range 6 {
+		d.round(t)
+	}
+
+	if calls := behind.Calls()["Receipt"]; calls != 3 {
+		t.Errorf("the disagreeing endpoint was asked %d times over six rounds, want three: rounds 1, 3 and 6", calls)
+	}
+}
+
+func TestRound_WritesWhenTheEndpointsDisagreeAndClearsItWhenTheyAgree(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+	behind := d.disagreeing()
+
+	d.round(t)
+	if n, err := d.store.Disagreeing(t.Context(), local); err != nil || n != 1 {
+		t.Fatalf("Disagreeing = %d, %v; want the one transfer after the round they disagreed in", n, err)
+	}
+	behind.Finalize(1)
+	d.round(t)
+	d.round(t)
+
+	if n, err := d.store.Disagreeing(t.Context(), local); err != nil || n != 0 {
+		t.Errorf("Disagreeing = %d, %v; want none once they agree", n, err)
+	}
+	if got := d.status(t, held, d.payment); got != payment.Succeeded {
+		t.Errorf("the payment is %s, want it paid once the endpoints agree", got)
 	}
 }
 
@@ -687,12 +775,8 @@ func TestRound_WritesNoKeyToTheLog(t *testing.T) {
 // line a round would make each time buries whatever else the log has to say.
 func TestRound_SaysOnceThatTheEndpointsDisagree(t *testing.T) {
 	t.Parallel()
-	behind := simulated.New()
 	d := decide(t, 2)
-	d.worker.network.Endpoints = []chain.Chain{d.chain, behind}
-	behind.Send(d.paying(d.payment, d.attempt.Key()))
-	behind.Mine()
-	d.chain.Finalize(1)
+	d.disagreeing()
 
 	d.round(t)
 	d.round(t)
@@ -711,7 +795,7 @@ func TestRound_RefusesToMarkVanishedAfterNoRounds(t *testing.T) {
 	d.chain.Reorg(1)
 	d.chain.Finalize(1)
 
-	err := d.worker.round(t.Context())
+	_, err := d.worker.round(t.Context())
 
 	if err == nil {
 		t.Fatal("a round ran with the count set to nothing")

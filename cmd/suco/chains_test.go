@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sucopay/sucopay/internal/config"
+	"github.com/sucopay/sucopay/internal/finality"
 	"github.com/sucopay/sucopay/internal/payment"
 )
 
@@ -208,12 +209,13 @@ func TestOpenSettling_DecidesForEveryChainAnAssetSettlesOn(t *testing.T) {
 func TestOpenSettling_AsksTheOwnNodeAloneAndEveryOtherWhenThereIsNone(t *testing.T) {
 	t.Parallel()
 	for what, tt := range map[string]struct {
-		rpc  config.Endpoints
-		want int
+		rpc        config.Endpoints
+		want       int
+		agreements int
 	}{
-		"the own node alone":       {config.Endpoints{Own: "one", Others: []config.Hidden{"two", "three"}}, 1},
-		"every one of the others":  {config.Endpoints{Others: []config.Hidden{"two", "three"}}, 2},
-		"one that reaches nowhere": {config.Endpoints{}, 1},
+		"the own node alone":       {config.Endpoints{Own: "one", Others: []config.Hidden{"two", "three"}}, 1, 1},
+		"every one of the others":  {config.Endpoints{Others: []config.Hidden{"two", "three"}}, 2, finality.Agreements},
+		"one that reaches nowhere": {config.Endpoints{}, 1, 1},
 	} {
 		t.Run(what, func(t *testing.T) {
 			t.Parallel()
@@ -227,6 +229,9 @@ func TestOpenSettling_AsksTheOwnNodeAloneAndEveryOtherWhenThereIsNone(t *testing
 			}
 			if got := len(opened[0].Endpoints); got != tt.want {
 				t.Errorf("openSettling opened %d endpoints, want %d", got, tt.want)
+			}
+			if got := opened[0].Agreements; got != tt.agreements {
+				t.Errorf("openSettling set %d agreements, want %d", got, tt.agreements)
 			}
 		})
 	}

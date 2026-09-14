@@ -12,6 +12,7 @@ import (
 
 	"github.com/sucopay/sucopay/internal/config"
 	"github.com/sucopay/sucopay/internal/credential"
+	"github.com/sucopay/sucopay/internal/finality"
 	"github.com/sucopay/sucopay/internal/invisible"
 	"github.com/sucopay/sucopay/internal/observe"
 	"github.com/sucopay/sucopay/internal/payment"
@@ -187,6 +188,15 @@ func describeNetworks(ctx context.Context, w io.Writer, cfg config.Config,
 	if len(networks) == 0 {
 		return
 	}
+	// The endpoints a network settles through, which are the others where
+	// there is no own node. The same document opened them a line above, so
+	// this cannot fail past that.
+	settling := map[string]finality.Network{}
+	if opened, err := openSettling(cfg); err == nil {
+		for _, s := range opened {
+			settling[s.Name] = s
+		}
+	}
 	fmt.Fprintln(w, "\nnetworks:")
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	defer tw.Flush()
@@ -195,8 +205,9 @@ func describeNetworks(ctx context.Context, w io.Writer, cfg config.Config,
 		// is a call to the provider, and asking again for the lines below
 		// would double what a report costs whoever is paying for the endpoint.
 		report, err := observe.Probe(ctx, n, nil)
-		fmt.Fprintf(tw, "  %s\t%s\t%s%s\n", invisible.Quote(n.Name), cfg.Networks[n.Name].Kind,
-			standing(ctx, n, report, err, cursors), undecided(ctx, payments, n.Name))
+		fmt.Fprintf(tw, "  %s\t%s\t%s%s%s\n", invisible.Quote(n.Name), cfg.Networks[n.Name].Kind,
+			standing(ctx, n, report, err, cursors), others(ctx, settling[n.Name]),
+			undecided(ctx, payments, n.Name))
 		for _, name := range slices.Sorted(maps.Keys(n.Assets)) {
 			fmt.Fprintf(tw, "    %s\t\t%s\n", invisible.Quote(name), behind(report, err, name))
 		}
@@ -241,11 +252,45 @@ func standing(ctx context.Context, n observe.Network, report observe.Report, err
 	return fmt.Sprintf("%s, position %d, behind %d", where, at.Height, lag)
 }
 
+// others is how many of the third parties a network settles through
+// answer, for a network that settles through them: what a deployment has to
+// fall back on is what an operator cannot tell from a network that is
+// settling. Nothing for a network with a node of its own, which the line has
+// already read.
+//
+// No spare is exactly as many answering as agreement takes: the next one to
+// go down stops the settling. Too few is below that, which is a network that
+// has stopped settling already.
+func others(ctx context.Context, n finality.Network) string {
+	if n.Agreements < finality.Agreements {
+		return ""
+	}
+	answered := 0
+	for _, endpoint := range n.Endpoints {
+		if _, err := endpoint.Head(ctx); err == nil {
+			answered++
+		}
+	}
+	said := fmt.Sprintf(", %d of %d others answer", answered, len(n.Endpoints))
+	switch {
+	case answered < n.Agreements:
+		return said + ", too few to settle"
+	case answered == n.Agreements:
+		return said + ", no spare"
+	}
+	return said
+}
+
 // undecided is how many of a network's recorded transfers are waiting for the
-// endpoints to be asked about them, which is what a report can say about the
-// settling without a worker to ask. Nothing where there is no database to
-// count in, and nothing where the count fails: the network's own line has
-// already said whatever is wrong with reading it.
+// endpoints to be asked about them, and how many of those the endpoints
+// disagree about, which is what a report can say about the settling without a
+// worker to ask. Nothing where there is no database to count in, and nothing
+// where the count fails: the network's own line has already said whatever is
+// wrong with reading it.
+//
+// The disagreement is said only when there is some. Nothing settles from one
+// and it does not resolve itself, so the number is one the operator acts on,
+// and a zero every report would be read past.
 func undecided(ctx context.Context, payments *payment.Postgres, network string) string {
 	if payments == nil {
 		return ""
@@ -254,7 +299,20 @@ func undecided(ctx context.Context, payments *payment.Postgres, network string) 
 	if err != nil {
 		return ", and what is waiting to settle could not be counted"
 	}
-	return fmt.Sprintf(", %d waiting to settle", waiting)
+	said := fmt.Sprintf(", %d waiting to settle", waiting)
+	if waiting == 0 {
+		// What the endpoints disagree about is among what is waiting, so
+		// there is nothing to count.
+		return said
+	}
+	disagreed, err := payments.Disagreeing(ctx, payment.Network(network))
+	switch {
+	case err != nil:
+		return said + ", and what the endpoints disagree about could not be counted"
+	case disagreed > 0:
+		return fmt.Sprintf("%s, %d disagreed about", said, disagreed)
+	}
+	return said
 }
 
 // behind is what a report says of one asset: the code the chain runs for it,

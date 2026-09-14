@@ -132,6 +132,104 @@ func TestRun_DoctorSaysWhereEachNetworkStands(t *testing.T) {
 	}
 }
 
+// A network settled through others is one whose spare an operator cannot see
+// from the settling: two answering settle as well as four do, until the next
+// one goes down.
+func TestRun_DoctorSaysHowManyOthersAnswer(t *testing.T) {
+	answers := map[string]any{
+		"eth_chainId":          "0x89",
+		"eth_getBlockByNumber": block("0x10"),
+		"eth_getStorageAt":     "0x" + strings.Repeat("00", 32),
+	}
+	const dead = "http://127.0.0.1:1/"
+	for what, tt := range map[string]struct {
+		up   int
+		down int
+		want string
+	}{
+		"a spare":     {3, 0, "3 of 3 others answer, 0 waiting"},
+		"no spare":    {2, 1, "2 of 3 others answer, no spare"},
+		"too few":     {1, 1, "1 of 2 others answer, too few to settle"},
+		"none at all": {0, 2, "0 of 2 others answer, too few to settle"},
+	} {
+		t.Run(what, func(t *testing.T) {
+			deployed(t)
+			others := ""
+			for range tt.up {
+				others += "        - " + answering(t, answers) + "\n"
+			}
+			for range tt.down {
+				others += "        - " + dead + "\n"
+			}
+			document(t, fmt.Sprintf("%snetworks:\n  local:\n    kind: evm\n    chain_id: 137\n"+
+				"    rpc:\n      others:\n%s%s", namingADatabase(), others, anAsset("local")))
+
+			stdout, _, err := runArgs(t, "doctor")
+
+			if err != nil {
+				t.Fatalf("err = %v, want none", err)
+			}
+			if networks := networksIn(t, stdout); !strings.Contains(networks, tt.want) {
+				t.Errorf("the report does not say %q of the others:\n%s", tt.want, networks)
+			}
+		})
+	}
+}
+
+// A network with a node of the operator's own settles through it alone, and
+// has no others to count.
+func TestRun_DoctorCountsNoOthersForANetworkWithAnOwnNode(t *testing.T) {
+	deployed(t)
+	endpoint := answering(t, map[string]any{
+		"eth_chainId":          "0x89",
+		"eth_getBlockByNumber": block("0x10"),
+		"eth_getStorageAt":     "0x" + strings.Repeat("00", 32),
+	})
+	document(t, fmt.Sprintf("%snetworks:\n  local:\n    kind: evm\n    chain_id: 137\n"+
+		"    rpc:\n      own: %s\n      others:\n        - %s\n%s", namingADatabase(), endpoint, endpoint, anAsset("local")))
+
+	stdout, _, err := runArgs(t, "doctor")
+
+	if err != nil {
+		t.Fatalf("err = %v, want none", err)
+	}
+	if networks := networksIn(t, stdout); strings.Contains(networks, "others answer") {
+		t.Errorf("the report counts others for a network with an own node:\n%s", networks)
+	}
+}
+
+// A transfer the endpoints disagree about is one nothing settles and nothing
+// resolves, so the count is in the report from the first round it happens.
+func TestRun_DoctorCountsWhatTheEndpointsDisagreeAbout(t *testing.T) {
+	d := accepting(t, "")
+	p := awaiting(t, d)
+	if _, _, err := runArgs(t, "payment", "await", p.ID().String()); err != nil {
+		t.Fatal(err)
+	}
+	var attempt, key string
+	if err := d.pool.Conns().QueryRow(t.Context(), `select id, key from attempts`).Scan(&attempt, &key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.pool.Conns().Exec(t.Context(), `
+		insert into observations (account_id, payment_id, attempt_id, network, key, tx, position,
+			block_height, block_hash, block_time, asset, authorizer, sender, recipient, value,
+			reason, implementation, seen_at, final_at, disagreed_at)
+		select account_id, payment_id, id, $1, key, 'tx1', 0, 1, 'block1', now(), 'asset', 'a', 'a', 'b', 1000,
+			'matched', 'implementation', now(), now(), now()
+		  from attempts where id = $2`, string(p.Network()), attempt); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, _, err := runArgs(t, "doctor")
+
+	if err != nil {
+		t.Fatalf("err = %v, want none", err)
+	}
+	if networks := networksIn(t, stdout); !strings.Contains(networks, "1 waiting to settle, 1 disagreed about") {
+		t.Errorf("the report does not count what the endpoints disagree about:\n%s", networks)
+	}
+}
+
 // The chain answering and the cursor being readable are two questions with
 // two answers. Asked as one, an operator whose database is short of the table
 // reads it as an endpoint that will not answer, and changes their provider.

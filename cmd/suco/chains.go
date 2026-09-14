@@ -81,8 +81,9 @@ func settled(cfg config.Config) ([]string, map[string]map[string]payment.Asset, 
 //
 // The same networks [openChains] reads, and not the same endpoints. What reads
 // a chain reads one endpoint, because a cursor is a place in a chain as one
-// provider tells it. What decides asks every endpoint it has, because a
-// deployment that asks one endpoint is a deployment that believes it.
+// provider tells it. What decides asks the endpoints it has until as many as
+// agreement takes have agreed, because a deployment that asks one third
+// party is a deployment that believes it.
 func openSettling(cfg config.Config) ([]finality.Network, error) {
 	names, _, err := settled(cfg)
 	if err != nil {
@@ -107,10 +108,11 @@ func openSettling(cfg config.Config) ([]finality.Network, error) {
 			asked = append(asked, read)
 		}
 		out = append(out, finality.Network{
-			Name:      name,
-			Endpoints: asked,
-			Recheck:   n.Finality.Recheck,
-			Misses:    n.Finality.Misses,
+			Name:       name,
+			Endpoints:  asked,
+			Agreements: agreements(n),
+			Recheck:    n.Finality.Recheck,
+			Misses:     n.Finality.Misses,
 		})
 	}
 	return out, nil
@@ -120,7 +122,8 @@ func openSettling(cfg config.Config) ([]finality.Network, error) {
 // operator's own node alone when there is one: a node the operator runs is the
 // one they already trust, and asking others beside it would hold a payment
 // behind whichever of them is slowest. All of the others when there is no own
-// node, because agreement between them is what stands in for that trust.
+// node, in order, because agreement between them is what stands in for that
+// trust, and the ones past the agreement are the spares.
 //
 // One endpoint with nothing in it where the document names none, which is a
 // kind that reaches no chain.
@@ -132,6 +135,17 @@ func endpoints(n config.Network) []config.Hidden {
 		return n.RPC.Others
 	}
 	return []config.Hidden{""}
+}
+
+// agreements is how many of a network's endpoints have to say the same thing.
+// One where the operator runs a node, and one where there is nothing to ask
+// but the chain in the process; [finality.Agreements] where the network is
+// reached only through third parties.
+func agreements(n config.Network) int {
+	if n.RPC.Own == "" && len(n.RPC.Others) > 0 {
+		return finality.Agreements
+	}
+	return 1
 }
 
 // identity is what the chain is expected to call itself, written the way it

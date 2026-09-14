@@ -49,46 +49,73 @@ const (
 	// from it: whoever asked is told that rather than handed one of the
 	// answers.
 	Disagreed Verdict = "disagreed"
+	// Unanswered is fewer endpoints answering than agreement takes. Nothing
+	// is settled from it either; asking again later is what settles it.
+	Unanswered Verdict = "unanswered"
 )
 
-// Ask puts a recorded transfer to every endpoint and answers what they all
-// say.
+// Answers is what the endpoints made of a recorded transfer: the verdict, how
+// many gave a well-formed answer, and how many of those the verdict rests on.
+type Answers struct {
+	Verdict  Verdict
+	Answered int
+	Agreed   int
+}
+
+// Ask puts a recorded transfer to the endpoints in order until as many as
+// agreement takes have said the same thing, and answers that.
 //
-// Every endpoint has to say the same thing. How many are asked is the caller's
-// to decide: a node the operator runs answers for itself and is asked alone,
-// and third parties are all asked because no one of them settles anything on
-// its own.
+// How many is the caller's to decide: a node the operator runs answers for
+// itself and one is enough, and third parties are held to two because no one
+// of them settles anything on its own. The endpoints past the ones that
+// decided are not asked.
 //
-// They are asked one after another, and the first that differs ends it. A round
-// asks about the transfers it recorded, which are few. Each endpoint bounds its
-// own call and this adds no bound of its own, so a caller's deadline has to
-// hold for as many endpoints as it passes.
+// An endpoint that does not answer is skipped and not counted, whatever kept
+// it from answering: silence settles nothing, and it takes nothing away
+// either. What ends the asking is the caller's context. One well-formed
+// answer that differs from the others is Disagreed, and no further endpoint
+// is asked to break the tie: what is settled from that is nothing. Fewer
+// well-formed answers than agreement takes is Unanswered, with the count.
+//
+// Each endpoint bounds its own call and this adds no bound of its own, so a
+// caller's deadline has to hold for as many endpoints as it passes.
 //
 // Whether the endpoints are separate is the caller's to know. Two that are the
 // same provider under two names agree with themselves, and nothing here can
 // tell: a chain says what it is, not who is answering for it.
-//
-// An endpoint that does not answer is an error rather than a verdict. Reading
-// silence as one of the answers would let a provider that is down settle a
-// payment, or take one away.
-func Ask(ctx context.Context, endpoints []chain.Chain, r Recorded) (Verdict, error) {
-	if len(endpoints) == 0 {
-		return "", errors.New("finality: no endpoint to ask")
+func Ask(ctx context.Context, endpoints []chain.Chain, need int, r Recorded) (Answers, error) {
+	if need < 1 {
+		return Answers{}, fmt.Errorf("finality: %d endpoints have to agree", need)
 	}
-	var agreed Verdict
-	for i, endpoint := range endpoints {
+	if len(endpoints) == 0 {
+		return Answers{}, errors.New("finality: no endpoint to ask")
+	}
+	var a Answers
+	for _, endpoint := range endpoints {
+		if ctx.Err() != nil {
+			return Answers{}, fmt.Errorf("finality: %w", ctx.Err())
+		}
 		said, err := asked(ctx, endpoint, r)
 		if err != nil {
-			// By its place rather than by where it is: an endpoint carries a
-			// credential, and nothing that reads one writes it anywhere.
-			return "", fmt.Errorf("finality: endpoint %d: %w", i, err)
+			// Skipped unless it was the caller who stopped waiting, which is
+			// the same end as the check above, met part way through a call.
+			if ctx.Err() != nil {
+				return Answers{}, fmt.Errorf("finality: %w", ctx.Err())
+			}
+			continue
 		}
-		if i > 0 && said != agreed {
-			return Disagreed, nil
+		a.Answered++
+		if a.Answered == 1 {
+			a.Verdict = said
+		} else if said != a.Verdict {
+			return Answers{Verdict: Disagreed, Answered: a.Answered}, nil
 		}
-		agreed = said
+		a.Agreed++
+		if a.Agreed == need {
+			return a, nil
+		}
 	}
-	return agreed, nil
+	return Answers{Verdict: Unanswered, Answered: a.Answered, Agreed: a.Agreed}, nil
 }
 
 // asked is what one endpoint makes of a recorded transfer.

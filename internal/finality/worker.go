@@ -45,7 +45,25 @@ const (
 	// end the loop it is in, so a worker that stops is one stuck inside a
 	// round, and the word for that is not the one the last round left.
 	stalled = "stalled"
+	// tooFew is a round that finished with fewer endpoints answering than
+	// agreement takes. What it asked about is left where it was, and stays
+	// there until another endpoint answers. It stands as deciding does, and
+	// stales the same way.
+	tooFew = "too-few"
 )
+
+// Agreements is how many third-party endpoints have to say the same thing
+// before it is taken as what the chain holds, for a network with no node of
+// the operator's own. Two: one endpoint's word alone settles nothing, and
+// what a majority would add is for a later phase. A provisional number, not
+// a measured one.
+const Agreements = 2
+
+// maxSkip bounds how many rounds a candidate the endpoints disagree about is
+// left unasked between askings. It is asked less often the longer they
+// disagree, and never dropped; an hour of the default recheck is the most it
+// waits.
+const maxSkip = 60
 
 // staleAfter is how many rounds may be missed before what the last one said
 // stops standing. Three, so that one slow round does not take a working
@@ -57,7 +75,7 @@ const staleAfter = 3
 func (w *Worker) Word() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.word == deciding && w.now().Sub(w.finished) > staleAfter*w.network.Recheck {
+	if (w.word == deciding || w.word == tooFew) && w.now().Sub(w.finished) > staleAfter*w.network.Recheck {
 		return stalled
 	}
 	return w.word
@@ -68,7 +86,7 @@ func (w *Worker) says(word string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.word = word
-	if word == deciding {
+	if word == deciding || word == tooFew {
 		w.finished = w.now()
 	}
 }
@@ -103,8 +121,11 @@ type Network struct {
 	// Name is what the configuration document calls the network, which is the
 	// name the rows of its transfers carry.
 	Name string
-	// Endpoints are what is asked. [Ask] holds them to one answer.
-	Endpoints []chain.Chain
+	// Endpoints are what is asked, in order, and Agreements is how many of
+	// them have to say the same thing: one for a node the operator runs,
+	// [Agreements] for third parties.
+	Endpoints  []chain.Chain
+	Agreements int
 	// Recheck is how long the worker waits between rounds. Each round asks
 	// the endpoints about every transfer that would settle a payment, so this
 	// is also how often a payment that has been paid learns that it has.
@@ -174,10 +195,12 @@ type recorded struct {
 }
 
 // answer is what the endpoints said about a transfer, with the rounds in a row
-// they have said it, counting the one it came from.
+// they have said it, counting the one it came from, and how many rounds the
+// transfer is left unasked before it is put to them again.
 type answer struct {
 	verdict Verdict
 	rounds  int
+	skip    int
 }
 
 // New opens a worker over a network. The clock is the caller's, so that a test
@@ -236,10 +259,13 @@ func (w *Worker) Run(ctx context.Context) error {
 		case !held:
 			w.says(waiting)
 		default:
-			if err := w.round(ctx); err != nil {
+			switch short, err := w.round(ctx); {
+			case err != nil:
 				w.says(unreachable)
 				w.log.Warn("the round did not finish", "network", w.network.Name, "error", shown(err))
-			} else {
+			case short:
+				w.says(tooFew)
+			default:
 				w.says(deciding)
 			}
 		}
@@ -258,33 +284,69 @@ func (w *Worker) Run(ctx context.Context) error {
 // stopped. A deployment with more of them than that gets through them over
 // several rounds, and comes round to the beginning when it reaches the end.
 //
-// An endpoint that does not answer ends the round where it stands. The
-// transfer it was asked about is left where it was and so is everything after
-// it: a reader that cannot read decides nothing, and the round comes again.
-func (w *Worker) round(ctx context.Context) error {
+// An endpoint that does not answer is skipped, and a transfer fewer endpoints
+// answered about than agreement takes is left where it was. The round goes on
+// to the next transfer and says, in short, that it was short of endpoints: a
+// reader that cannot read decides nothing, and the round comes again.
+//
+// A transfer the endpoints disagree about is put to them again less often the
+// longer they disagree, and never dropped: disagreement does not resolve
+// itself, and asking every round would be asking for the same answer.
+func (w *Worker) round(ctx context.Context) (short bool, err error) {
 	if w.network.Misses < 1 {
-		return fmt.Errorf("%s: a transfer is set to be given up on after %d rounds",
+		return false, fmt.Errorf("%s: a transfer is set to be given up on after %d rounds",
 			w.network.Name, w.network.Misses)
 	}
-	candidates, err := w.store.Candidates(ctx, payment.Network(w.network.Name),
-		w.from, w.perRound)
+	if w.network.Agreements < 1 {
+		return false, fmt.Errorf("%s: %d endpoints are set to have to agree",
+			w.network.Name, w.network.Agreements)
+	}
+	network := payment.Network(w.network.Name)
+	candidates, err := w.store.Candidates(ctx, network, w.from, w.perRound)
 	if err != nil {
-		return err
+		return false, err
 	}
 	for _, c := range candidates {
-		verdict, err := Ask(ctx, w.network.Endpoints,
+		at := recorded{key: c.Key, tx: c.Tx}
+		before, told := w.answers[at]
+		if told && before.verdict == Disagreed && before.skip > 0 {
+			before.skip--
+			w.pass[at] = before
+			continue
+		}
+		said, err := Ask(ctx, w.network.Endpoints, w.network.Agreements,
 			Recorded{Tx: c.Tx, Height: c.BlockHeight, Hash: c.BlockHash})
 		if err != nil {
-			return err
+			return false, err
 		}
-		at := recorded{key: c.Key, tx: c.Tx}
-		asked := 1
-		if before, told := w.answers[at]; told && before.verdict == verdict {
-			asked = before.rounds + 1
+		if said.Verdict == Unanswered {
+			// Nothing was said, so nothing is remembered as said: what the
+			// endpoints have been saying stands until they say otherwise.
+			short = true
+			if told {
+				w.pass[at] = before
+			}
+			continue
 		}
-		w.pass[at] = answer{verdict: verdict, rounds: asked}
-		if err := w.decided(ctx, c, w.pass[at]); err != nil {
-			return err
+		now := answer{verdict: said.Verdict, rounds: 1}
+		if told && before.verdict == said.Verdict {
+			now.rounds = before.rounds + 1
+		}
+		if said.Verdict == Disagreed {
+			now.skip = min(now.rounds, maxSkip)
+			if now.rounds == 1 {
+				if err := w.store.Disagree(ctx, network, c.Key, c.Tx, w.now()); err != nil {
+					return false, err
+				}
+			}
+		} else if told && before.verdict == Disagreed {
+			if err := w.store.Agree(ctx, network, c.Key, c.Tx); err != nil {
+				return false, err
+			}
+		}
+		w.pass[at] = now
+		if err := w.decided(ctx, c, now); err != nil {
+			return false, err
 		}
 	}
 	if len(candidates) < w.perRound {
@@ -293,7 +355,11 @@ func (w *Worker) round(ctx context.Context) error {
 		last := candidates[len(candidates)-1]
 		w.from = payment.Place{BlockHeight: last.BlockHeight, Tx: last.Tx}
 	}
-	return w.swept(ctx)
+	if short {
+		w.log.Warn("fewer endpoints answered than agreement takes", "network", w.network.Name,
+			"agreements", w.network.Agreements)
+	}
+	return short, w.swept(ctx)
 }
 
 // swept moves the payments the clock has passed by: those that have reached

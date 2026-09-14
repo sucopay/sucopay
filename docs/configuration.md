@@ -114,11 +114,12 @@ find, that many times in a row, is treated as gone. It cannot be 1: not finding 
 may be that endpoint reading a state it has not finished replacing.
 
 A network with an `own` node is asked only there. A node the operator runs is the one they
-already trust. A network without one asks all of the `others`, and counts a transfer as having
-paid only when their answers agree. Every one of them is asked, so a longer list is more answers
-that have to agree: one that does not answer leaves the network `unreachable` until it does, and
-answers that differ leave the payment where it is. The transfer stays recorded either way, and
-the funds are at the merchant's address.
+already trust. A network without one asks the `others` in order, and counts a transfer as having
+paid once two of them agree. One that does not answer is skipped, so a longer list is more to
+fall back on rather than more answers that have to agree; fewer than two answering leaves the
+network `too-few` until another does. One answer that differs leaves the payment where it is, and
+no third endpoint is asked to break the tie. The transfer stays recorded either way, and the
+funds are at the merchant's address.
 
 Reading blocks and deciding what settled are two different things. A round reads one endpoint: a
 cursor is a place in a chain as one provider tells it, so changing providers part way would leave

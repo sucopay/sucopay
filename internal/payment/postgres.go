@@ -616,6 +616,58 @@ func (s *Postgres) Undecided(ctx context.Context, network Network) (int, error) 
 	return waiting, nil
 }
 
+// Disagree records that the endpoints were first found to disagree about a
+// recorded transfer. A row already saying so keeps the time it says.
+func (s *Postgres) Disagree(ctx context.Context, network Network, key, tx string, now time.Time) error {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	if _, err := s.pool.Exec(ctx, `
+		update observations
+		   set disagreed_at = coalesce(disagreed_at, $4)
+		 where network = $1 and key = $2 and tx = $3`,
+		network, key, tx, now); err != nil {
+		return fmt.Errorf("transfer %s: %w", tx, err)
+	}
+	return nil
+}
+
+// Agree records that the endpoints no longer disagree about a recorded
+// transfer.
+func (s *Postgres) Agree(ctx context.Context, network Network, key, tx string) error {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	if _, err := s.pool.Exec(ctx, `
+		update observations
+		   set disagreed_at = null
+		 where network = $1 and key = $2 and tx = $3`,
+		network, key, tx); err != nil {
+		return fmt.Errorf("transfer %s: %w", tx, err)
+	}
+	return nil
+}
+
+// Disagreeing is how many of the transfers [Postgres.Undecided] counts the
+// endpoints disagree about. Nothing settles from a disagreement and it does
+// not resolve itself, so the count is what an operator has to go on.
+func (s *Postgres) Disagreeing(ctx context.Context, network Network) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	var disagreeing int
+	if err := s.pool.QueryRow(ctx, `
+		select count(*)
+		  from observations o
+		  join payments p on p.account_id = o.account_id and p.id = o.payment_id
+		 where o.network = $1 and o.reason = $2 and o.final_at is not null
+		   and o.disagreed_at is not null and p.status = any($3)`,
+		network, Matched, []Status{AwaitingPayment, AwaitingFinality}).Scan(&disagreeing); err != nil {
+		return 0, fmt.Errorf("observations on %s: %w", network, err)
+	}
+	return disagreeing, nil
+}
+
 // Open counts the payments on a network that are still open: payable, or
 // past their deadline and waiting to learn whether anything arrives. It is
 // what the cursor command asks before it skips a range of the chain, since

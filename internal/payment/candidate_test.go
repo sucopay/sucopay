@@ -481,6 +481,47 @@ func TestUndecided_CountsTheRowsWaitingForAnAnswer(t *testing.T) {
 	}
 }
 
+// Disagreement is written the first time and kept from then, so that the
+// time doctor sees is when it started; agreement takes it away.
+func TestDisagreeing_CountsTheRowsTheEndpointsDisagreeAboutUntilTheyAgree(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	hit := spent(t, s, first)
+	if err := recording(t, s, pool, 100, 100, true, seenAt(hit, "tx100", 100, payment.Matched)); err != nil {
+		t.Fatal(err)
+	}
+	recordMatched(t, s, pool, 101)
+	first := now.Add(-time.Hour)
+	if err := s.Disagree(t.Context(), network, hit.Attempt.Key(), "tx100", first); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Disagree(t.Context(), network, hit.Attempt.Key(), "tx100", now); err != nil {
+		t.Fatal(err)
+	}
+
+	disagreeing, err := s.Disagreeing(t.Context(), network)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disagreeing != 1 {
+		t.Errorf("Disagreeing = %d, want the one row the endpoints disagree about", disagreeing)
+	}
+	var since time.Time
+	if err := pool.QueryRow(t.Context(), `select disagreed_at from observations where tx = 'tx100'`).Scan(&since); err != nil {
+		t.Fatal(err)
+	}
+	if !since.Equal(first) {
+		t.Errorf("disagreed_at = %v, want the first time, %v", since, first)
+	}
+	if err := s.Agree(t.Context(), network, hit.Attempt.Key(), "tx100"); err != nil {
+		t.Fatal(err)
+	}
+	if disagreeing, err := s.Disagreeing(t.Context(), network); err != nil || disagreeing != 0 {
+		t.Errorf("Disagreeing = %d, %v; want none once they agree", disagreeing, err)
+	}
+}
+
 // Counted across accounts, like the rows it counts. A number that left one
 // merchant's transfers out would say a deployment was getting somewhere while
 // theirs sat still.

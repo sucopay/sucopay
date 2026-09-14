@@ -49,11 +49,12 @@ One word for each network:
 | `deciding` | A round asked the endpoints and wrote what their answers settled |
 | `no-round` | No round has finished since this instance started. Nothing is wrong; nothing has happened yet |
 | `waiting` | Another instance holds the network. This one is the spare, and the deployment is settling it |
-| `unreachable` | The last round did not finish, which is almost always a provider that did not answer |
+| `too-few` | Fewer endpoints answered the last round than agreement takes. What it asked about is left where it was until another answers, and `doctor` says how many answer |
+| `unreachable` | The last round did not finish. An endpoint that does not answer no longer ends a round, so what stopped it is on this side, which is the database, and `database` says so separately |
 | `stalled` | Rounds have stopped finishing. A round cannot end the loop it is in, so this is a worker stuck inside one |
 
-`deciding` stands for three rounds of `networks.<name>.finality.recheck`, so that one slow round
-does not take a working deployment out of its word.
+`deciding` and `too-few` stand for three rounds of `networks.<name>.finality.recheck`, so that one
+slow round does not take a working deployment out of its word.
 
 One word for each asset, `unchanged` or `changed`. It is `changed` once the code the chain runs
 for that asset is not the code it ran when the instance started, which is what an upgrade of a
@@ -100,6 +101,12 @@ them. The worker is in the process that serves, so a report counts what the data
 rather than asking a worker that is not there. A number that keeps growing between reports is a
 deployment whose settling has stopped getting anywhere, and `/readyz` says which of the words
 above it is in.
+
+A network reached only through `others` says how many of them answer, as `3 of 4 others answer`.
+`no spare` follows when exactly as many answer as agreement takes, and `too few to settle` below
+that. Transfers the endpoints disagree about are counted after what is waiting, as
+`2 waiting to settle, 1 disagreed about`, and only when there are any. Nothing settles from a
+disagreement and it does not resolve itself, so the count is the operator's to act on.
 
 `behind` counts from the final block rather than the latest, because the finalised range is what
 a round reads. A network that could not be read says so in place of the numbers, with the
