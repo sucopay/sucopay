@@ -55,11 +55,14 @@ const (
 )
 
 // Answers is what the endpoints made of a recorded transfer: the verdict, how
-// many gave a well-formed answer, and how many of those the verdict rests on.
+// many gave a well-formed answer, how many of those the verdict rests on, and
+// the places in the list of the ones that did not answer. Silent is for a
+// caller with more questions to leave those out of the next one.
 type Answers struct {
 	Verdict  Verdict
 	Answered int
 	Agreed   int
+	Silent   []int
 }
 
 // Ask puts a recorded transfer to the endpoints in order until as many as
@@ -91,7 +94,7 @@ func Ask(ctx context.Context, endpoints []chain.Chain, need int, r Recorded) (An
 		return Answers{}, errors.New("finality: no endpoint to ask")
 	}
 	var a Answers
-	for _, endpoint := range endpoints {
+	for i, endpoint := range endpoints {
 		if ctx.Err() != nil {
 			return Answers{}, fmt.Errorf("finality: %w", ctx.Err())
 		}
@@ -102,20 +105,22 @@ func Ask(ctx context.Context, endpoints []chain.Chain, need int, r Recorded) (An
 			if ctx.Err() != nil {
 				return Answers{}, fmt.Errorf("finality: %w", ctx.Err())
 			}
+			a.Silent = append(a.Silent, i)
 			continue
 		}
 		a.Answered++
 		if a.Answered == 1 {
 			a.Verdict = said
 		} else if said != a.Verdict {
-			return Answers{Verdict: Disagreed, Answered: a.Answered}, nil
+			return Answers{Verdict: Disagreed, Answered: a.Answered, Silent: a.Silent}, nil
 		}
 		a.Agreed++
 		if a.Agreed == need {
 			return a, nil
 		}
 	}
-	return Answers{Verdict: Unanswered, Answered: a.Answered, Agreed: a.Agreed}, nil
+	a.Verdict = Unanswered
+	return a, nil
 }
 
 // asked is what one endpoint makes of a recorded transfer.

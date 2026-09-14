@@ -694,6 +694,42 @@ func (down) Receipt(context.Context, string) ([]chain.Transfer, error) {
 
 func (down) Head(context.Context) (chain.Head, error) { return chain.Head{}, errors.New("no") }
 
+// mute is an endpoint that answers nothing and counts how often it was asked.
+type mute struct {
+	chain.Chain
+	asked *int
+}
+
+func (m mute) Receipt(context.Context, string) ([]chain.Transfer, error) {
+	*m.asked++
+	return nil, errors.New("no")
+}
+
+func (m mute) Head(context.Context) (chain.Head, error) {
+	*m.asked++
+	return chain.Head{}, errors.New("no")
+}
+
+// Once a round, for the reason round gives, and the next round asks it again.
+func TestRound_AsksAnEndpointThatDidNotAnswerOnceARound(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+	theirs, attempt := d.attempted(t, held)
+	d.recorded(t, d.paying(theirs, attempt.Key()))
+	asked := 0
+	d.worker.network.Endpoints = []chain.Chain{mute{asked: &asked}, d.chain}
+
+	d.round(t)
+	d.round(t)
+
+	if asked != 2 {
+		t.Errorf("the endpoint that does not answer was asked %d times over two rounds of two transfers, want once a round", asked)
+	}
+	if got := d.status(t, held, d.payment); got != payment.AwaitingPayment {
+		t.Errorf("the payment is %s, want it left awaiting payment on the chain that answered waiting", got)
+	}
+}
+
 func TestRun_SaysTooFewWhenFewerEndpointsAnswerThanAgreementTakes(t *testing.T) {
 	t.Parallel()
 	d := decide(t, 2)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -292,6 +293,11 @@ func (w *Worker) Run(ctx context.Context) error {
 // A transfer the endpoints disagree about is put to them again less often the
 // longer they disagree, and never dropped: disagreement does not resolve
 // itself, and asking every round would be asking for the same answer.
+//
+// An endpoint that did not answer is asked nothing more this round. One that
+// is timing out costs its timeout every time it is asked, and a round asks
+// about up to a hundred transfers; asked once, it costs one. The next round
+// asks it again.
 func (w *Worker) round(ctx context.Context) (short bool, err error) {
 	if w.network.Misses < 1 {
 		return false, fmt.Errorf("%s: a transfer is set to be given up on after %d rounds",
@@ -306,6 +312,7 @@ func (w *Worker) round(ctx context.Context) (short bool, err error) {
 	if err != nil {
 		return false, err
 	}
+	asking := slices.Clone(w.network.Endpoints)
 	for _, c := range candidates {
 		at := recorded{key: c.Key, tx: c.Tx}
 		before, told := w.answers[at]
@@ -314,10 +321,15 @@ func (w *Worker) round(ctx context.Context) (short bool, err error) {
 			w.pass[at] = before
 			continue
 		}
-		said, err := Ask(ctx, w.network.Endpoints, w.network.Agreements,
-			Recorded{Tx: c.Tx, Height: c.BlockHeight, Hash: c.BlockHash})
-		if err != nil {
-			return false, err
+		said := Answers{Verdict: Unanswered}
+		if len(asking) > 0 {
+			if said, err = Ask(ctx, asking, w.network.Agreements,
+				Recorded{Tx: c.Tx, Height: c.BlockHeight, Hash: c.BlockHash}); err != nil {
+				return false, err
+			}
+		}
+		for _, i := range slices.Backward(said.Silent) {
+			asking = slices.Delete(asking, i, i+1)
 		}
 		if said.Verdict == Unanswered {
 			// Nothing was said, so nothing is remembered as said: what the

@@ -16,7 +16,7 @@ import (
 // writes what the answers settle through the payment store. A database driver
 // reaching it would mean the deciding and the SQL had been put in one place.
 var allowed = []string{
-	"context", "errors", "fmt", "log/slog", "sync", "time",
+	"context", "errors", "fmt", "log/slog", "slices", "sync", "time",
 	"github.com/sucopay/sucopay/internal/adapter/chain",
 	"github.com/sucopay/sucopay/internal/invisible",
 	"github.com/sucopay/sucopay/internal/payment",
