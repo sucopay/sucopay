@@ -67,7 +67,7 @@ func doctor(ctx context.Context, args []string, stdout io.Writer) error {
 	database, reach := "none configured", error(nil)
 	var credentials credential.InForce
 	if cfg := resolved.Config; cfg.Database.URL != "" {
-		db, reach = postgres.Open(ctx, cfg.Database.URL)
+		db, reach = postgres.Open(ctx, cfg.Database.URL.Expose())
 		if reach != nil {
 			database, reach = "unreachable", errors.New(invisible.Quote(reach.Error()))
 		} else {
@@ -137,7 +137,7 @@ func describeDatabase(ctx context.Context, db *postgres.Pool, cfg config.Config)
 	// The key is parsed all the same, so that a store is only ever built as
 	// serve builds one. What the document holds passed the same check when
 	// it was read, so this cannot fail past that.
-	key, err := credential.ParseKey(cfg.Credentials.Key)
+	key, err := credential.ParseKey(cfg.Credentials.Key.Expose())
 	if err != nil {
 		return database, "", schema, err
 	}

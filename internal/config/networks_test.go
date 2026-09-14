@@ -132,7 +132,7 @@ func TestResolve_AcceptsAnEndpointOverHTTPSOrOverHTTPToThisMachine(t *testing.T)
 
 			got := mustResolve(t, doc, noEnv).Config
 
-			if own := got.Networks["polygon"].RPC.Own; own != endpoint {
+			if own := got.Networks["polygon"].RPC.Own.Expose(); own != endpoint {
 				t.Errorf("networks.polygon.rpc.own = %q, want %q", own, endpoint)
 			}
 		})
@@ -141,7 +141,7 @@ func TestResolve_AcceptsAnEndpointOverHTTPSOrOverHTTPToThisMachine(t *testing.T)
 
 			got := mustResolve(t, doc, noEnv).Config
 
-			if others := got.Networks["polygon"].RPC.Others; !slices.Equal(others, []string{endpoint}) {
+			if others := got.Networks["polygon"].RPC.Others; !slices.Equal(others, []config.Hidden{config.Hidden(endpoint)}) {
 				t.Errorf("networks.polygon.rpc.others = %v, want [%q]", others, endpoint)
 			}
 		})
@@ -192,7 +192,7 @@ func TestResolve_ReadsANetworkHoldingAnOwnNodeAndOthers(t *testing.T) {
 	if rpc.Own != polygonRPC {
 		t.Errorf("networks.polygon.rpc.own = %q, want %q", rpc.Own, polygonRPC)
 	}
-	if !slices.Equal(rpc.Others, others) {
+	if !slices.Equal(rpc.Others, []config.Hidden{config.Hidden(others[0]), config.Hidden(others[1])}) {
 		t.Errorf("networks.polygon.rpc.others = %v, want %v", rpc.Others, others)
 	}
 }
@@ -228,7 +228,7 @@ func TestResolve_ReadsAnEndpointOfOthersFromTheEnvironment(t *testing.T) {
 
 	got := mustResolve(t, doc, env)
 
-	if others := got.Config.Networks["polygon"].RPC.Others; !slices.Equal(others, []string{polygonRPC}) {
+	if others := got.Config.Networks["polygon"].RPC.Others; !slices.Equal(others, []config.Hidden{polygonRPC}) {
 		t.Errorf("networks.polygon.rpc.others = %v, want [%q]", others, polygonRPC)
 	}
 	line := lineAt(t, got.Report(), "networks.polygon.rpc.others[0]")

@@ -78,8 +78,8 @@ func Resolve(doc map[string]any, env Lookup) (Resolved, error) {
 	cfg := Config{
 		Listen:      Listen{Host: host, Port: port, BaseURL: baseURL},
 		Log:         Log{Level: logLevel, Format: logFormat},
-		Database:    Database{Managed: managed, URL: dbURL},
-		Credentials: Credentials{Key: credentialsKey, KeyID: credentialsKeyID},
+		Database:    Database{Managed: managed, URL: Hidden(dbURL)},
+		Credentials: Credentials{Key: Hidden(credentialsKey), KeyID: credentialsKeyID},
 		Networks:    networks,
 		Assets:      assets,
 	}
@@ -211,20 +211,25 @@ func (r *reader) text(path, def string) string {
 	return s
 }
 
-// refuseCredentials keeps a username or password out of every setting except
-// the ones declared secret. Secrecy is decided by the key, so a document is
-// free to name any variable at any key, and a report prints in full whatever
-// arrives at a key that is not secret. Refusing the value is what makes that
-// rule safe: credentials reach the paths built to hold them or they do not
-// start the instance.
+// refuseCredentials keeps a username or password, and a key, out of every
+// setting except the ones declared secret. Secrecy is decided by the key, so
+// a document is free to name any variable at any key, and a report prints in
+// full whatever arrives at a key that is not secret. Refusing the value is
+// what makes that rule safe: credentials reach the paths built to hold them
+// or they do not start the instance.
 //
-// The message holds no part of the value.
+// A key is the shape credentials.key takes, and the setting it is most likely
+// to land in by mistake is the one beside it, key_id, which is printed. The
+// message holds no part of the value.
 func (r *reader) refuseCredentials(path, value string) {
 	if Secret(path) {
 		return
 	}
 	if u, err := url.Parse(value); err == nil && u.User != nil {
 		r.fail(path, "carries a username or password, which only a secret setting may hold")
+	}
+	if raw, err := hex.DecodeString(value); err == nil && len(raw) == keyBytes {
+		r.fail(path, "is the shape of a key, which only a secret setting may hold")
 	}
 }
 
@@ -369,6 +374,18 @@ func (r *reader) networks() map[string]Network {
 	return out
 }
 
+// hidden wraps each of a list of texts.
+func hidden(texts []string) []Hidden {
+	if texts == nil {
+		return nil
+	}
+	out := make([]Hidden, len(texts))
+	for i, text := range texts {
+		out[i] = Hidden(text)
+	}
+	return out
+}
+
 // endpoints reads where a network is reached. Anything but a mapping under
 // rpc is refused there rather than leaving what is under it unread: the
 // earlier shape of this setting was a URL written straight under rpc, and a
@@ -396,8 +413,8 @@ func (r *reader) endpoints(path string, wanted bool) Endpoints {
 		return Endpoints{}
 	}
 	return Endpoints{
-		Own:    r.text(path+".own", ""),
-		Others: r.texts(path + ".others"),
+		Own:    Hidden(r.text(path+".own", "")),
+		Others: hidden(r.texts(path + ".others")),
 	}
 }
 
@@ -580,10 +597,10 @@ func (r *reader) validateNetwork(path string, n Network) {
 func (r *reader) validateEndpoints(path string, e Endpoints) {
 	own := r.sources[path+".own"].Origin != FromDefault
 	if own {
-		r.validateRPC(path+".own", e.Own)
+		r.validateRPC(path+".own", e.Own.Expose())
 	}
 	for i, endpoint := range e.Others {
-		r.validateRPC(fmt.Sprintf("%s.others[%d]", path, i), endpoint)
+		r.validateRPC(fmt.Sprintf("%s.others[%d]", path, i), endpoint.Expose())
 	}
 	if !own && len(e.Others) == 0 && !r.failedUnder(path) {
 		r.fail(path, "give own, others, or both")
@@ -725,7 +742,7 @@ func (r *reader) validateCredentials(db Database, c Credentials) {
 	// Length is checked after decoding. Thirty-two characters of hexadecimal
 	// are sixteen bytes, and a check on the text would take them for enough.
 	if !r.failed("credentials.key") {
-		switch raw, err := hex.DecodeString(c.Key); {
+		switch raw, err := hex.DecodeString(c.Key.Expose()); {
 		case c.Key == "":
 			// Not required until a database is named. A section contradicting
 			// itself has not named one, so [reader.failed] is asked about the

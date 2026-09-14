@@ -113,7 +113,7 @@ func TestOpenChains_RepeatsNothingOfAnEndpointItRefuses(t *testing.T) {
 	t.Parallel()
 	const endpoint = "http://reader.example.invalid/v1?key=secret"
 	_, err := openChains(listing(t, map[string]config.Network{
-		"polygon": {Kind: "evm", ChainID: 137, RPC: config.Endpoints{Own: endpoint},
+		"polygon": {Kind: "evm", ChainID: 137, RPC: config.Endpoints{Own: config.Hidden(endpoint)},
 			Poll: time.Second, Width: 10},
 	}))
 
@@ -157,8 +157,8 @@ func TestOpenChains_ReadsTheOwnNodeWhenThereIsOneAndTheFirstOfOthersOtherwise(t 
 	const refused = "http://reader.example.invalid/v1?key=secret"
 	const accepted = "https://reader.example.invalid/v1"
 	for what, endpoints := range map[string]config.Endpoints{
-		"own over others":     {Own: refused, Others: []string{accepted}},
-		"the first of others": {Others: []string{refused, accepted}},
+		"own over others":     {Own: refused, Others: []config.Hidden{accepted}},
+		"the first of others": {Others: []config.Hidden{refused, accepted}},
 	} {
 		t.Run(what, func(t *testing.T) {
 			_, err := openChains(listing(t, map[string]config.Network{
@@ -211,8 +211,8 @@ func TestOpenSettling_AsksTheOwnNodeAloneAndEveryOtherWhenThereIsNone(t *testing
 		rpc  config.Endpoints
 		want int
 	}{
-		"the own node alone":       {config.Endpoints{Own: "one", Others: []string{"two", "three"}}, 1},
-		"every one of the others":  {config.Endpoints{Others: []string{"two", "three"}}, 2},
+		"the own node alone":       {config.Endpoints{Own: "one", Others: []config.Hidden{"two", "three"}}, 1},
+		"every one of the others":  {config.Endpoints{Others: []config.Hidden{"two", "three"}}, 2},
 		"one that reaches nowhere": {config.Endpoints{}, 1},
 	} {
 		t.Run(what, func(t *testing.T) {

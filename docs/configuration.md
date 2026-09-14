@@ -24,7 +24,8 @@ line carries one.
 - `networks.*.rpc.others`
 
 Every other value prints in full, which is what makes refusing a credential inside one safe: a URL
-carrying a username or password at any other setting is refused, and no part of it is printed.
+carrying a username or password at any other setting is refused, and so is a value of 64
+hexadecimal characters, which is the shape of a key, and no part of either is printed.
 
 ## listen
 

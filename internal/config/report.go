@@ -21,6 +21,14 @@ type ReportLine struct {
 	Secret bool
 }
 
+// presence is all a report says of a Hidden: whether there is one.
+func presence(h Hidden) string {
+	if h == "" {
+		return "not set"
+	}
+	return "set"
+}
+
 // Report returns every setting the document was read for, sorted by path. For
 // a secret setting the value is replaced by whether it is set, so that a caller
 // rendering the report cannot disclose one.
@@ -30,7 +38,8 @@ type ReportLine struct {
 //
 // Secrecy is decided by path, and a path is built from names the document
 // chooses. [Resolve] refuses a network name holding a dot for that reason; a
-// Config assembled without it can put a secret at a path this does not match.
+// Config assembled without it can put a secret at a path this does not match,
+// and what hides the value there is its type, [Hidden].
 func (r Resolved) Report() []ReportLine {
 	values := map[string]string{
 		"listen.host":        r.Config.Listen.Host,
@@ -39,8 +48,8 @@ func (r Resolved) Report() []ReportLine {
 		"log.level":          r.Config.Log.Level,
 		"log.format":         r.Config.Log.Format,
 		"database.managed":   strconv.FormatBool(r.Config.Database.Managed),
-		"database.url":       r.Config.Database.URL,
-		"credentials.key":    r.Config.Credentials.Key,
+		"database.url":       presence(r.Config.Database.URL),
+		"credentials.key":    presence(r.Config.Credentials.Key),
 		"credentials.key_id": r.Config.Credentials.KeyID,
 	}
 	for name, n := range r.Config.Networks {
@@ -56,9 +65,9 @@ func (r Resolved) Report() []ReportLine {
 			// is: a network reached only through others still has an own to
 			// report as not set, and a row missing entirely would read as a
 			// setting this kind does not take.
-			values[path+".rpc.own"] = n.RPC.Own
+			values[path+".rpc.own"] = presence(n.RPC.Own)
 			for i, endpoint := range n.RPC.Others {
-				values[fmt.Sprintf("%s.rpc.others[%d]", path, i)] = endpoint
+				values[fmt.Sprintf("%s.rpc.others[%d]", path, i)] = presence(endpoint)
 			}
 		}
 	}
@@ -71,19 +80,17 @@ func (r Resolved) Report() []ReportLine {
 
 	lines := make([]ReportLine, 0, len(values))
 	for path, value := range values {
-		secret := Secret(path)
-		if secret {
-			if value == "" {
-				value = "not set"
-			} else {
-				value = "set"
-			}
+		// The second layer. The values above are text by now, so a secret
+		// path that was given anything but its presence is reduced here,
+		// whatever it was given.
+		if Secret(path) && value != "not set" {
+			value = "set"
 		}
 		lines = append(lines, ReportLine{
 			Path:   invisible.Quote(path),
 			Value:  invisible.Quote(value),
 			Source: r.Sources[path],
-			Secret: secret,
+			Secret: Secret(path),
 		})
 	}
 	slices.SortFunc(lines, func(a, b ReportLine) int { return cmp.Compare(a.Path, b.Path) })

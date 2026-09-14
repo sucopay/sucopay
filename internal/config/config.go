@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"io"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -138,11 +140,51 @@ type Listen struct {
 	BaseURL string
 }
 
+// Hidden is a setting whose value nothing shows: a key, or a URL that may
+// carry a password. fmt, slog and encoding/json are each given [redacted]
+// instead, so that a Hidden inside an error, a log line or a marshalled
+// Config carries none of it. [Hidden.Expose] is the text, for the place that
+// uses it.
+//
+// The type is what hides the value; [Secret] is what a report asks about a
+// path. Both, because a Config assembled by hand can put a secret at a path
+// Secret does not match, and a value at a secret path can be read out of the
+// document by something that never asks.
+type Hidden string
+
+// redacted is what a Hidden turns into on the way to a log, a terminal, or an
+// error.
+const redacted = "[redacted]"
+
+// Expose is the text, for the place that opens a connection with it. Nothing
+// else calls it: a Hidden is handed on as it is, and whatever it reaches
+// prints [redacted]. Go cannot stop string(h), so that is looked for by hand.
+func (h Hidden) Expose() string { return string(h) }
+
+// Format is what fmt does with a Hidden, whatever the verb: it writes
+// [redacted] and none of the text. String would leave %#v and %d, which
+// print a string type as Go syntax and as a complaint with the value inside.
+func (h Hidden) Format(f fmt.State, _ rune) {
+	_, _ = io.WriteString(f, redacted) //nolint:errcheck // fmt's own buffer, and nothing to report it to
+}
+
+// LogValue is what slog does with a Hidden: [redacted]. slog's JSON handler
+// does not go through fmt; it marshals, and a string type marshals as its
+// text.
+func (h Hidden) LogValue() slog.Value { return slog.StringValue(redacted) }
+
+// MarshalJSON is what encoding/json does with a Hidden: the text [redacted],
+// as a string.
+func (h Hidden) MarshalJSON() ([]byte, error) { return []byte(`"` + redacted + `"`), nil }
+
+// MarshalText is what every other encoder does with a Hidden.
+func (h Hidden) MarshalText() ([]byte, error) { return []byte(redacted), nil }
+
 // Database says where payment state is kept. Managed and URL are mutually
 // exclusive: a managed database is one suco Pay runs itself.
 type Database struct {
 	Managed bool
-	URL     string
+	URL     Hidden
 }
 
 // Credentials is what an instance needs to read a stored credential.
@@ -150,7 +192,7 @@ type Credentials struct {
 	// Key is what the stored form of a credential is hashed under. Empty
 	// unless a document sets one, and required once database.url is set,
 	// because that is when a credential can be stored and read back.
-	Key string
+	Key Hidden
 	// KeyID says which key a stored credential was made with. Not a secret,
 	// and derived from nothing: a value taken from the key would let whoever
 	// read the table test a guess at the key without a credential in hand.
@@ -168,8 +210,8 @@ type Credentials struct {
 // Every value here may carry a credential, and nothing that reads one writes
 // it anywhere.
 type Endpoints struct {
-	Own    string
-	Others []string
+	Own    Hidden
+	Others []Hidden
 }
 
 // Network is one chain the instance can observe. Kind names how to reach it:

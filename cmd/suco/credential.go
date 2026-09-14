@@ -54,12 +54,12 @@ func openStore(ctx context.Context) (opened, error) {
 	}
 	// Read before the database is opened: a malformed key needs no
 	// connection to be refused.
-	key, err := credential.ParseKey(cfg.Credentials.Key)
+	key, err := credential.ParseKey(cfg.Credentials.Key.Expose())
 	if err != nil {
 		return opened{}, err
 	}
 
-	db, err := postgres.Open(ctx, cfg.Database.URL)
+	db, err := postgres.Open(ctx, cfg.Database.URL.Expose())
 	if err != nil {
 		return opened{}, err
 	}

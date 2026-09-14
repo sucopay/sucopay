@@ -23,7 +23,7 @@ English: [configuration.md](configuration.md)
 - `networks.*.rpc.others`
 
 これ以外の値はそのまま印字します。だからこそ、秘密でない設定に資格情報が入っていれば断ります。
-ユーザ名やパスワードを持つ URL は、印字せずに断ります。
+ユーザ名やパスワードを持つ URL と、鍵の形をした 16 進 64 文字の値は、印字せずに断ります。
 
 ## listen
 

@@ -59,13 +59,13 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		decides     api.Settling
 	)
 	if cfg.Database.URL != "" {
-		db, err := postgres.Open(ctx, cfg.Database.URL)
+		db, err := postgres.Open(ctx, cfg.Database.URL.Expose())
 		if err != nil {
 			return err
 		}
 		defer db.Close()
 		ready = db.Ping
-		key, err := credential.ParseKey(cfg.Credentials.Key)
+		key, err := credential.ParseKey(cfg.Credentials.Key.Expose())
 		if err != nil {
 			return err
 		}

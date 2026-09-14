@@ -731,8 +731,8 @@ func TestResolve_AcceptsCredentialsAtASecretSetting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err = %v, want none: a database URL is where credentials belong", err)
 	}
-	if got.Config.Database.URL != dsn {
-		t.Errorf("database.url = %q, want it kept whole", got.Config.Database.URL)
+	if got.Config.Database.URL.Expose() != dsn {
+		t.Errorf("database.url = %q, want it kept whole", got.Config.Database.URL.Expose())
 	}
 }
 
@@ -828,7 +828,7 @@ func TestResolve_AsksForNoCredentialsKeyWithoutADatabase(t *testing.T) {
 	got := mustResolve(t, map[string]any{}, noEnv).Config
 
 	if got.Credentials.Key != "" {
-		t.Errorf("key = %q, want none", got.Credentials.Key)
+		t.Errorf("key = %q, want none", got.Credentials.Key.Expose())
 	}
 }
 
@@ -890,7 +890,7 @@ func TestResolve_KeepsTheCredentialsKeyFromTheEnvironment(t *testing.T) {
 	got := mustResolve(t, doc, envOf(map[string]string{"SUCO_CREDENTIALS_KEY": testKey})).Config
 
 	if got.Credentials.Key != testKey {
-		t.Errorf("key = %q, want it read from the environment", got.Credentials.Key)
+		t.Errorf("key = %q, want it read from the environment", got.Credentials.Key.Expose())
 	}
 	if got.Credentials.KeyID != "abcd1234" {
 		t.Errorf("key_id = %q, want abcd1234", got.Credentials.KeyID)
@@ -963,5 +963,23 @@ func TestResolve_RejectsTheWaitSettingThatNoLongerExists(t *testing.T) {
 	}
 	if got := problems(t, err); len(got) != 1 {
 		t.Errorf("got %d problems, want the key alone: %v", len(got), got)
+	}
+}
+
+// A key at a setting that is not secret would be printed by a report in
+// full. The one it is most likely to land in is key_id, next to where it
+// belongs.
+func TestResolve_RefusesAKeyShapedValueOutsideASecretSetting(t *testing.T) {
+	t.Parallel()
+	doc := withDatabase(map[string]any{"key": testKey, "key_id": testKey})
+
+	_, err := config.Resolve(doc, noEnv)
+
+	p := wantProblemAt(t, err, "credentials.key_id")
+	if strings.Contains(p.Message, testKey[:16]) {
+		t.Errorf("the refusal carries the key: %s", p.Message)
+	}
+	if !strings.Contains(p.Message, "key") {
+		t.Errorf("the refusal does not say what shape it saw: %s", p.Message)
 	}
 }

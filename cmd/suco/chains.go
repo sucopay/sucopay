@@ -41,7 +41,7 @@ func openChains(cfg config.Config) ([]observe.Network, error) {
 		// it. What is added here is which network was being opened, since a
 		// deployment reads several and the refusal says nothing until it says
 		// which one.
-		read, err := kind.Open(chain.Settings{Name: name, ChainID: identity(n), RPC: endpoint(n)})
+		read, err := kind.Open(chain.Settings{Name: name, ChainID: identity(n), RPC: endpoint(n).Expose()})
 		if err != nil {
 			return nil, fmt.Errorf("network %s: %w", name, err)
 		}
@@ -100,7 +100,7 @@ func openSettling(cfg config.Config) ([]finality.Network, error) {
 		for _, url := range endpoints(n) {
 			// The endpoint is a secret, and what is added here is which
 			// network was being opened, for the reason [openChains] gives.
-			read, err := kind.Open(chain.Settings{Name: name, ChainID: identity(n), RPC: url})
+			read, err := kind.Open(chain.Settings{Name: name, ChainID: identity(n), RPC: url.Expose()})
 			if err != nil {
 				return nil, fmt.Errorf("network %s: %w", name, err)
 			}
@@ -124,14 +124,14 @@ func openSettling(cfg config.Config) ([]finality.Network, error) {
 //
 // One endpoint with nothing in it where the document names none, which is a
 // kind that reaches no chain.
-func endpoints(n config.Network) []string {
+func endpoints(n config.Network) []config.Hidden {
 	if n.RPC.Own != "" {
-		return []string{n.RPC.Own}
+		return []config.Hidden{n.RPC.Own}
 	}
 	if len(n.RPC.Others) > 0 {
 		return n.RPC.Others
 	}
-	return []string{""}
+	return []config.Hidden{""}
 }
 
 // identity is what the chain is expected to call itself, written the way it
@@ -151,7 +151,7 @@ func identity(n config.Network) string {
 // it, and moving between providers would leave the position meaning something
 // else. The rest of the others are asked by [openSettling], where several
 // answers to one question are the point.
-func endpoint(n config.Network) string {
+func endpoint(n config.Network) config.Hidden {
 	if n.RPC.Own != "" {
 		return n.RPC.Own
 	}
