@@ -178,7 +178,7 @@ func TestOpenChains_ReadsTheOwnNodeWhenThereIsOneAndTheFirstOfOthersOtherwise(t 
 func TestOpenSettling_DecidesForEveryChainAnAssetSettlesOn(t *testing.T) {
 	t.Parallel()
 	settling := simulatedNetwork()
-	settling.Finality = config.Finality{Wait: time.Hour, Recheck: 30 * time.Second, Misses: 4}
+	settling.Finality = config.Finality{Recheck: 30 * time.Second, Misses: 4}
 
 	opened, err := openSettling(listing(t, map[string]config.Network{
 		"beta": settling, "alpha": settling,
@@ -195,9 +195,9 @@ func TestOpenSettling_DecidesForEveryChainAnAssetSettlesOn(t *testing.T) {
 			opened[0].Name, opened[1].Name)
 	}
 	for _, n := range opened {
-		if n.Wait != time.Hour || n.Recheck != 30*time.Second || n.Misses != 4 {
-			t.Errorf("%s settles on %v, %v, %d; want the document's hour, 30s and 4",
-				n.Name, n.Wait, n.Recheck, n.Misses)
+		if n.Recheck != 30*time.Second || n.Misses != 4 {
+			t.Errorf("%s settles on %v, %d; want the document's 30s and 4",
+				n.Name, n.Recheck, n.Misses)
 		}
 	}
 }

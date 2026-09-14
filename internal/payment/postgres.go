@@ -616,6 +616,26 @@ func (s *Postgres) Undecided(ctx context.Context, network Network) (int, error) 
 	return waiting, nil
 }
 
+// Open counts the payments on a network that are still open: payable, or
+// past their deadline and waiting to learn whether anything arrives. It is
+// what the cursor command asks before it skips a range of the chain, since
+// any of them may have been paid in that range and would then expire as
+// unpaid once the cursor is past its deadline.
+func (s *Postgres) Open(ctx context.Context, network Network) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	var open int
+	if err := s.pool.QueryRow(ctx, `
+		select count(*)
+		  from payments
+		 where asset_network = $1 and status = any($2)`,
+		network, []Status{AwaitingPayment, AwaitingFinality}).Scan(&open); err != nil {
+		return 0, fmt.Errorf("payments on %s: %w", network, err)
+	}
+	return open, nil
+}
+
 // Overdue are the payments on a network that are still open for payment and
 // have reached the moment they stop being open. Reaching the deadline is
 // passing it: it is the moment payment closes, not the last moment it is open.
@@ -643,8 +663,16 @@ func (s *Postgres) Overdue(ctx context.Context, network Network, at time.Time,
 }
 
 // Unsettled are the payments on a network that are waiting for finality, whose
-// wait was over at the moment given, and that have no transfer still matched
-// against them.
+// network has been read past their deadline, and that have no transfer still
+// matched against them.
+//
+// Read past the deadline is a fact about the chain, not the clock: the block
+// the network's position sits on is stamped at or after the deadline. A
+// transfer the asset would honour is carried in a block stamped before the
+// deadline, so once the position is past it every such transfer has been
+// read, and nothing arriving later can be one. A position with no time is one
+// written before positions carried a time, and says nothing, so nothing on
+// its network expires until a round writes one.
 //
 // A matched transfer is one that may yet pay the payment, whether or not it
 // has been seen where the chain keeps it. One short of what was asked never
@@ -653,22 +681,23 @@ func (s *Postgres) Overdue(ctx context.Context, network Network, at time.Time,
 //
 // The oldest deadline first, and at most the number asked for, for the reason
 // [Postgres.Overdue] gives.
-func (s *Postgres) Unsettled(ctx context.Context, network Network, at time.Time,
-	limit int) ([]Due, error) {
+func (s *Postgres) Unsettled(ctx context.Context, network Network, limit int) ([]Due, error) {
 	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx, `
 		select `+dueColumns+`
 		  from payments p
-		 where p.asset_network = $1 and p.status = $2 and p.expires_at <= $3
+		  join observation_cursors c on c.network = p.asset_network
+		 where p.asset_network = $1 and p.status = $2
+		   and c.block_time is not null and c.block_time >= p.expires_at
 		   and not exists (
 		       select 1 from observations o
 		        where o.account_id = p.account_id and o.payment_id = p.id
-		          and o.reason = $4)
+		          and o.reason = $3)
 		 order by p.expires_at, p.id
-		 limit $5`,
-		network, AwaitingFinality, at, Matched, limit)
+		 limit $4`,
+		network, AwaitingFinality, Matched, limit)
 	if err != nil {
 		return nil, fmt.Errorf("payments on %s: %w", network, err)
 	}

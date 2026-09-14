@@ -119,7 +119,7 @@ func decide(t *testing.T, misses int, endpoints ...chain.Chain) *decider {
 		endpoints = []chain.Chain{d.chain}
 	}
 	d.worker = New(Network{Name: string(local), Endpoints: endpoints,
-		Misses: misses, Wait: time.Hour, Recheck: time.Millisecond},
+		Misses: misses, Recheck: time.Millisecond},
 		// JSON, which is what a deployment writes with. The text handler
 		// escapes what a reader cannot see and would hide a line that did not.
 		d.store, d.leases, slog.New(slog.NewJSONHandler(d.log, nil)),
@@ -246,6 +246,19 @@ func (d *decider) recorded(t *testing.T, transfers ...chain.Transfer) string {
 		t.Fatal(err)
 	}
 	return first
+}
+
+// readTo writes where the network has been read to, with the time of the block
+// the position sits on. The sweep compares a deadline against it.
+func (d *decider) readTo(t *testing.T, at time.Time) {
+	t.Helper()
+	if _, err := d.pool.Exec(t.Context(), `
+		insert into observation_cursors (network, height, hash, block_time, updated_at)
+		values ($1, 1, 'block1', $2, $3)
+		on conflict (network) do update set block_time = $2, updated_at = $3`,
+		string(local), at, d.at); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // round is one round of the worker, which fails the test rather than handing
@@ -734,12 +747,15 @@ func TestRound_MovesAPaymentThatReachedItsDeadlineToWaitingForFinality(t *testin
 	}
 }
 
-// The wait runs from the deadline. A payment reaches the end of it with
-// nothing matched against it, and there is nothing left to wait for.
-func TestRound_ExpiresAPaymentWhoseWaitIsOverWithNothingMatchedAgainstIt(t *testing.T) {
+// A payment past its deadline expires once the network has been read
+// past that deadline with nothing matched against it. Reaching the end of some
+// wait is not what ends a payment; having read everything that could have
+// paid it, and found nothing, is.
+func TestRound_ExpiresAPaymentOnceTheNetworkIsReadPastTheDeadlineWithNothingMatched(t *testing.T) {
 	t.Parallel()
 	d := decide(t, 2)
 	unpaid, _ := d.attempted(t, held)
+	deadline := unpaid.ExpiresAt()
 
 	d.at = d.at.Add(time.Hour)
 	d.round(t)
@@ -748,15 +764,34 @@ func TestRound_ExpiresAPaymentWhoseWaitIsOverWithNothingMatchedAgainstIt(t *test
 		t.Fatalf("at the deadline the payment is %s, want awaiting finality", got)
 	}
 
-	d.at = d.at.Add(time.Hour)
+	d.readTo(t, deadline)
 	d.round(t)
 
 	if got := d.status(t, held, unpaid); got != payment.Expired {
-		t.Errorf("a wait past the deadline the payment is %s, want expired", got)
+		t.Errorf("with the network read past the deadline the payment is %s, want expired", got)
 	}
 	events := d.events(t, held, unpaid)
 	if len(events) != 2 || events[1].Name != "payment.expired" {
 		t.Errorf("the outbox holds %+v, want payment.awaiting_finality then payment.expired", events)
+	}
+}
+
+// However far the clock has gone, a network that has not been read past the
+// deadline may still hold a transfer carried before it. The payment waits for
+// the reading, not for the clock. Expiring it here would make that transfer
+// money that arrived late, and the payer did nothing wrong.
+func TestRound_ExpiresNothingWhileTheNetworkIsNotReadPastTheDeadline(t *testing.T) {
+	t.Parallel()
+	d := decide(t, 2)
+	unpaid, _ := d.attempted(t, held)
+	d.readTo(t, unpaid.ExpiresAt().Add(-time.Second))
+
+	d.at = d.at.Add(48 * time.Hour)
+	d.round(t)
+	d.round(t)
+
+	if got := d.status(t, held, unpaid); got != payment.AwaitingFinality {
+		t.Errorf("two days on, with the network a second short of the deadline, the payment is %s, want it left waiting", got)
 	}
 }
 
@@ -802,6 +837,7 @@ func TestRound_SweepsTheClockOverEveryAccount(t *testing.T) {
 	theirs, _ := d.attempted(t, second)
 
 	d.at = d.at.Add(2 * time.Hour)
+	d.readTo(t, d.at)
 	d.round(t)
 
 	for account, p := range map[payment.AccountID]*payment.Payment{held: mine, second: theirs} {
@@ -811,25 +847,6 @@ func TestRound_SweepsTheClockOverEveryAccount(t *testing.T) {
 	}
 	if got := d.status(t, held, d.payment); got != payment.AwaitingFinality {
 		t.Errorf("the payment with a transfer matched against it is %s, want it left waiting", got)
-	}
-}
-
-// A wait of nothing would end a payment in the round that stopped it being
-// payable, which is the wait's whole purpose.
-func TestRound_RefusesToRunWithNothingToWait(t *testing.T) {
-	t.Parallel()
-	d := decide(t, 2)
-	d.worker.network.Wait = 0
-	unpaid, _ := d.attempted(t, held)
-	d.at = d.at.Add(2 * time.Hour)
-
-	err := d.worker.round(t.Context())
-
-	if err == nil {
-		t.Fatal("a round ran with nothing set to wait")
-	}
-	if got := d.status(t, held, unpaid); got != payment.AwaitingPayment {
-		t.Errorf("the payment is %s, want it left awaiting payment", got)
 	}
 }
 

@@ -1,0 +1,13 @@
+-- The time of the block a network's position sits on.
+--
+-- A payment expires only once its network has been read past its deadline,
+-- and that is a question about the chain's time, which the height alone does
+-- not answer and the moment the row was written does not either: a reader
+-- that is current still sits behind the head, and one that stopped left a
+-- row that was fresh when it stopped.
+--
+-- Null is "not known yet". A row from before this column has one, and the
+-- next round writes the time it advances to. While it is null nothing on the
+-- network expires, which is the safe side: a time invented early would expire
+-- payments whose blocks have not been read.
+alter table observation_cursors add column block_time timestamptz;

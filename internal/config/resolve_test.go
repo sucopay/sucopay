@@ -944,3 +944,24 @@ func TestResolve_AsksForNoKeyWhileTheDatabaseContradictsItself(t *testing.T) {
 		}
 	}
 }
+
+// There is no wait after the deadline any more: a payment waits until its
+// network has been read past the deadline, which no setting decides. A
+// document written for the older rule names a key the code does not have, and
+// is told so by name rather than read past it.
+func TestResolve_RejectsTheWaitSettingThatNoLongerExists(t *testing.T) {
+	t.Parallel()
+	doc := map[string]any{"networks": map[string]any{
+		"local": map[string]any{"kind": "simulated", "finality": map[string]any{"wait": "2h"}},
+	}}
+
+	_, err := config.Resolve(doc, noEnv)
+
+	p := wantProblemAt(t, err, "networks.local.finality.wait")
+	if !strings.Contains(p.Message, "unknown key") {
+		t.Errorf("message %q does not say the key is unknown", p.Message)
+	}
+	if got := problems(t, err); len(got) != 1 {
+		t.Errorf("got %d problems, want the key alone: %v", len(got), got)
+	}
+}

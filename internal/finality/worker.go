@@ -109,11 +109,6 @@ type Network struct {
 	// the endpoints about every transfer that would settle a payment, so this
 	// is also how often a payment that has been paid learns that it has.
 	Recheck time.Duration
-	// Wait is how long a payment that has stopped being payable is given to
-	// learn whether anything arrives, counted from its deadline. A transfer
-	// signed before the deadline can still be carried after it, and how long
-	// after is the chain's to decide.
-	Wait time.Duration
 	// Misses is how many times in a row the endpoints have to be asked about a
 	// recorded transfer and find nothing before it is given up on. Once is not
 	// enough: an endpoint can be reading a state it has not finished
@@ -271,10 +266,6 @@ func (w *Worker) round(ctx context.Context) error {
 		return fmt.Errorf("%s: a transfer is set to be given up on after %d rounds",
 			w.network.Name, w.network.Misses)
 	}
-	if w.network.Wait < 1 {
-		return fmt.Errorf("%s: a payment is set to wait %s for what it is owed",
-			w.network.Name, w.network.Wait)
-	}
 	candidates, err := w.store.Candidates(ctx, payment.Network(w.network.Name),
 		w.from, w.perRound)
 	if err != nil {
@@ -306,12 +297,14 @@ func (w *Worker) round(ctx context.Context) error {
 }
 
 // swept moves the payments the clock has passed by: those that have reached
-// their deadline stop being payable, and those that waited out the wait with
-// nothing that could pay them are given up on.
+// their deadline stop being payable, and those whose network has been read
+// past the deadline with nothing that could pay them expire.
 //
 // It runs after the deciding, so a transfer that settles a payment in this
-// round settles it before the clock is read. Reaching the end of the wait is
-// not what ends a payment; having nothing left that could pay it is.
+// round settles it before the clock is read. The second sweep is not on the
+// clock at all. A deployment that has stopped reading expires nothing, however
+// long it has been stopped: the transfer it has not read may be one carried
+// before the deadline, and expiring the payment would make that money late.
 func (w *Worker) swept(ctx context.Context) error {
 	network := payment.Network(w.network.Name)
 	now := w.now()
@@ -330,7 +323,7 @@ func (w *Worker) swept(ctx context.Context) error {
 		}
 	}
 
-	over, err := w.store.Unsettled(ctx, network, now.Add(-w.network.Wait), w.perRound)
+	over, err := w.store.Unsettled(ctx, network, w.perRound)
 	if err != nil {
 		return err
 	}

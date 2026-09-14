@@ -80,7 +80,6 @@ asset refers to.
 | `networks.<name>.rpc.others` | none | A list of third-party endpoints. With no `own`, a round reads the first and the settling asks all of them. Secret |
 | `networks.<name>.poll` | `12s` | How long between rounds. At least `1s` |
 | `networks.<name>.width` | `1000` | The most blocks one request for logs asks about. 10 to 10000 |
-| `networks.<name>.finality.wait` | `2h` | How long a payment past its deadline waits for what it is owed. At least `1m` |
 | `networks.<name>.finality.recheck` | `1m` | How long between asking the endpoints again about what was recorded. At least `1s` |
 | `networks.<name>.finality.misses` | `10` | How many times in a row the endpoints have to find nothing before a transfer is treated as gone. At least `2` |
 
@@ -98,11 +97,13 @@ of its own can set it down; 3 seconds is four times that.
 `width` is capped by the provider, each at its own value. A provider that refuses a span makes the
 next round ask for half as much, down to 10 blocks, and 100 rounds later it doubles back up.
 
-The three under `finality` decide when a transfer on the chain counts as having paid.
+The two under `finality` decide when a transfer on the chain counts as having paid.
 
-`wait` is how long a payment past its deadline waits for what it is owed. A transfer signed just
-before the deadline reaches the chain after it. The default of two hours is well past the worst
-lag measured between endpoints, 1509 blocks; setting it short ends payments that were paid.
+There is no setting for how long a payment past its deadline waits. It waits until the network
+has been read past the deadline, which is a fact about the chain rather than the clock: once the
+position sits on a block stamped at or after the deadline, every transfer that could have paid
+the payment has been read. A deployment that has stopped reading expires nothing, however long
+it has been stopped.
 
 `recheck` is how long between rounds. It is longer than `poll` because a round asks two questions
 of every transfer it is deciding about.

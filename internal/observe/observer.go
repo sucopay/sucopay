@@ -906,7 +906,7 @@ func (o *Observer) references() []string {
 }
 
 // at is a block as a position holds one.
-func at(b chain.Block) Position { return Position{Height: b.Height, Hash: b.Hash} }
+func at(b chain.Block) Position { return Position{Height: b.Height, Hash: b.Hash, Time: b.Time} }
 
 // keys are the keys a scan found, each once.
 func keys(consumed []chain.Consumed) []string {

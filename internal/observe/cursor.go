@@ -37,6 +37,20 @@ type Position struct {
 	Height uint64
 	// Hash identifies the block that was at that height when it was read.
 	Hash string
+	// Time is when the chain says the block was made. It is what a payment's
+	// deadline is compared against to decide that everything that could have
+	// paid the payment has been read. The zero time means it is not known: a
+	// row written before positions carried one.
+	Time time.Time
+}
+
+// blockTime is how a position's time is written: the zero time as null, so
+// that a reader of the row can tell "not known" from a time.
+func blockTime(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
 }
 
 // Cursors store how far each network has been read.
@@ -55,11 +69,12 @@ func (c *Cursors) Get(ctx context.Context, network payment.Network) (Position, b
 	var (
 		height int64
 		hash   string
+		stamp  *time.Time
 	)
 	err := c.pool.QueryRow(ctx, `
-		select height, hash
+		select height, hash, block_time
 		  from observation_cursors
-		 where network = $1`, network).Scan(&height, &hash)
+		 where network = $1`, network).Scan(&height, &hash, &stamp)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Position{}, false, nil
 	}
@@ -69,7 +84,11 @@ func (c *Cursors) Get(ctx context.Context, network payment.Network) (Position, b
 	if height < 0 {
 		return Position{}, false, fmt.Errorf("position of %s: height %d", network, height)
 	}
-	return Position{Height: uint64(height), Hash: hash}, true, nil
+	got := Position{Height: uint64(height), Hash: hash}
+	if stamp != nil {
+		got.Time = stamp.UTC()
+	}
+	return got, true, nil
 }
 
 // Has reports whether a network has a position. It is what a service asks
@@ -118,9 +137,9 @@ func (c *Cursors) Init(ctx context.Context, network payment.Network, at Position
 	defer cancel()
 
 	if _, err := c.pool.Exec(ctx, `
-		insert into observation_cursors (network, height, hash, updated_at)
-		values ($1, $2, $3, $4)
-		on conflict (network) do nothing`, network, height, at.Hash, now); err != nil {
+		insert into observation_cursors (network, height, hash, block_time, updated_at)
+		values ($1, $2, $3, $4, $5)
+		on conflict (network) do nothing`, network, height, at.Hash, blockTime(at.Time), now); err != nil {
 		return fmt.Errorf("position of %s: %w", network, err)
 	}
 	return nil
@@ -147,9 +166,9 @@ func (c *Cursors) Advance(ctx context.Context, tx pgx.Tx, network payment.Networ
 	// here would cut a round that the caller is still bounding.
 	tag, err := tx.Exec(ctx, `
 		update observation_cursors
-		   set height = $4, hash = $5, updated_at = $6
+		   set height = $4, hash = $5, block_time = $6, updated_at = $7
 		 where network = $1 and height = $2 and hash = $3`,
-		network, was, from.Hash, next, to.Hash, now)
+		network, was, from.Hash, next, to.Hash, blockTime(to.Time), now)
 	if err != nil {
 		return fmt.Errorf("position of %s: %w", network, err)
 	}
@@ -190,13 +209,14 @@ func (c *Cursors) Set(ctx context.Context, network payment.Network, at Position,
 	var (
 		height int64
 		hash   string
+		stamp  *time.Time
 	)
 	found := true
 	switch scan := tx.QueryRow(ctx, `
-		select height, hash
+		select height, hash, block_time
 		  from observation_cursors
 		 where network = $1
-		   for update`, network).Scan(&height, &hash); {
+		   for update`, network).Scan(&height, &hash, &stamp); {
 	case errors.Is(scan, pgx.ErrNoRows):
 		found = false
 	case scan != nil:
@@ -204,11 +224,11 @@ func (c *Cursors) Set(ctx context.Context, network payment.Network, at Position,
 	}
 
 	if _, err := tx.Exec(ctx, `
-		insert into observation_cursors (network, height, hash, updated_at)
-		values ($1, $2, $3, $4)
+		insert into observation_cursors (network, height, hash, block_time, updated_at)
+		values ($1, $2, $3, $4, $5)
 		on conflict (network) do update
-		   set height = $2, hash = $3, updated_at = $4`,
-		network, next, at.Hash, now); err != nil {
+		   set height = $2, hash = $3, block_time = $4, updated_at = $5`,
+		network, next, at.Hash, blockTime(at.Time), now); err != nil {
 		return Position{}, false, fmt.Errorf("position of %s: %w", network, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -220,7 +240,11 @@ func (c *Cursors) Set(ctx context.Context, network payment.Network, at Position,
 	if height < 0 {
 		return Position{}, false, fmt.Errorf("position of %s: height %d", network, height)
 	}
-	return Position{Height: uint64(height), Hash: hash}, true, nil
+	before = Position{Height: uint64(height), Hash: hash}
+	if stamp != nil {
+		before.Time = stamp.UTC()
+	}
+	return before, true, nil
 }
 
 // bigint is the position's height as the column holds one. A chain that had

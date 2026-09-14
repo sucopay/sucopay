@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sucopay/sucopay/internal/payment"
 )
 
@@ -116,36 +117,6 @@ func TestOverdue_LeavesOutWhatIsNotOpenForPaymentOnThisNetwork(t *testing.T) {
 	}
 }
 
-// The wait is over and nothing is standing that could still pay it.
-func TestUnsettled_ReadsThePaymentsOfEveryAccountWhoseWaitIsOver(t *testing.T) {
-	t.Parallel()
-	s, _ := store(t)
-	mine, theirs := waiting(t, s, first), waiting(t, s, other)
-
-	early, err := s.Unsettled(t.Context(), network, deadline.Add(-time.Second), 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(early) != 0 {
-		t.Fatalf("Unsettled read %d payments a second before the wait was over, want none", len(early))
-	}
-
-	done, err := s.Unsettled(t.Context(), network, deadline, 10)
-
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(done) != 2 {
-		t.Fatalf("Unsettled read %d payments, want the two whose wait is over", len(done))
-	}
-	by := ids(done)
-	for account, want := range map[payment.AccountID]payment.ID{first: mine.ID(), other: theirs.ID()} {
-		if by[account] != want {
-			t.Errorf("under %s: %s, want %s", account, by[account], want)
-		}
-	}
-}
-
 // A transfer that matched is one that may still pay the payment, whether or
 // not it has been seen where the chain keeps it. Giving up on a payment while
 // one stands would end a payment that money is on its way to.
@@ -171,7 +142,8 @@ func TestUnsettled_LeavesOutAPaymentWithATransferStillMatchedAgainstIt(t *testin
 				t.Fatal(err)
 			}
 
-			done, err := s.Unsettled(t.Context(), network, deadline, 10)
+			readTo(t, pool, deadline)
+			done, err := s.Unsettled(t.Context(), network, 10)
 
 			if err != nil {
 				t.Fatal(err)
@@ -214,7 +186,8 @@ func TestUnsettled_ReadsAPaymentWhoseOnlyTransfersCannotPayIt(t *testing.T) {
 		}
 	}
 
-	done, err := s.Unsettled(t.Context(), network, deadline, 10)
+	readTo(t, pool, deadline)
+	done, err := s.Unsettled(t.Context(), network, 10)
 
 	if err != nil {
 		t.Fatal(err)
@@ -226,7 +199,7 @@ func TestUnsettled_ReadsAPaymentWhoseOnlyTransfersCannotPayIt(t *testing.T) {
 
 func TestUnsettled_LeavesOutWhatIsNotWaitingForFinalityOnThisNetwork(t *testing.T) {
 	t.Parallel()
-	s, _ := store(t)
+	s, pool := store(t)
 	held := waiting(t, s, first)
 	payableKept(t, s, first)
 	kept(t, s, first)
@@ -244,7 +217,8 @@ func TestUnsettled_LeavesOutWhatIsNotWaitingForFinalityOnThisNetwork(t *testing.
 		t.Fatal(err)
 	}
 
-	done, err := s.Unsettled(t.Context(), network, deadline, 10)
+	readTo(t, pool, deadline)
+	done, err := s.Unsettled(t.Context(), network, 10)
 
 	if err != nil {
 		t.Fatal(err)
@@ -278,7 +252,8 @@ func TestUnsettled_AsksOnlyAboutTheTransfersOfItsOwnAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	done, err := s.Unsettled(t.Context(), network, deadline, 10)
+	readTo(t, pool, deadline)
+	done, err := s.Unsettled(t.Context(), network, 10)
 
 	if err != nil {
 		t.Fatal(err)
@@ -345,17 +320,121 @@ func payableAt(t *testing.T, s *payment.Postgres, at time.Time) *payment.Payment
 
 func TestUnsettled_ReadsNoMoreThanItWasAskedFor(t *testing.T) {
 	t.Parallel()
-	s, _ := store(t)
+	s, pool := store(t)
 	for range 3 {
 		waiting(t, s, first)
 	}
 
-	done, err := s.Unsettled(t.Context(), network, deadline, 2)
+	readTo(t, pool, deadline)
+	done, err := s.Unsettled(t.Context(), network, 2)
 
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(done) != 2 {
 		t.Fatalf("Unsettled read %d of three payments, want the two it was asked for", len(done))
+	}
+}
+
+// readTo writes where the network has been read to, with the time of the
+// block the position sits on, which is what the sweep compares a deadline
+// against. A zero time is written as null: a position from before positions
+// carried a time.
+func readTo(t *testing.T, pool *pgxpool.Pool, at time.Time) {
+	t.Helper()
+	var blockTime *time.Time
+	if !at.IsZero() {
+		blockTime = &at
+	}
+	if _, err := pool.Exec(t.Context(), `
+		insert into observation_cursors (network, height, hash, block_time, updated_at)
+		values ($1, 100, 'block100', $2, $3)
+		on conflict (network) do update set block_time = $2, updated_at = $3`,
+		network, blockTime, now); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A payment past its deadline is given up on only once the network has been
+// read past that deadline. Until then a transfer carried before the deadline
+// may still be in a block nobody has read, and expiring the payment would
+// turn that transfer into money that arrived late.
+func TestUnsettled_LeavesOutAPaymentWhoseNetworkHasNotBeenReadPastItsDeadline(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	waiting(t, s, first)
+	readTo(t, pool, deadline.Add(-time.Second))
+
+	done, err := s.Unsettled(t.Context(), network, 10)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(done) != 0 {
+		t.Errorf("Unsettled read %d payments with the network a second short of the deadline, want none", len(done))
+	}
+}
+
+func TestUnsettled_ReadsAPaymentOnceTheNetworkIsReadPastItsDeadline(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	mine, theirs := waiting(t, s, first), waiting(t, s, other)
+	readTo(t, pool, deadline)
+
+	done, err := s.Unsettled(t.Context(), network, 10)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(done) != 2 {
+		t.Fatalf("Unsettled read %d payments, want the two whose network is read past the deadline", len(done))
+	}
+	by := ids(done)
+	for account, want := range map[payment.AccountID]payment.ID{first: mine.ID(), other: theirs.ID()} {
+		if by[account] != want {
+			t.Errorf("under %s: %s, want %s", account, by[account], want)
+		}
+	}
+}
+
+// A position without a time is one written before positions carried one. It
+// says nothing about how far the chain has been read in time, so nothing on
+// the network expires until a round writes one. The safe side: a time
+// invented here would expire payments whose blocks have not been read.
+func TestUnsettled_LeavesOutAPaymentWhoseNetworkHasNoBlockTimeYet(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	waiting(t, s, first)
+	readTo(t, pool, time.Time{})
+
+	done, err := s.Unsettled(t.Context(), network, 10)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(done) != 0 {
+		t.Errorf("Unsettled read %d payments with no block time on the network, want none", len(done))
+	}
+}
+
+// Open counts the payments on a network that are still open, whether payable
+// or waiting for finality. It is what the cursor command asks before it
+// skips a range of the chain: each of them may have been paid in that range.
+func TestOpen_CountsThePaymentsStillOpenOnANetwork(t *testing.T) {
+	t.Parallel()
+	s, _ := store(t)
+	payableKept(t, s, first)
+	waiting(t, s, other)
+	settled := waiting(t, s, first)
+	paid(t, s, first, settled.ID())
+	spentOn(t, s, first, "ethereum")
+
+	got, err := s.Open(t.Context(), network)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 2 {
+		t.Errorf("Open = %d, want the payable one and the waiting one on this network", got)
 	}
 }

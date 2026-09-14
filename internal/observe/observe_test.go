@@ -237,6 +237,27 @@ func TestSet_HandsBackWhatItReplaced(t *testing.T) {
 	}
 }
 
+// What Set hands back is the whole of the row it replaced, the time with it,
+// so that where the cursor was is enough to put it back.
+func TestSet_HandsBackTheTimeOfWhatItReplaced(t *testing.T) {
+	t.Parallel()
+	cursors := observe.NewCursors(store(t))
+	now := time.Now()
+	stamped := observe.Position{Height: 100, Hash: "block100", Time: time.Date(2026, 9, 14, 9, 0, 0, 0, time.UTC)}
+	if _, _, err := cursors.Set(t.Context(), network, stamped, now); err != nil {
+		t.Fatal(err)
+	}
+
+	before, _, err := cursors.Set(t.Context(), network, at(50, "block50"), now)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !before.Time.Equal(stamped.Time) {
+		t.Errorf("Set gave back a position at %v, want the time of the row it replaced, %v", before.Time, stamped.Time)
+	}
+}
+
 func TestAcquire_GivesOneNameToOneHolder(t *testing.T) {
 	t.Parallel()
 	pool := store(t)
@@ -547,5 +568,68 @@ func TestTouched_IsWhenThePositionWasLastWritten(t *testing.T) {
 	}
 	if !touched.Equal(now) {
 		t.Errorf("the position was last written at %s, want %s", touched, now)
+	}
+}
+
+// A position carries the time of the block it sits on, which is what expiry
+// compares a deadline against: a height says nothing about time, and the
+// moment the row was written is when the reader got there, not when the chain
+// did.
+func TestCursors_KeepTheBlockTimeTheyWereAdvancedTo(t *testing.T) {
+	t.Parallel()
+	pool := store(t)
+	cursors := observe.NewCursors(pool)
+	now := time.Now()
+	first := observe.Position{Height: 100, Hash: "block100", Time: time.Date(2026, 9, 14, 9, 0, 0, 0, time.UTC)}
+	then := observe.Position{Height: 103, Hash: "block103", Time: time.Date(2026, 9, 14, 9, 0, 6, 0, time.UTC)}
+
+	if err := cursors.Init(t.Context(), network, first, now); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := cursors.Get(t.Context(), network)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Time.Equal(first.Time) {
+		t.Errorf("after Init, Get.Time = %v, want %v", got.Time, first.Time)
+	}
+
+	tx, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cursors.Advance(t.Context(), tx, network, first, then, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err = cursors.Get(t.Context(), network)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Time.Equal(then.Time) {
+		t.Errorf("after Advance, Get.Time = %v, want %v", got.Time, then.Time)
+	}
+}
+
+// A row written before positions carried a time has none, and Get says so
+// with the zero time rather than inventing one: a time invented early would
+// expire payments whose blocks have not been read, and one invented late would
+// hold them for nothing.
+func TestGet_ReturnsTheZeroTimeForARowThatHasNone(t *testing.T) {
+	t.Parallel()
+	pool := store(t)
+	if _, err := pool.Exec(t.Context(), `
+		insert into observation_cursors (network, height, hash, updated_at)
+		values ($1, 100, 'block100', now())`, network); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := observe.NewCursors(pool).Get(t.Context(), network)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || !got.Time.IsZero() {
+		t.Errorf("Get = %v, %v; want the position with the zero time", got, ok)
 	}
 }

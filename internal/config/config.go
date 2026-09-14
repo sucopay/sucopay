@@ -34,12 +34,6 @@ const (
 	// MaxWidth is the widest span a document may set, the largest cap
 	// measured.
 	MaxWidth = 10000
-	// DefaultFinalityWait is how long a payment that has stopped being payable
-	// waits to learn whether anything arrives, when the document sets none.
-	// Well past the worst lag measured between endpoints, which was 1509
-	// blocks: the one mistake this value can make is ending a payment that was
-	// paid, because a provider was behind.
-	DefaultFinalityWait = 2 * time.Hour
 	// DefaultFinalityRecheck is how long the worker waits between rounds when
 	// the document sets none. Longer than the poll, because a round asks two
 	// questions of every transfer it is deciding about, and a block does not
@@ -193,11 +187,11 @@ type Network struct {
 }
 
 // Finality is how a network's payments are settled and given up on: how long
-// one waits after its deadline, how long the worker waits between rounds, and
-// how many rounds in a row have to find nothing before a recorded transfer is
-// treated as gone.
+// the worker waits between rounds, and how many rounds in a row have to find
+// nothing before a recorded transfer is treated as gone. How long a payment
+// waits after its deadline is not a setting: it waits until the network has
+// been read past the deadline.
 type Finality struct {
-	Wait    time.Duration
 	Recheck time.Duration
 	Misses  int
 }

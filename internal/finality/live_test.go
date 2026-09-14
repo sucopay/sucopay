@@ -55,7 +55,7 @@ func TestRound_PaysAPaymentPolygonCarried(t *testing.T) {
 	p := payable(t, store)
 	recordedOnPolygon(t, opened, store, pool.Conns())
 	w := New(Network{Name: "polygon", Endpoints: []chain.Chain{opened},
-		Misses: 2, Wait: time.Hour, Recheck: time.Minute},
+		Misses: 2, Recheck: time.Minute},
 		store, &instance{holds: true}, slog.New(slog.DiscardHandler), time.Now)
 
 	if err := w.round(t.Context()); err != nil {

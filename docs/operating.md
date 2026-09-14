@@ -64,6 +64,12 @@ every configured network is `unreachable`, `stalled`, `chain-mismatch` or `no-fi
 other four words leave it `ok`: the API is running, and the one who can act is the operator or
 the provider.
 
+A payment past its deadline expires only once the network has been read past that deadline. It
+is the block time of the position, not the clock, that decides: a deployment that has stopped
+reading expires nothing, however long it has been stopped, because a transfer carried before the
+deadline may still be in a block it has not read. `doctor` shows how many payments each network
+holds waiting.
+
 No word under `finality` makes it `unavailable`. A deployment that settles nothing still sees
 payments arrive and still records them, and the funds are at the merchant's address either way.
 What is stuck is the judgement, and taking the API out of service over it would stop the payments
@@ -108,7 +114,7 @@ read. What it cannot say is how far each has been read.
 ## suco network cursor
 
 ```bash
-suco network cursor <name> <height>
+suco network cursor <name> <height> [--force]
 ```
 
 A cursor is what moves and a position is where it is. Each network has one, and it holds the
@@ -125,9 +131,15 @@ No lease is taken. A round advances on a condition of the position it read, so o
 this writes does not commit its advance, and the round after it reads from where this put it.
 
 **Nothing reads the blocks it skips.** Putting the cursor forward past blocks no round has read
-means every transfer in them goes unseen, and there is no later pass that finds them. The command
-does not compare the height against where the cursor is: a provider that has dropped its history
-is exactly the case this exists for, and there the only way on is forward.
+means every transfer in them goes unseen, and there is no later pass that finds them. A payment
+still open on the network may have been paid in one of those blocks, and once the cursor is past
+its deadline it expires as unpaid. So the command refuses to move forward while the network has a
+payment that is `awaiting_payment` or `awaiting_finality`, and says how many. `--force` moves it
+anyway, and the log line says how many payments were skipped. Moving the cursor back is never
+refused: nothing is skipped, and the rounds read the range again.
+
+A provider that has dropped its history is exactly the case this exists for, and there the only
+way on is forward; `--force` is for that, once the operator has counted what it costs.
 
 Where the cursor was and where it is now both go to the log. Where it was is what puts it back.
 

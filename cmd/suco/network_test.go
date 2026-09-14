@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sucopay/sucopay/internal/observe"
+	"github.com/sucopay/sucopay/internal/payment"
 )
 
 // aReadableNetwork is the sections declaring a network that runs inside the
@@ -153,5 +154,110 @@ func TestRun_NetworkCursorTakesNoLease(t *testing.T) {
 	}
 	if held != 0 {
 		t.Errorf("%d leases are held, want none: moving a cursor is not reading a chain", held)
+	}
+}
+
+// open is a payment on the network that is still open for payment: the one a
+// forward move of the cursor could skip the paying of.
+func open(t *testing.T, d deployment) *payment.Payment {
+	t.Helper()
+	p := awaiting(t, d)
+	store := payment.NewPostgres(d.pool.Conns())
+	account := theAccount(t, d)
+	kept, at, err := store.Find(t.Context(), account, p.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := kept.Await(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(t.Context(), account, kept, at, payment.Event{}); err != nil {
+		t.Fatal(err)
+	}
+	return kept
+}
+
+// A payment still open on the network may have been paid in a block the
+// cursor is about to skip, and once the cursor is past its deadline it expires
+// as unpaid. Moving forward over such a payment is refused, and the refusal
+// says how many there are, so the operator can count what forcing costs.
+func TestRun_NetworkCursorRefusesToSkipALivePayment(t *testing.T) {
+	d := deployed(t)
+	document(t, namingADatabase()+aReadableNetwork())
+	open(t, d)
+	if _, _, err := observe.NewCursors(d.pool.Conns()).Set(t.Context(), "local",
+		observe.Position{Height: 0, Hash: "block0"}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := runArgs(t, "network", "cursor", "local", "1")
+
+	if err == nil {
+		t.Fatal("the cursor moved forward over a payment still open on the network")
+	}
+	if !strings.Contains(err.Error(), "1 payment") || !strings.Contains(err.Error(), "--force") {
+		t.Errorf("err = %q, want it to count the payment and name --force", err)
+	}
+}
+
+// Moving back skips nothing: the rounds read the range again. It is never
+// refused, whatever is open on the network.
+func TestRun_NetworkCursorMovesBackOverALivePaymentWithoutBeingForced(t *testing.T) {
+	d := deployed(t)
+	document(t, namingADatabase()+aReadableNetwork())
+	open(t, d)
+
+	_, _, err := runArgs(t, "network", "cursor", "local", "0")
+
+	if err != nil {
+		t.Errorf("moving the cursor back was refused: %v", err)
+	}
+}
+
+// --force is the operator saying they have counted. The guard steps aside;
+// whatever the chain then says about the height is the chain's answer, not
+// the guard's.
+// The chain in this document holds one block, so the forward move that can
+// succeed is onto a network that has no cursor yet, which skips every block
+// below the one put.
+func TestRun_NetworkCursorSkipsALivePaymentWhenForced(t *testing.T) {
+	d := deployed(t)
+	document(t, namingADatabase()+aReadableNetwork())
+	open(t, d)
+	if _, err := d.pool.Conns().Exec(t.Context(), `delete from observation_cursors`); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, _, err := runArgs(t, "network", "cursor", "local", "0", "--force")
+
+	if err != nil {
+		t.Fatalf("forced, the cursor was still refused: %v", err)
+	}
+	if _, read, err := observe.NewCursors(d.pool.Conns()).Get(t.Context(), "local"); err != nil || !read {
+		t.Fatalf("the cursor was not put: read %v, err %v", read, err)
+	}
+	if !strings.Contains(stdout, "payments_skipped") {
+		t.Errorf("the log does not say how many payments were skipped:\n%s", stdout)
+	}
+}
+
+// A network nothing has read yet has no cursor, and putting one at a height
+// skips every block below it. The API takes payments before the first round
+// runs, so an open payment can exist on such a network.
+func TestRun_NetworkCursorRefusesToSkipALivePaymentOnANetworkNeverRead(t *testing.T) {
+	d := deployed(t)
+	document(t, namingADatabase()+aReadableNetwork())
+	open(t, d)
+	if _, err := d.pool.Conns().Exec(t.Context(), `delete from observation_cursors`); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := runArgs(t, "network", "cursor", "local", "1")
+
+	if err == nil {
+		t.Fatal("the cursor was put on a network that has an open payment and no cursor")
+	}
+	if !strings.Contains(err.Error(), "--force") {
+		t.Errorf("the refusal does not say how to skip anyway: %v", err)
 	}
 }

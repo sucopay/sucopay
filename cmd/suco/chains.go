@@ -110,7 +110,6 @@ func openSettling(cfg config.Config) ([]finality.Network, error) {
 			Name:      name,
 			Endpoints: asked,
 			Recheck:   n.Finality.Recheck,
-			Wait:      n.Finality.Wait,
 			Misses:    n.Finality.Misses,
 		})
 	}

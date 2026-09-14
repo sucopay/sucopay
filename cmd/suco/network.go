@@ -34,9 +34,15 @@ import (
 // so one under way when this writes does not commit its advance, and the round
 // after it reads from where this put it.
 func networkCursor(ctx context.Context, args []string, stdout io.Writer) error {
-	if len(args) != 2 {
-		// Counted: no error repeats a word typed after suco, for the reason
-		// at errUnknown.
+	force := false
+	switch {
+	case len(args) == 3 && args[2] == "--force":
+		force = true
+	case len(args) == 3:
+		// Counted, and the one word this takes is named: no error repeats a
+		// word typed after suco, for the reason at errUnknown.
+		return errors.New("network cursor takes the name of a network, a height, and at most --force")
+	case len(args) != 2:
 		return fmt.Errorf("network cursor takes the name of a network and a height, got %d arguments", len(args))
 	}
 	height, err := strconv.ParseUint(args[1], 10, 64)
@@ -65,6 +71,33 @@ func networkCursor(ctx context.Context, args []string, stdout io.Writer) error {
 		return fmt.Errorf("%s declares no network under that name that an asset settles on. "+
 			"Run `suco doctor` for the ones it does", o.document)
 	}
+	// Forward skips blocks nobody reads, and a payment still open on the
+	// network may have been paid in one of them: once the cursor is past its
+	// deadline it expires as unpaid. So forward over an open payment is
+	// refused unless the operator, having counted, forces it. Back skips
+	// nothing, and is never refused. A network with no cursor yet has had
+	// nothing read, so putting one anywhere skips every block below it. The
+	// check comes before the chain is asked, so that the answer is about the
+	// payments and not about the block.
+	network := payment.Network(read.Name)
+	cursors := observe.NewCursors(o.db.Conns())
+	current, had, err := cursors.Get(ctx, network)
+	if err != nil {
+		return err
+	}
+	skipped := 0
+	if !had || height > current.Height {
+		skipped, err = payment.NewPostgres(o.db.Conns()).Open(ctx, network)
+		if err != nil {
+			return err
+		}
+		if skipped > 0 && !force {
+			return fmt.Errorf("%s has %d payment(s) still open that may have been paid in the blocks "+
+				"this would skip; they expire as unpaid once the cursor is past their deadline. "+
+				"Add --force to skip them anyway", read.Name, skipped)
+		}
+	}
+
 	// The height came through ParseUint, so what the chain says about one it
 	// has not got carries a number and nothing that could be a token.
 	block, err := read.Chain.Block(ctx, height)
@@ -76,8 +109,8 @@ func networkCursor(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	before, had, err := observe.NewCursors(o.db.Conns()).Set(ctx, payment.Network(read.Name),
-		observe.Position{Height: block.Height, Hash: block.Hash}, time.Now())
+	before, had, err := cursors.Set(ctx, network,
+		observe.Position{Height: block.Height, Hash: block.Hash, Time: block.Time}, time.Now())
 	if err != nil {
 		return err
 	}
@@ -96,6 +129,9 @@ func networkCursor(ctx context.Context, args []string, stdout io.Writer) error {
 		moved = append(moved,
 			slog.Uint64("from_height", before.Height),
 			slog.String("from_hash", invisible.Shown(before.Hash, payment.MaxTransferField)))
+	}
+	if skipped > 0 {
+		moved = append(moved, slog.Int("payments_skipped", skipped))
 	}
 	log.InfoContext(ctx, "the cursor was put where it was asked for", moved...)
 	return nil

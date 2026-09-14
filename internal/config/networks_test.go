@@ -506,9 +506,6 @@ func TestResolve_GivesFinalityItsDefaults(t *testing.T) {
 	got := mustResolve(t, evmNetwork(nil), noEnv)
 
 	network := got.Config.Networks["polygon"]
-	if network.Finality.Wait != config.DefaultFinalityWait {
-		t.Errorf("finality.wait = %v, want %v", network.Finality.Wait, config.DefaultFinalityWait)
-	}
 	if network.Finality.Recheck != config.DefaultFinalityRecheck {
 		t.Errorf("finality.recheck = %v, want %v", network.Finality.Recheck, config.DefaultFinalityRecheck)
 	}
@@ -516,7 +513,6 @@ func TestResolve_GivesFinalityItsDefaults(t *testing.T) {
 		t.Errorf("finality.misses = %d, want %d", network.Finality.Misses, config.DefaultFinalityMisses)
 	}
 	for _, path := range []string{
-		"networks.polygon.finality.wait",
 		"networks.polygon.finality.recheck",
 		"networks.polygon.finality.misses",
 	} {
@@ -529,12 +525,9 @@ func TestResolve_GivesFinalityItsDefaults(t *testing.T) {
 func TestResolve_ReadsWhatADocumentSaysAboutFinality(t *testing.T) {
 	t.Parallel()
 	got := mustResolve(t, finality(map[string]any{
-		"wait": "45m", "recheck": "30s", "misses": uint64(4)}), noEnv).Config
+		"recheck": "30s", "misses": uint64(4)}), noEnv).Config
 
 	network := got.Networks["polygon"]
-	if network.Finality.Wait != 45*time.Minute {
-		t.Errorf("finality.wait = %v, want 45m", network.Finality.Wait)
-	}
 	if network.Finality.Recheck != 30*time.Second {
 		t.Errorf("finality.recheck = %v, want 30s", network.Finality.Recheck)
 	}
@@ -543,19 +536,12 @@ func TestResolve_ReadsWhatADocumentSaysAboutFinality(t *testing.T) {
 	}
 }
 
-// A wait shorter than the time a chain takes to carry a transfer expires
-// payments that were paid, and a recheck spent on nothing is somebody else's
-// endpoint spent on nothing.
-func TestResolve_KeepsTheFinalityDurationsAboveTheirFloors(t *testing.T) {
+// A recheck spent on nothing is somebody else's endpoint spent on nothing.
+func TestResolve_KeepsTheRecheckAboveItsFloor(t *testing.T) {
 	t.Parallel()
-	for setting, value := range map[string]string{"wait": "30s", "recheck": "500ms"} {
-		t.Run(setting, func(t *testing.T) {
-			t.Parallel()
-			_, err := config.Resolve(finality(map[string]any{setting: value}), noEnv)
+	_, err := config.Resolve(finality(map[string]any{"recheck": "500ms"}), noEnv)
 
-			wantProblemAt(t, err, "networks.polygon.finality."+setting)
-		})
-	}
+	wantProblemAt(t, err, "networks.polygon.finality.recheck")
 }
 
 // Not finding a transfer once is not the transfer being gone: the endpoint may
