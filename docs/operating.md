@@ -88,7 +88,7 @@ suco.yaml
   ...
   networks.polygon.rpc.own   set                                     ${SUCO_POLYGON_RPC_URL}
 
-database: PostgreSQL 17.5, schema 0007_worker_indexes
+database: PostgreSQL 17.5, schema 0010_credential_access
 credentials: read-write
 
 networks:

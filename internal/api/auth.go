@@ -95,7 +95,7 @@ func (a auth) admit(needs access, next http.HandlerFunc) http.HandlerFunc {
 		// Not needs == write: an access this does not know, the zero one
 		// included, is treated as the one that asks the most, so that a
 		// route saying nothing admits nothing a read-only credential may do.
-		if c.Scope != credential.ScopeAccount || (needs != read && c.Capability != credential.ReadWrite) {
+		if c.Scope != credential.ScopeAccount || (needs != read && c.Access != credential.ReadWrite) {
 			forbidden(w)
 			return
 		}
@@ -145,7 +145,7 @@ func unauthorized(w http.ResponseWriter) {
 // here: a read-only one on a route that writes, or one of the deployment on
 // a route of an account, which is every route that asks for one. Unlike
 // [unauthorized] this says so. Whoever presents a credential holds it, and
-// which of the two capabilities it has is what they chose when they made it.
+// which of the two it may do is what they chose when they made it.
 func forbidden(w http.ResponseWriter) {
 	writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
 }

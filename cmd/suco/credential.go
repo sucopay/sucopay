@@ -108,7 +108,7 @@ func oneAccount(ctx context.Context, store *credential.Postgres) (credential.Acc
 // whatever ran the command: a terminal's scrollback, a CI job's log, which
 // is readable by more people for longer than the database is.
 func credentialNew(ctx context.Context, args []string, stdout io.Writer) error {
-	capability, err := capabilityOf(args)
+	access, err := accessOf(args)
 	if err != nil {
 		return err
 	}
@@ -122,7 +122,7 @@ func credentialNew(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	id, token, err := o.credentials.Create(ctx, account, capability, time.Now())
+	id, token, err := o.credentials.Create(ctx, account, access, time.Now())
 	if err != nil {
 		return err
 	}
@@ -143,13 +143,13 @@ func credentialNew(ctx context.Context, args []string, stdout io.Writer) error {
 	return nil
 }
 
-// capabilityOf reads the one argument new takes. There is no default: which
-// of the two a credential may do is the operator's to choose, and a default
-// is what every credential made without a thought would have.
+// accessOf reads the one argument new takes. There is no default: which of
+// the two a credential may do is the operator's to choose, and a default is
+// what every credential made without a thought would have.
 //
 // Surplus arguments are counted and an unknown one is "neither": no error
 // repeats a word typed after suco, for the reason at [errUnknown].
-func capabilityOf(args []string) (credential.Capability, error) {
+func accessOf(args []string) (credential.Access, error) {
 	switch {
 	case len(args) > 1:
 		return "", fmt.Errorf("credential new takes one of --read-only and --read-write, got %d arguments", len(args))
@@ -187,7 +187,7 @@ func credentialList(ctx context.Context, args []string, stdout io.Writer) error 
 	// Laid out in full before any of it is written, as doctor's report is.
 	var table bytes.Buffer
 	tw := tabwriter.NewWriter(&table, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tKEY ID\tSCOPE\tCAPABILITY\tLAST USED")
+	fmt.Fprintln(tw, "ID\tKEY ID\tSCOPE\tACCESS\tLAST USED")
 	for _, c := range all {
 		lastUsed := "never"
 		if !c.LastUsedAt.IsZero() {
@@ -195,7 +195,7 @@ func credentialList(ctx context.Context, args []string, stdout io.Writer) error 
 		}
 		// The key identifier is whatever the document that made the row
 		// held, quoted as doctor quotes what a document holds.
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", c.ID, invisible.Quote(c.KeyID), c.Scope, c.Capability, lastUsed)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", c.ID, invisible.Quote(c.KeyID), c.Scope, c.Access, lastUsed)
 	}
 	tw.Flush()
 	if _, err := stdout.Write(table.Bytes()); err != nil {
@@ -226,7 +226,7 @@ func credentialRevoke(ctx context.Context, args []string, stdout io.Writer) erro
 }
 
 // idOf reads the one argument revoke takes, before anything else is read.
-// As capabilityOf, it repeats none of what it was given.
+// As accessOf, it repeats none of what it was given.
 func idOf(args []string) (credential.ID, error) {
 	switch {
 	case len(args) > 1:

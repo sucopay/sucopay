@@ -23,7 +23,7 @@ func credential(i int) []column {
 		{"id", uuid(i)},
 		{"account_id", "00000000-0000-0000-0000-000000000001"},
 		{"scope", "account"},
-		{"capability", "read"},
+		{"access", "read"},
 		// Distinct per row, as the hash of a distinct token would be.
 		{"hash", []byte(uuid(i))},
 		{"key_id", "k"},
@@ -70,7 +70,7 @@ func insert(t *testing.T, pool *pgxpool.Pool, row []column) error {
 	return err
 }
 
-func TestSchema_AcceptsEachScopeAndCapabilityAndNoOther(t *testing.T) {
+func TestSchema_AcceptsEachScopeAndAccessAndNoOther(t *testing.T) {
 	t.Parallel()
 	pool := migrated(t).Conns()
 
@@ -85,9 +85,9 @@ func TestSchema_AcceptsEachScopeAndCapabilityAndNoOther(t *testing.T) {
 		// account would let an unknown scope in as long as it names none.
 		{"scope tenant, naming an account", with(credential(3), "scope", "tenant"), false},
 		{"scope tenant, naming none", with(deployment(4), "scope", "tenant"), false},
-		{"capability read", credential(5), true},
-		{"capability write", with(credential(6), "capability", "write"), true},
-		{"capability admin", with(credential(7), "capability", "admin"), false},
+		{"access read", credential(5), true},
+		{"access write", with(credential(6), "access", "write"), true},
+		{"access admin", with(credential(7), "access", "admin"), false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			err := insert(t, pool, c.row)
@@ -108,7 +108,7 @@ func TestSchema_RefusesACredentialWithAColumnLeftOut(t *testing.T) {
 	// else has a default to answer for it.
 	pool := migrated(t).Conns()
 
-	for i, name := range []string{"id", "scope", "capability", "hash", "key_id", "created_at"} {
+	for i, name := range []string{"id", "scope", "access", "hash", "key_id", "created_at"} {
 		t.Run("without "+name, func(t *testing.T) {
 			if err := insert(t, pool, without(credential(i), name)); err == nil {
 				t.Errorf("accepted a credential that did not say its %s", name)

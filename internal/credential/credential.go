@@ -21,10 +21,10 @@ import (
 // for a credential of the deployment, and a reader going by that would take
 // a row whose account was left out for the wider grant.
 type Credential struct {
-	ID         ID
-	Scope      Scope
-	Account    AccountID
-	Capability Capability
+	ID      ID
+	Scope   Scope
+	Account AccountID
+	Access  Access
 	// KeyID names the key the row was made under. What [Postgres.FindByToken]
 	// returns was made under its own, so this is for [Postgres.List], where a
 	// row made under another key is the answer to why every request fails.
@@ -97,16 +97,17 @@ const (
 	ScopeDeployment Scope = "deployment"
 )
 
-// Capability says what a credential may do.
-type Capability string
+// Access says what a credential may do: read, or write and so read. Not
+// capability, which is the word for what an account may use.
+type Access string
 
 const (
 	// ReadOnly may read and not write.
-	ReadOnly Capability = "read"
+	ReadOnly Access = "read"
 	// ReadWrite may write, and so read. There is no write without read: a
 	// caller that could create a payment and not see whether it had would
 	// create it again.
-	ReadWrite Capability = "write"
+	ReadWrite Access = "write"
 )
 
 // InForce is what the credentials in force add up to, in one word for

@@ -213,9 +213,9 @@ func (f *fixture) do(method, target, authorization string) *httptest.ResponseRec
 func bearing(token credential.Token) string { return "Bearer " + string(token) }
 
 // created issues a credential of account and returns its token.
-func (f *fixture) created(account credential.AccountID, capability credential.Capability) credential.Token {
+func (f *fixture) created(account credential.AccountID, access credential.Access) credential.Token {
 	f.t.Helper()
-	_, token, err := f.store.Create(f.t.Context(), account, capability, now)
+	_, token, err := f.store.Create(f.t.Context(), account, access, now)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -442,7 +442,7 @@ func TestAdmit_RefusesACredentialOfTheDeployment(t *testing.T) {
 	f := served(t)
 	token := credential.New()
 	if _, err := f.pool.Exec(t.Context(), `
-		insert into credentials (id, account_id, scope, capability, hash, key_id, created_at)
+		insert into credentials (id, account_id, scope, access, hash, key_id, created_at)
 		values ($1, null, $2, $3, $4, $5, $6)`,
 		credential.NewID(), credential.ScopeDeployment, credential.ReadWrite, credential.Hash(parsed(t), token), keyID, now); err != nil {
 		t.Fatal(err)
@@ -538,7 +538,7 @@ func (h held) FindByToken(context.Context, credential.Token) (credential.Credent
 func (held) RecordUse(context.Context, credential.Credential, time.Time) error { return nil }
 
 func (h held) InForce(context.Context) (credential.InForce, error) {
-	if h.Capability == credential.ReadWrite {
+	if h.Access == credential.ReadWrite {
 		return credential.ReadWriteInForce, nil
 	}
 	return credential.ReadOnlyInForce, nil
@@ -549,7 +549,7 @@ func TestAdmit_TreatsAnAccessNoRouteMayStateAsTheStrictest(t *testing.T) {
 	// A route literal that leaves needs out carries the zero access, and the
 	// test of the table refuses it. Past that test, it admits what a route
 	// that writes admits, and no more.
-	readOnly := held{Scope: credential.ScopeAccount, Account: first, Capability: credential.ReadOnly}
+	readOnly := held{Scope: credential.ScopeAccount, Account: first, Access: credential.ReadOnly}
 	a := auth{log: slog.New(slog.NewTextHandler(io.Discard, nil)), credentials: readOnly}
 	for _, c := range []struct {
 		name  string
@@ -608,7 +608,7 @@ func TestAdmit_RecordsTheUseOfEveryCredentialItFinds(t *testing.T) {
 	// A token nobody issued has no row to be recorded in.
 	f := served(t)
 	at := f.stored(first)
-	readOnly := credential.Credential{ID: credential.NewID(), Scope: credential.ScopeAccount, Account: first, Capability: credential.ReadOnly, KeyID: keyID, LastUsedAt: now}
+	readOnly := credential.Credential{ID: credential.NewID(), Scope: credential.ScopeAccount, Account: first, Access: credential.ReadOnly, KeyID: keyID, LastUsedAt: now}
 	for _, c := range []struct {
 		name   string
 		store  *recorded
@@ -649,7 +649,7 @@ func TestAdmit_ServesARequestWhoseUseItCouldNotRecord(t *testing.T) {
 	f := served(t)
 	at := f.stored(first)
 	f.serve(&recorded{
-		credential: credential.Credential{ID: credential.NewID(), Scope: credential.ScopeAccount, Account: first, Capability: credential.ReadOnly, KeyID: keyID},
+		credential: credential.Credential{ID: credential.NewID(), Scope: credential.ScopeAccount, Account: first, Access: credential.ReadOnly, KeyID: keyID},
 		refusal:    errors.New("no connection was free"),
 	})
 	token := credential.New()

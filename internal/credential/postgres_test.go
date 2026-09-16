@@ -56,9 +56,9 @@ func store(t *testing.T) (*credential.Postgres, *pgxpool.Pool) {
 
 // created stores a credential and returns what a caller would hold after
 // doing so.
-func created(t *testing.T, s *credential.Postgres, account credential.AccountID, capability credential.Capability, now time.Time) (credential.ID, credential.Token) {
+func created(t *testing.T, s *credential.Postgres, account credential.AccountID, access credential.Access, now time.Time) (credential.ID, credential.Token) {
 	t.Helper()
-	id, token, err := s.Create(t.Context(), account, capability, now)
+	id, token, err := s.Create(t.Context(), account, access, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,8 +120,8 @@ func TestStore_FindsByTokenWhatCreateMadeForEachAccount(t *testing.T) {
 		token credential.Token
 		want  credential.Credential
 	}{
-		{tokenOfFirst, credential.Credential{ID: ofFirst, Scope: credential.ScopeAccount, Account: first, Capability: credential.ReadOnly, KeyID: keyID}},
-		{tokenOfOther, credential.Credential{ID: ofOther, Scope: credential.ScopeAccount, Account: other, Capability: credential.ReadWrite, KeyID: keyID}},
+		{tokenOfFirst, credential.Credential{ID: ofFirst, Scope: credential.ScopeAccount, Account: first, Access: credential.ReadOnly, KeyID: keyID}},
+		{tokenOfOther, credential.Credential{ID: ofOther, Scope: credential.ScopeAccount, Account: other, Access: credential.ReadWrite, KeyID: keyID}},
 	} {
 		got, err := s.FindByToken(t.Context(), c.token)
 		if err != nil {
@@ -372,10 +372,10 @@ func TestStore_ListsUnrevokedCredentialsMostRecentlyUsedFirst(t *testing.T) {
 	}
 
 	want := []credential.Credential{
-		{ID: usedNow, Scope: credential.ScopeAccount, Account: first, Capability: credential.ReadWrite, KeyID: keyID, LastUsedAt: sometime},
-		{ID: usedEarlier, Scope: credential.ScopeAccount, Account: other, Capability: credential.ReadOnly, KeyID: keyID, LastUsedAt: sometime.Add(-time.Hour)},
-		{ID: neverUsedNewer, Scope: credential.ScopeAccount, Account: first, Capability: credential.ReadOnly, KeyID: keyID},
-		{ID: neverUsedOlder, Scope: credential.ScopeAccount, Account: first, Capability: credential.ReadOnly, KeyID: keyID},
+		{ID: usedNow, Scope: credential.ScopeAccount, Account: first, Access: credential.ReadWrite, KeyID: keyID, LastUsedAt: sometime},
+		{ID: usedEarlier, Scope: credential.ScopeAccount, Account: other, Access: credential.ReadOnly, KeyID: keyID, LastUsedAt: sometime.Add(-time.Hour)},
+		{ID: neverUsedNewer, Scope: credential.ScopeAccount, Account: first, Access: credential.ReadOnly, KeyID: keyID},
+		{ID: neverUsedOlder, Scope: credential.ScopeAccount, Account: first, Access: credential.ReadOnly, KeyID: keyID},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("listed %d credentials, want %d: %+v", len(got), len(want), got)

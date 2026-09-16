@@ -61,7 +61,7 @@ func fileNamed(t *testing.T, stdout string) string {
 	return name
 }
 
-func TestRun_CredentialNewRefusesToChooseACapability(t *testing.T) {
+func TestRun_CredentialNewRefusesToChooseAnAccess(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		args []string
@@ -157,14 +157,14 @@ func TestRun_CredentialNewTwiceMakesTwoCredentialsTheStoreFinds(t *testing.T) {
 		tokens = append(tokens, credential.Token(token))
 	}
 
-	for i, want := range []credential.Capability{credential.ReadOnly, credential.ReadWrite} {
+	for i, want := range []credential.Access{credential.ReadOnly, credential.ReadWrite} {
 		got, err := d.store.FindByToken(t.Context(), tokens[i])
 		if err != nil {
 			t.Errorf("the store does not find credential %d: %v", i+1, err)
 			continue
 		}
-		if got.Capability != want || got.Scope != credential.ScopeAccount {
-			t.Errorf("credential %d is %s of %s, want %s of one account", i+1, got.Capability, got.Scope, want)
+		if got.Access != want || got.Scope != credential.ScopeAccount {
+			t.Errorf("credential %d is %s of %s, want %s of one account", i+1, got.Access, got.Scope, want)
 		}
 	}
 	if tokens[0] == tokens[1] {
@@ -305,14 +305,14 @@ func newCredential(t *testing.T, d deployment, flag string) (credential.ID, cred
 
 // row is one line of what list shows, under its header.
 type row struct {
-	id, keyID, scope, capability, lastUsed string
+	id, keyID, scope, access, lastUsed string
 }
 
 // listed reads the rows list wrote, in the order it wrote them.
 func listed(t *testing.T, stdout string) []row {
 	t.Helper()
 	header, rest, ok := strings.Cut(stdout, "\n")
-	if !ok || strings.Join(strings.Fields(header), " ") != "ID KEY ID SCOPE CAPABILITY LAST USED" {
+	if !ok || strings.Join(strings.Fields(header), " ") != "ID KEY ID SCOPE ACCESS LAST USED" {
 		t.Fatalf("stdout does not start with the header line:\n%s", stdout)
 	}
 	var rows []row

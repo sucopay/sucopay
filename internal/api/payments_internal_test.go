@@ -51,12 +51,12 @@ func (s *stub) serve(w http.ResponseWriter, r *http.Request, method string, acco
 	return nil
 }
 
-// ofAccount is a credential of account with capability, as the store would
+// ofAccount is a credential of account with access, as the store would
 // hand one back.
-func ofAccount(account credential.AccountID, capability credential.Capability) credential.Credential {
+func ofAccount(account credential.AccountID, access credential.Access) credential.Credential {
 	return credential.Credential{
 		ID: credential.NewID(), Scope: credential.ScopeAccount, Account: account,
-		Capability: capability, KeyID: keyID,
+		Access: access, KeyID: keyID,
 	}
 }
 

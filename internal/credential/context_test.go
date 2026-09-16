@@ -8,7 +8,7 @@ import (
 
 func TestFromContext_ReturnsWhatNewContextPutIn(t *testing.T) {
 	t.Parallel()
-	c := credential.Credential{ID: "4a2f", Scope: credential.ScopeAccount, Account: "acct", Capability: credential.ReadWrite, KeyID: "k1"}
+	c := credential.Credential{ID: "4a2f", Scope: credential.ScopeAccount, Account: "acct", Access: credential.ReadWrite, KeyID: "k1"}
 
 	got, ok := credential.FromContext(credential.NewContext(t.Context(), c))
 

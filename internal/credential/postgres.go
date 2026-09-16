@@ -48,7 +48,7 @@ func NewPostgres(pool *pgxpool.Pool, key Key, keyID string) *Postgres {
 }
 
 // columns is what a Credential is read from, in the order scan reads them.
-const columns = `id, scope, account_id, capability, key_id, last_used_at`
+const columns = `id, scope, account_id, access, key_id, last_used_at`
 
 // Accounts reads every account a credential can be of, in no order a caller
 // may rely on.
@@ -78,15 +78,15 @@ func (s *Postgres) Accounts(ctx context.Context) ([]AccountID, error) {
 // Every credential this makes is of one account, with nothing to say
 // otherwise. What issues credentials issues them to an account, and a row of
 // the deployment is one a test writes by hand.
-func (s *Postgres) Create(ctx context.Context, account AccountID, capability Capability, now time.Time) (ID, Token, error) {
+func (s *Postgres) Create(ctx context.Context, account AccountID, access Access, now time.Time) (ID, Token, error) {
 	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
 	defer cancel()
 
 	id, token := NewID(), New()
 	_, err := s.pool.Exec(ctx, `
-		insert into credentials (id, account_id, scope, capability, hash, key_id, created_at)
+		insert into credentials (id, account_id, scope, access, hash, key_id, created_at)
 		values ($1, $2, $3, $4, $5, $6, $7)`,
-		id, account, ScopeAccount, capability, Hash(s.key, token), s.keyID, now)
+		id, account, ScopeAccount, access, Hash(s.key, token), s.keyID, now)
 	if err != nil {
 		return "", "", fmt.Errorf("credential %s: %w", id, err)
 	}
@@ -162,7 +162,7 @@ func (s *Postgres) InForce(ctx context.Context) (InForce, error) {
 	var some, writes bool
 	if err := s.pool.QueryRow(ctx, `
 		select exists (select from credentials where revoked_at is null),
-		       exists (select from credentials where revoked_at is null and capability = $1)`,
+		       exists (select from credentials where revoked_at is null and access = $1)`,
 		ReadWrite).Scan(&some, &writes); err != nil {
 		return "", fmt.Errorf("credentials: %w", err)
 	}
@@ -247,7 +247,7 @@ func scan(row pgx.Row) (Credential, error) {
 		account  *AccountID
 		lastUsed *time.Time
 	)
-	if err := row.Scan(&c.ID, &c.Scope, &account, &c.Capability, &c.KeyID, &lastUsed); err != nil {
+	if err := row.Scan(&c.ID, &c.Scope, &account, &c.Access, &c.KeyID, &lastUsed); err != nil {
 		return Credential{}, err
 	}
 	if account != nil {
