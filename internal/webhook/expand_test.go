@@ -314,3 +314,66 @@ func TestAttempted_WritesTheAttemptAndLeavesTheDeliveryDeliveredDueAgainOrFailed
 		t.Errorf("after a 204: %s, %d attempts, next %v, delivered %v; want delivered", state, attempts, next, deliveredAt)
 	}
 }
+
+// An allowance the operator mistyped allows nothing, and stops nothing
+// else: the delivery is read, and its check refuses the inside address.
+func TestDue_ReadsAMistypedAllowanceAsNoneAndGoesOn(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	e, _ := created(t, s, first, "https://hooks.example/in")
+	if _, err := pool.Exec(t.Context(), `update webhook_endpoints set allowed = '{"10.0.5.0/24","not a prefix"}' where id = $1`, e.ID); err != nil {
+		t.Fatal(err)
+	}
+	paid(t, pool, first, p1, "payment.succeeded")
+	if _, err := s.Expand(t.Context(), now, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	due, err := s.Due(t.Context(), now, 32, 4)
+
+	if err != nil || len(due) != 1 || len(due[0].Allowed) != 1 {
+		t.Errorf("Due = %d, %v with %v allowed; want the delivery with the one prefix that reads", len(due), err, due)
+	}
+	if allowed, err := s.Allowed(t.Context(), e.ID); err != nil || len(allowed) != 1 {
+		t.Errorf("Allowed = %v, %v; want the one prefix that reads", allowed, err)
+	}
+}
+
+func TestSweep_RemovesDeliveredAndFailedPastTheRetentionAndKeepsTheRest(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	created(t, s, first, "https://hooks.example/in")
+	for i := range 4 {
+		paid(t, pool, first, fmt.Sprintf("%032d", i), "payment.succeeded")
+	}
+	if _, err := s.Expand(t.Context(), now, 10); err != nil {
+		t.Fatal(err)
+	}
+	rows := deliveries(t, pool)
+	for i, state := range []string{"delivered", "failed", "pending", "delivered"} {
+		age := now.Add(-webhook.Retention - time.Hour)
+		if i == 3 {
+			age = now.Add(-webhook.Retention + time.Hour)
+		}
+		if _, err := pool.Exec(t.Context(), `update webhook_deliveries set state = $2, created_at = $3, next_at = null where id = $1`, rows[i].ID, state, age); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(t.Context(), `insert into webhook_attempts (delivery_id, at, status, took_ms) values ($1, $2, 200, 1)`, rows[i].ID, age); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	swept, err := s.Sweep(t.Context(), now.Add(-webhook.Retention), 1000)
+
+	if err != nil || swept != 2 {
+		t.Fatalf("Sweep = %d, %v; want the two old finished ones", swept, err)
+	}
+	left := deliveries(t, pool)
+	if len(left) != 2 || left[0].State != webhook.Pending || left[1].State != webhook.Delivered {
+		t.Errorf("left %+v, want the old pending one and the recent delivered one", left)
+	}
+	var attempts int
+	if err := pool.QueryRow(t.Context(), `select count(*) from webhook_attempts`).Scan(&attempts); err != nil || attempts != 2 {
+		t.Errorf("attempts left = %d, %v; want the two of the deliveries kept", attempts, err)
+	}
+}

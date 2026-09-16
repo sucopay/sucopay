@@ -299,15 +299,21 @@ func (s *Postgres) Allowed(ctx context.Context, id ID) ([]netip.Prefix, error) {
 	if err != nil {
 		return nil, fmt.Errorf("endpoint %s: %w", id, err)
 	}
+	return allowances(text), nil
+}
+
+// allowances reads what the operator wrote in an endpoint's allowed column.
+// An entry that is not a prefix allows nothing: read as an error, one
+// mistyped entry would stop every delivery the round reads, and read as a
+// wider allowance it would open what the operator did not mean to.
+func allowances(text []string) []netip.Prefix {
 	out := make([]netip.Prefix, 0, len(text))
 	for _, t := range text {
-		p, err := netip.ParsePrefix(t)
-		if err != nil {
-			return nil, fmt.Errorf("endpoint %s: allowance %w", id, err)
+		if p, err := netip.ParsePrefix(t); err == nil {
+			out = append(out, p)
 		}
-		out = append(out, p)
 	}
-	return out, nil
+	return out
 }
 
 // unwind rolls a transaction back and reports the rollback under what, and
@@ -517,13 +523,7 @@ func (s *Postgres) Due(ctx context.Context, now time.Time, limit, perEndpoint in
 			d.Payment = payment.ID(*paymentID)
 		}
 		d.OccurredAt, d.NextAt = d.OccurredAt.UTC(), d.NextAt.UTC()
-		for _, text := range allowed {
-			prefix, err := netip.ParsePrefix(text)
-			if err != nil {
-				return nil, fmt.Errorf("delivery %s: allowance %w", d.ID, err)
-			}
-			due.Allowed = append(due.Allowed, prefix)
-		}
+		due.Allowed = allowances(allowed)
 		out = append(out, due)
 	}
 	return out, rows.Err()
@@ -568,4 +568,44 @@ func (s *Postgres) Attempted(ctx context.Context, d Delivery, o Outcome, now tim
 		return fmt.Errorf("delivery %s: %w", d.ID, err)
 	}
 	return tx.Commit(ctx)
+}
+
+// Sweep removes the deliveries that were delivered or failed and were made
+// earlier than the time given, and their attempts, up to limit of them; and
+// answers with how many. Measured from when a delivery was made rather than
+// when it was done with, which is at most three days later and is one
+// column fewer to index. Pending ones stay whatever their age: one is
+// pending for three days at the most, and a longer wait is a disabled
+// endpoint, whose deliveries are kept for it to be enabled again.
+func (s *Postgres) Sweep(ctx context.Context, before time.Time, limit int) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("sweep: %w", err)
+	}
+	defer func() { err = unwind(ctx, tx, "sweep", err) }()
+	rows, err := tx.Query(ctx, `
+		select id from webhook_deliveries
+		 where state <> $1 and created_at < $2
+		 order by created_at limit $3`, Pending, before, limit)
+	if err != nil {
+		return 0, fmt.Errorf("sweep: %w", err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[ID])
+	if err != nil {
+		return 0, fmt.Errorf("sweep: %w", err)
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	if _, err := tx.Exec(ctx, `delete from webhook_attempts where delivery_id = any($1)`, ids); err != nil {
+		return 0, fmt.Errorf("sweep: %w", err)
+	}
+	tag, err := tx.Exec(ctx, `delete from webhook_deliveries where id = any($1)`, ids)
+	if err != nil {
+		return 0, fmt.Errorf("sweep: %w", err)
+	}
+	return int(tag.RowsAffected()), tx.Commit(ctx)
 }

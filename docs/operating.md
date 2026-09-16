@@ -18,12 +18,12 @@ instance that is working, which does not bring the database back.
 ```json
 {"status":"ok","database":"reachable","credentials":"read-write",
  "networks":{"polygon":"observing"},"assets":{"jpyc":"unchanged"},
- "finality":{"polygon":"deciding"}}
+ "finality":{"polygon":"deciding"},"webhooks":"delivering"}
 ```
 
-`networks`, `assets` and `finality` are left out by an instance configured without a database,
-which reads no chain and settles nothing. `credentials` is left out where there is no store to
-ask.
+`networks`, `assets`, `finality` and `webhooks` are left out by an instance configured without
+a database, which reads no chain, settles nothing and delivers nothing. `credentials` is left
+out where there is no store to ask.
 
 One word for each network:
 
@@ -75,6 +75,19 @@ No word under `finality` makes it `unavailable`. A deployment that settles nothi
 payments arrive and still records them, and the funds are at the merchant's address either way.
 What is stuck is the judgement, and taking the API out of service over it would stop the payments
 that are still being made.
+
+`webhooks` is one word for the deployment, since one worker sends every endpoint's deliveries:
+
+| | |
+|---|---|
+| `delivering` | A round turned what the payments produced into deliveries and sent what was due |
+| `no-round` | No round has finished since this instance started |
+| `waiting` | Another instance holds the deliveries. This one is the spare |
+| `unreachable` | The last round did not finish, which is the database: a receiver that does not answer is an attempt written down, not a round stopped |
+| `stalled` | Rounds have stopped finishing |
+
+`delivering` stands for fifteen seconds, three of the five-second rounds. No word here makes the
+instance `unavailable` either: what a merchant was not told, they can still read.
 
 ## suco doctor
 

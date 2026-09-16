@@ -123,3 +123,54 @@ func TestWorker_RoundWritesADestinationThatFailsItsCheckAsAnAttemptWithoutTheAdd
 		t.Error("the receiver was reached")
 	}
 }
+
+// A receiver that takes its time does not hold up another's delivery: the
+// sends of one round go out together.
+func TestWorker_RoundSendsToAQuickReceiverWhileASlowOneIsStillAnswering(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	const delay = 1500 * time.Millisecond
+	rc := listening(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/slow" {
+			time.Sleep(delay)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	slow, _ := created(t, s, first, strings.Replace(rc.url("example.com"), "/in", "/slow", 1))
+	quick, _ := created(t, s, other, rc.url("example.com"))
+	for _, id := range []webhook.ID{slow.ID, quick.ID} {
+		if _, err := pool.Exec(t.Context(), `update webhook_endpoints set allowed = '{127.0.0.1/32}' where id = $1`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	paid(t, pool, first, p1, "payment.succeeded")
+	paid(t, pool, other, strings.Repeat("2", 32), "payment.succeeded")
+	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
+	w := webhook.NewWorker(s, sending(rc), observe.NewLeases(pool), quiet, time.Now)
+	started := time.Now()
+
+	if err := w.Round(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	if took := time.Since(started); took > 2*delay {
+		t.Errorf("the round took %v, want about one delay: the sends did not go out together", took)
+	}
+	at := map[webhook.ID]time.Time{}
+	rows, err := pool.Query(t.Context(), `select d.endpoint_id, a.at from webhook_attempts a join webhook_deliveries d on d.id = a.delivery_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id webhook.ID
+		var when time.Time
+		if err := rows.Scan(&id, &when); err != nil {
+			t.Fatal(err)
+		}
+		at[id] = when
+	}
+	rows.Close()
+	if len(at) != 2 || !at[quick.ID].Before(at[slow.ID]) {
+		t.Errorf("attempts at %v, want the quick receiver's written before the slow one answered", at)
+	}
+}

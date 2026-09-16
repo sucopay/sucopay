@@ -18,11 +18,12 @@ English: [operating.md](operating.md)
 ```json
 {"status":"ok","database":"reachable","credentials":"read-write",
  "networks":{"polygon":"observing"},"assets":{"jpyc":"unchanged"},
- "finality":{"polygon":"deciding"}}
+ "finality":{"polygon":"deciding"},"webhooks":"delivering"}
 ```
 
-データベースを設定していないインスタンスはチェーンを読まず、確定も判定しないので、`networks`
-と `assets` と `finality` は出ません。資格情報の store が無ければ `credentials` も出ません。
+データベースを設定していないインスタンスはチェーンを読まず、確定も判定せず、Webhook も送ら
+ないので、`networks` と `assets` と `finality` と `webhooks` は出ません。資格情報の store が
+無ければ `credentials` も出ません。
 
 network ごとに 1 語です。
 
@@ -71,6 +72,19 @@ asset ごとにも 1 語で、`unchanged` か `changed` です。そのチェー
 `finality` の語は `unavailable` にしません。判定が動いていない配備でも、送金は見つかり、記録され
 ます。資金はどちらにしても加盟店のアドレスにあります。止まっているのは判断のほうで、そこで API
 を止めると、まだ行われている支払いまで止まります。
+
+`webhooks` は配備に 1 語です。全部の宛先への配送を 1 つの worker が送るからです。
+
+| | |
+|---|---|
+| `delivering` | 周が、payment の変化を配送にし、時刻の来たものを送りました |
+| `no-round` | このインスタンスが起きてから周が 1 度も終わっていません |
+| `waiting` | 別のインスタンスが配送を持っています。こちらは控えです |
+| `unreachable` | 直前の周が終わりませんでした。止めたのはデータベースです。答えない受け取り側は試行として記録され、周を止めません |
+| `stalled` | 周が終わらなくなりました |
+
+`delivering` が立っているのは 15 秒、5 秒の周の 3 周ぶんです。この語も `unavailable` にしません。
+加盟店に伝わらなかったことは、加盟店が読めます。
 
 ## suco doctor
 

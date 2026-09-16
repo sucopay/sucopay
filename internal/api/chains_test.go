@@ -68,6 +68,7 @@ type answered struct {
 	Networks    map[string]string `json:"networks"`
 	Assets      map[string]string `json:"assets"`
 	Finality    map[string]string `json:"finality"`
+	Webhooks    string            `json:"webhooks"`
 }
 
 func answer(t *testing.T, rec *httptest.ResponseRecorder) answered {
@@ -218,5 +219,37 @@ func TestReadyz_SaysNothingOfSettlingWhereNothingSettles(t *testing.T) {
 
 	if body := answer(t, rec); body.Finality != nil {
 		t.Errorf("finality = %v, want nothing", body.Finality)
+	}
+}
+
+// delivers is a deployment delivering webhooks, in the one word a probe
+// answers with.
+type delivers string
+
+func (d delivers) Word() string { return string(d) }
+
+// Whether webhooks are being delivered is a third thing a probe says of a
+// deployment, and nothing where nothing is delivered.
+func TestReadyz_SaysWhatTheWebhookDeliveringHasComeToAndNothingWhereThereIsNone(t *testing.T) {
+	t.Parallel()
+	probe := func(d api.Delivering) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		api.Handler(quiet(), api.Dependencies{
+			Database:    func(context.Context) error { return nil },
+			Credentials: inForce{what: "read-write"},
+			Chains:      reading(),
+			Delivering:  d,
+		}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+		return rec
+	}
+
+	if body := answer(t, probe(delivers("delivering"))); body.Webhooks != "delivering" || body.Status != "ok" {
+		t.Errorf("webhooks = %q, status %q; want delivering and ok", body.Webhooks, body.Status)
+	}
+	if body := answer(t, probe(delivers("stalled"))); body.Webhooks != "stalled" || body.Status != "ok" {
+		t.Errorf("webhooks = %q, status %q; want stalled said and the instance still ok", body.Webhooks, body.Status)
+	}
+	if rec := probe(nil); strings.Contains(rec.Body.String(), "webhooks") {
+		t.Errorf("body = %s, want no webhooks where nothing delivers", rec.Body)
 	}
 }

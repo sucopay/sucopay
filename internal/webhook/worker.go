@@ -36,13 +36,15 @@ const (
 // turns into deliveries, perRound how many deliveries it sends, and
 // perEndpoint how many of those go to any one endpoint, so that one slow
 // receiver does not take the round and the connections open do not grow
-// with the endpoints registered. staleAfter is how many periods may pass
-// without a round before the last word stops standing.
+// with the endpoints registered. sweepPerRound is how many deliveries past
+// their retention one round removes. staleAfter is how many periods may
+// pass without a round before the last word stops standing.
 const (
 	period         = 5 * time.Second
 	expandPerRound = 100
 	perRound       = 32
 	perEndpoint    = 4
+	sweepPerRound  = 1000
 	staleAfter     = 3
 )
 
@@ -146,8 +148,9 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 }
 
-// Round expands the outbox, sends what is due, and writes down what each
-// send came to. Run makes one every period, and a test makes one itself.
+// Round expands the outbox, removes what is past its retention, sends what
+// is due, and writes down what each send came to. Run makes one every
+// period, and a test makes one itself.
 // The sends go out together, as many as are due; what is due is bounded by
 // [perRound] and [perEndpoint], so that is how many connections a round
 // holds at most.
@@ -158,6 +161,9 @@ func (w *Worker) Run(ctx context.Context) error {
 func (w *Worker) Round(ctx context.Context) error {
 	now := w.now()
 	if _, err := w.store.Expand(ctx, now, expandPerRound); err != nil {
+		return err
+	}
+	if _, err := w.store.Sweep(ctx, now.Add(-Retention), sweepPerRound); err != nil {
 		return err
 	}
 	due, err := w.store.Due(ctx, now, perRound, perEndpoint)

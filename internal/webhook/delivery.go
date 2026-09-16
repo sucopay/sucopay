@@ -63,6 +63,11 @@ func Envelope(eventType string, occurred time.Time, account payment.AccountID, d
 	return bytes.TrimRight(out.Bytes(), "\n"), nil
 }
 
+// Retention is how long a delivery that is delivered or failed is kept,
+// with its attempts, so that what did not arrive can be looked into after
+// the fact. Thirty days: the three the retries take, and then a month.
+const Retention = 30 * 24 * time.Hour
+
 // schedule is how long each attempt waits after the one before it failed:
 // the first is made at once, and the rest follow what Standard Webhooks
 // recommends. Ten attempts come to a little over three days.

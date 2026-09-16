@@ -42,7 +42,7 @@ type route struct {
 func routes(log *slog.Logger, deps Dependencies) []route {
 	return []route{
 		{pattern: "GET /healthz", needs: open, handle: alive},
-		{pattern: "GET /readyz", needs: open, handle: ready(log, deps.Database, deps.Credentials, deps.Chains, deps.Settling)},
+		{pattern: "GET /readyz", needs: open, handle: ready(log, deps.Database, deps.Credentials, deps.Chains, deps.Settling, deps.Delivering)},
 		{pattern: "POST /payments", needs: write, handle: forAccount(log, deps.Payments, Payments.Create)},
 		{pattern: "GET /payments/{id}", needs: read, handle: forAccount(log, deps.Payments, Payments.Read)},
 		{pattern: "POST /webhook_endpoints", needs: write, handle: forAccount(log, deps.Webhooks, Webhooks.Create)},
