@@ -11,19 +11,20 @@ import (
 )
 
 // domainFiles hold the part of this package that reaches nothing outward:
-// what an endpoint is, what a destination may be, and what a secret is.
-// postgres.go holds a driver and http.go a handler, and reach outward on
-// purpose.
-var domainFiles = []string{"endpoint.go", "destination.go", "secret.go"}
+// what an endpoint is, what a destination may be, what a secret is, what a
+// delivery is and when it is tried again, and how one is signed. postgres.go
+// holds a driver, http.go a handler and sender.go a client, and reach
+// outward on purpose.
+var domainFiles = []string{"endpoint.go", "destination.go", "secret.go", "delivery.go", "signature.go"}
 
 // allowed is everything those files may import. An allow list rather than a
 // block list, because the import worth catching is the one nobody thought to
 // forbid: a driver, an HTTP handler, or whatever the next dependency is
 // called.
 var allowed = []string{
-	"context", "crypto/aes", "crypto/cipher", "crypto/rand", "encoding/base64",
-	"errors", "fmt", "io", "log/slog", "net", "net/netip", "net/url", "slices",
-	"strings", "time",
+	"bytes", "context", "crypto/aes", "crypto/cipher", "crypto/hmac", "crypto/rand",
+	"crypto/sha256", "encoding/base64", "encoding/json", "errors", "fmt", "io",
+	"log/slog", "net", "net/netip", "net/url", "slices", "strconv", "strings", "time",
 	// invisible decides which characters a URL and a description may carry.
 	// It reads nothing and reaches nothing; it is a list of runes.
 	"github.com/sucopay/sucopay/internal/invisible",

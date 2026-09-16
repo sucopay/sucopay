@@ -50,7 +50,7 @@ func store(t *testing.T) (*webhook.Postgres, *pgxpool.Pool) {
 		t.Fatal(err)
 	}
 	pool := opened(t)
-	return webhook.NewPostgres(pool, cipher), pool
+	return webhook.NewPostgres(pool, cipher, "k1"), pool
 }
 
 func registration(url string) webhook.Registration {
@@ -164,6 +164,36 @@ func TestPostgres_KeepsAReplacedSecretForTheGraceAndNoLonger(t *testing.T) {
 	}
 	if _, err := s.Rotate(t.Context(), other, e.ID, now); !errors.Is(err, webhook.ErrNotFound) {
 		t.Errorf("another account's Rotate = %v, want ErrNotFound", err)
+	}
+}
+
+// A key swapped under a deployment leaves every secret it sealed closed.
+// Rotation seals a new one under the key in force; the old one, which the
+// grace would keep, is left out rather than failing the signer.
+func TestPostgres_SignsUnderTheKeyInForceAfterTheKeyWasSwapped(t *testing.T) {
+	t.Parallel()
+	before, pool := store(t)
+	e, _ := created(t, before, first, "https://hooks.example/a")
+	swapped, err := webhook.NewCipher([32]byte{8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := webhook.NewPostgres(pool, swapped, "k2")
+
+	if _, err := after.Secrets(t.Context(), e.ID, now); err == nil {
+		t.Error("a secret sealed under the old key opened under the new")
+	}
+	fresh, err := after.Rotate(t.Context(), first, e.ID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := after.Secrets(t.Context(), e.ID, now)
+	if err != nil || len(secrets) != 1 || secrets[0] != fresh {
+		t.Errorf("Secrets after rotation = %d, %v; want the new one alone", len(secrets), err)
+	}
+	var keyID string
+	if err := pool.QueryRow(t.Context(), `select key_id from webhook_endpoints where id = $1`, e.ID).Scan(&keyID); err != nil || keyID != "k2" {
+		t.Errorf("key_id = %q, %v; want the key in force", keyID, err)
 	}
 }
 

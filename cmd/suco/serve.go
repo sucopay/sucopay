@@ -85,7 +85,8 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		webhooks = webhook.NewHTTP(webhook.NewPostgres(db.Conns(), cipher), net.DefaultResolver, time.Now)
+		webhooks = webhook.NewHTTP(webhook.NewPostgres(db.Conns(), cipher, cfg.Credentials.KeyID),
+			net.DefaultResolver, time.Now)
 
 		// Applied at every start rather than by a command an operator has to
 		// know about, which would leave an evaluator with an empty database

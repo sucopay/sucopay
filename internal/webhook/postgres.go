@@ -22,14 +22,21 @@ const KeyPurpose = "suco webhook secret"
 const storeTimeout = 5 * time.Second
 
 // Postgres keeps endpoints in the database, their secrets sealed.
+//
+// Every secret this writes is sealed under the cipher and says so in key_id,
+// as a credential's hash says which key made it. A deployment whose key was
+// swapped holds secrets this cannot open; [Postgres.Secrets] says so for
+// one, and the rows say so for all.
 type Postgres struct {
 	pool   *pgxpool.Pool
 	cipher Cipher
+	keyID  string
 }
 
-// NewPostgres stores endpoints behind pool, sealing secrets with cipher.
-func NewPostgres(pool *pgxpool.Pool, cipher Cipher) *Postgres {
-	return &Postgres{pool: pool, cipher: cipher}
+// NewPostgres stores endpoints behind pool, sealing secrets with cipher and
+// marking them as sealed under keyID.
+func NewPostgres(pool *pgxpool.Pool, cipher Cipher, keyID string) *Postgres {
+	return &Postgres{pool: pool, cipher: cipher, keyID: keyID}
 }
 
 // Registration is what a merchant supplies for a new endpoint. The URL has
@@ -80,9 +87,9 @@ func (s *Postgres) Create(ctx context.Context, account payment.AccountID, r Regi
 	}
 	if _, err := tx.Exec(ctx, `
 		insert into webhook_endpoints
-			(id, scope, account_id, url, description, events, enabled, secret, created_at)
-		values ($1, $2, $3, $4, $5, $6, true, $7, $8)`,
-		id, ScopeAccount, account, r.URL, r.Description, r.Events, s.cipher.Seal(secret), now); err != nil {
+			(id, scope, account_id, url, description, events, enabled, secret, key_id, created_at)
+		values ($1, $2, $3, $4, $5, $6, true, $7, $8, $9)`,
+		id, ScopeAccount, account, r.URL, r.Description, r.Events, s.cipher.Seal(secret), s.keyID, now); err != nil {
 		return Endpoint{}, "", fmt.Errorf("endpoint %s: %w", id, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -187,9 +194,9 @@ func (s *Postgres) Rotate(ctx context.Context, account payment.AccountID, id ID,
 	secret := NewSecret()
 	tag, err := s.pool.Exec(ctx, `
 		update webhook_endpoints
-		   set previous_secret = secret, previous_until = $3, secret = $4
+		   set previous_secret = secret, previous_until = $3, secret = $4, key_id = $5
 		 where id = $1 and account_id = $2 and deleted_at is null`,
-		id, account, now.Add(RotationGrace), s.cipher.Seal(secret))
+		id, account, now.Add(RotationGrace), s.cipher.Seal(secret), s.keyID)
 	if err != nil {
 		return "", fmt.Errorf("endpoint %s: %w", id, err)
 	}
@@ -234,6 +241,11 @@ func (s *Postgres) Delete(ctx context.Context, account payment.AccountID, id ID,
 // secret in force, and the one it replaced while that is still within its
 // grace. The one in force comes first.
 //
+// A replaced secret that cannot be opened is left out rather than failing
+// the call: it was sealed under a key since swapped, and the one in force
+// was sealed by the rotation that replaced it. Only the one in force being
+// unopenable is an error, since nothing can then be signed.
+//
 // By id alone, and of a deleted endpoint too: the signer holds a delivery,
 // which names its endpoint, and a delivery made before the endpoint was
 // deleted is still signed for it. Nothing that answers a merchant calls
@@ -260,11 +272,9 @@ func (s *Postgres) Secrets(ctx context.Context, id ID, now time.Time) ([]Secret,
 	}
 	out := []Secret{first}
 	if previous != nil && until != nil && now.Before(*until) {
-		second, err := s.cipher.Open(previous)
-		if err != nil {
-			return nil, fmt.Errorf("endpoint %s: %w", id, err)
+		if second, err := s.cipher.Open(previous); err == nil {
+			out = append(out, second)
 		}
-		out = append(out, second)
 	}
 	return out, nil
 }

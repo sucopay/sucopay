@@ -5,7 +5,9 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sucopay/sucopay/internal/invisible"
 )
@@ -34,6 +36,39 @@ var inside = []netip.Prefix{
 	netip.MustParsePrefix("255.255.255.255/32"),
 }
 
+// carrying are the IPv6 prefixes that carry an IPv4 address inside them and
+// are delivered to it: the NAT64 well-known prefix and its local-use
+// counterpart, and 6to4. An address under one is checked as the IPv4
+// address it carries, as an IPv4-mapped one is; where the four bytes sit
+// differs. Under a /96 they are the last four. Under the local-use /48 they
+// may be the last four, when an operator uses a /96 within it, or split
+// around byte 8, which RFC 6052 keeps clear, when the /48 itself is the
+// prefix; both are read, since which the operator chose is not knowable
+// from the address. 6to4 puts them right after its two bytes.
+var carrying = []struct {
+	prefix netip.Prefix
+	at     [][4]int
+}{
+	{netip.MustParsePrefix("64:ff9b::/96"), [][4]int{{12, 13, 14, 15}}},
+	{netip.MustParsePrefix("64:ff9b:1::/48"), [][4]int{{12, 13, 14, 15}, {6, 7, 9, 10}}},
+	{netip.MustParsePrefix("2002::/16"), [][4]int{{2, 3, 4, 5}}},
+}
+
+// MaxURLBytes bounds a destination. Receivers refuse longer request lines
+// long before this, and a bound here answers at registration rather than at
+// the first delivery.
+const MaxURLBytes = 2048
+
+// resolveTimeout bounds one resolution of a name. A resolver that does not
+// answer in this time is one a delivery would not reach either.
+const resolveTimeout = 5 * time.Second
+
+// unreachable is the one answer for a destination that does not resolve and
+// one that resolves inside the deployment. Two answers would let whoever
+// holds a credential learn, name by name, which names the deployment's
+// resolver knows; a merchant who mistyped a name will look at the name.
+const unreachable = "cannot be delivered to from this deployment"
+
 // Check holds a destination to its shape and to where it leads, and answers
 // with what to connect to. Every address the name resolves to is checked,
 // and one address inside the deployment refuses the destination whole: a
@@ -56,6 +91,9 @@ func Check(ctx context.Context, resolver Resolver, raw string, allowed []netip.P
 	if invisible.Has(raw) {
 		return refuse("carries a character a reader cannot see")
 	}
+	if len(raw) > MaxURLBytes {
+		return refuse("longer than " + strconv.Itoa(MaxURLBytes) + " bytes")
+	}
 	u, err := url.Parse(raw)
 	switch {
 	case err != nil:
@@ -69,22 +107,62 @@ func Check(ctx context.Context, resolver Resolver, raw string, allowed []netip.P
 	case strings.ContainsAny(u.Hostname(), "%"):
 		// A zone in a literal names an interface of this machine.
 		return refuse("names an interface of this machine")
+	case !portOK(u.Port()):
+		return refuse("has a port outside 1 to 65535")
 	}
-	addrs, err := resolver.LookupNetIP(ctx, "ip", u.Hostname())
+	resolving, stop := context.WithTimeout(ctx, resolveTimeout)
+	defer stop()
+	addrs, err := resolver.LookupNetIP(resolving, "ip", u.Hostname())
 	if err != nil || len(addrs) == 0 {
-		return refuse("does not resolve")
+		return refuse(unreachable)
 	}
 	checked := make([]netip.Addr, 0, len(addrs))
 	for _, addr := range addrs {
 		// IPv4 carried inside IPv6 is the IPv4 address, and is checked as
-		// one: ::ffff:169.254.169.254 is the metadata service.
+		// one: ::ffff:169.254.169.254 is the metadata service, and so is
+		// 64:ff9b::a9fe:a9fe behind NAT64.
 		addr = addr.Unmap()
 		if isInside(addr) && !isAllowed(addr, allowed) {
-			return refuse("resolves to an address inside the deployment")
+			return refuse(unreachable)
+		}
+		for _, carried := range carriedIPv4(addr) {
+			if isInside(carried) && !isAllowed(carried, allowed) {
+				return refuse(unreachable)
+			}
 		}
 		checked = append(checked, addr)
 	}
 	return Destination{URL: u, Addrs: checked}, nil
+}
+
+// portOK says whether a port as a URL carries it is one a connection can be
+// made to. url.Parse admits any digits; an empty port is 443.
+func portOK(port string) bool {
+	if port == "" {
+		return true
+	}
+	n, err := strconv.Atoi(port)
+	return err == nil && n >= 1 && n <= 65535
+}
+
+// carriedIPv4 is each IPv4 address an IPv6 address under one of the
+// carrying prefixes may be delivered to, and nothing for any other address.
+func carriedIPv4(a netip.Addr) []netip.Addr {
+	if !a.Is6() {
+		return nil
+	}
+	b := a.As16()
+	for _, c := range carrying {
+		if !c.prefix.Contains(a) {
+			continue
+		}
+		out := make([]netip.Addr, 0, len(c.at))
+		for _, at := range c.at {
+			out = append(out, netip.AddrFrom4([4]byte{b[at[0]], b[at[1]], b[at[2]], b[at[3]]}))
+		}
+		return out
+	}
+	return nil
 }
 
 // isInside says whether an address is one the deployment must not be made to
