@@ -27,7 +27,8 @@ type Payments interface {
 }
 
 // forAccount serves one method of p for the account the request was
-// authenticated as, which [auth.admit] left in the context.
+// authenticated as, which [auth.admit] left in the context. P is whichever
+// interface serves an account's things, [Payments] or [Webhooks].
 //
 // method is a method expression, Payments.Create for one, and not a method
 // value. A method value is taken from p where the route is built, which is
@@ -40,10 +41,11 @@ type Payments interface {
 // A request carrying no credential is on a route declared more open than
 // the account it serves, and is answered as one presenting none. Nothing
 // here serves for an account nobody was authenticated as.
-func forAccount(log *slog.Logger, p Payments,
-	method func(Payments, http.ResponseWriter, *http.Request, payment.AccountID) error) http.HandlerFunc {
+func forAccount[P comparable](log *slog.Logger, p P,
+	method func(P, http.ResponseWriter, *http.Request, payment.AccountID) error) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if p == nil {
+		var none P
+		if p == none {
 			unavailable(w)
 			return
 		}

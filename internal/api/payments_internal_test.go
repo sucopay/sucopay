@@ -219,7 +219,7 @@ func TestForAccount_AnswersARequestCarryingNoCredentialAsUnauthorized(t *testing
 	p := &stub{}
 	rec := httptest.NewRecorder()
 
-	forAccount(silent(), p, Payments.Create).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/payments", nil))
+	forAccount(silent(), Payments(p), Payments.Create).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/payments", nil))
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)

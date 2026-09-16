@@ -18,6 +18,7 @@ import (
 	"github.com/sucopay/sucopay/internal/observe"
 	"github.com/sucopay/sucopay/internal/payment"
 	"github.com/sucopay/sucopay/internal/postgres"
+	"github.com/sucopay/sucopay/internal/webhook"
 )
 
 // serve writes to the log rather than answering a person. It is the one
@@ -53,6 +54,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		ready       api.Ready
 		credentials api.Credentials
 		payments    api.Payments
+		webhooks    api.Webhooks
 		chains      api.Chains
 		observers   observe.Observers
 		workers     finality.Workers
@@ -74,6 +76,16 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		payments = payment.NewHTTP(
 			payment.NewService(store, store, observe.NewCursors(db.Conns()), time.Now),
 			cfg.Assets, accepted.NewPostgres(db.Conns()))
+
+		// Under a key of its own, derived from the credentials key for this
+		// purpose, so that a webhook secret and a credential's hash never
+		// share one; and through the system's resolver, which is the one a
+		// delivery will be made through.
+		cipher, err := webhook.NewCipher(key.Derive(webhook.KeyPurpose))
+		if err != nil {
+			return err
+		}
+		webhooks = webhook.NewHTTP(webhook.NewPostgres(db.Conns(), cipher), net.DefaultResolver, time.Now)
 
 		// Applied at every start rather than by a command an operator has to
 		// know about, which would leave an evaluator with an empty database
@@ -120,7 +132,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 
 	addr := net.JoinHostPort(cfg.Listen.Host, strconv.Itoa(cfg.Listen.Port))
 	deps := api.Dependencies{Database: ready, Credentials: credentials, Payments: payments,
-		Chains: chains, Settling: decides}
+		Webhooks: webhooks, Chains: chains, Settling: decides}
 	server, err := api.Listen(addr, api.Handler(log, deps), log)
 	if err != nil {
 		return err

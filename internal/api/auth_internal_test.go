@@ -19,6 +19,7 @@ import (
 	"github.com/sucopay/sucopay/internal/payment"
 	"github.com/sucopay/sucopay/internal/postgres"
 	"github.com/sucopay/sucopay/internal/postgres/postgrestest"
+	"github.com/sucopay/sucopay/internal/problem"
 )
 
 // These tests serve three routes of their own, over a payment repository and
@@ -154,7 +155,7 @@ func (f *fixture) opening(service *payment.Service) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, http.StatusCreated, map[string]string{"id": string(p.ID())})
+		problem.JSON(w, http.StatusCreated, map[string]string{"id": string(p.ID())})
 	}
 }
 
@@ -193,7 +194,7 @@ func answer(w http.ResponseWriter, err error) {
 	case err != nil:
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	default:
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		problem.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	}
 }
 

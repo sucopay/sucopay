@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sucopay/sucopay/internal/invisible"
+	"github.com/sucopay/sucopay/internal/problem"
 )
 
 // Assets is the list a request names an asset from, by the name the
@@ -212,35 +213,11 @@ func decodeObject(body []byte) (map[string]json.RawMessage, error) {
 	return raw, nil
 }
 
-// problemJSON is one problem as a response writes it. A problem that is not
-// about one key has no field, and the field is left out rather than written
-// empty, as [Problem.String] leaves out the key.
-type problemJSON struct {
-	Field   string `json:"field,omitempty"`
-	Message string `json:"message"`
-}
-
-// errorJSON is the body of every failed response: one word for what went
-// wrong, and for a body that was refused, what was wrong with it.
-type errorJSON struct {
-	Error    string        `json:"error"`
-	Problems []problemJSON `json:"problems,omitempty"`
-}
-
-// maxProblemBytes bounds a field and a message as a response writes them. A
-// field may be a key the request chose, which may be as long as the body.
-const maxProblemBytes = 512
-
-// problemsJSON renders problems as a response writes them. The field and the
-// message go through [invisible.Shown]: the field may be a key of the
-// request, and the message may quote a value from it.
-func problemsJSON(problems Problems) []problemJSON {
-	out := make([]problemJSON, 0, len(problems))
+// asFields is problems as [problem.Refuse] writes them.
+func asFields(problems Problems) []problem.Field {
+	out := make([]problem.Field, 0, len(problems))
 	for _, p := range problems {
-		out = append(out, problemJSON{
-			Field:   invisible.Shown(p.Field, maxProblemBytes),
-			Message: invisible.Shown(p.Message, maxProblemBytes),
-		})
+		out = append(out, problem.Field{Field: p.Field, Message: p.Message})
 	}
 	return out
 }
@@ -279,16 +256,16 @@ func (h *HTTP) Create(w http.ResponseWriter, r *http.Request, account AccountID)
 	var tooLarge *http.MaxBytesError
 	switch {
 	case errors.As(err, &tooLarge):
-		writeError(w, http.StatusRequestEntityTooLarge, "too_large", nil)
+		problem.Refuse(w, http.StatusRequestEntityTooLarge, "too_large", nil)
 		return nil
 	case err != nil:
-		writeError(w, http.StatusBadRequest, "invalid",
-			Problems{{Message: "the body ended before the request said it would"}})
+		problem.Refuse(w, http.StatusBadRequest, "invalid", asFields(
+			Problems{{Message: "the body ended before the request said it would"}}))
 		return nil
 	}
 	req, problems := readRequest(body, h.assets)
 	if problems != nil {
-		writeError(w, http.StatusBadRequest, "invalid", problems)
+		problem.Refuse(w, http.StatusBadRequest, "invalid", asFields(problems))
 		return nil
 	}
 	destination, accepted, err := h.accepted.Destination(r.Context(), account, req.asset)
@@ -296,8 +273,8 @@ func (h *HTTP) Create(w http.ResponseWriter, r *http.Request, account AccountID)
 		return err
 	}
 	if !accepted {
-		writeError(w, http.StatusBadRequest, "invalid", Problems{{Field: "asset",
-			Message: "not accepted by this account: nothing says where a payment of it is paid to"}})
+		problem.Refuse(w, http.StatusBadRequest, "invalid", asFields(Problems{{Field: "asset",
+			Message: "not accepted by this account: nothing says where a payment of it is paid to"}}))
 		return nil
 	}
 	p, err := h.service.Open(r.Context(), account, Request{
@@ -308,14 +285,14 @@ func (h *HTTP) Create(w http.ResponseWriter, r *http.Request, account AccountID)
 	})
 	var found Problems
 	if errors.As(err, &found) {
-		writeError(w, http.StatusBadRequest, "invalid", found)
+		problem.Refuse(w, http.StatusBadRequest, "invalid", asFields(found))
 		return nil
 	}
 	if err != nil {
 		return err
 	}
 	w.Header().Set("Location", "/payments/"+p.ID().String())
-	writeJSON(w, http.StatusCreated, bodyJSON(p))
+	problem.JSON(w, http.StatusCreated, bodyJSON(p))
 	return nil
 }
 
@@ -326,18 +303,18 @@ func (h *HTTP) Create(w http.ResponseWriter, r *http.Request, account AccountID)
 func (h *HTTP) Read(w http.ResponseWriter, r *http.Request, account AccountID) error {
 	id, err := ParseID(r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "not_found", nil)
+		problem.Refuse(w, http.StatusNotFound, "not_found", nil)
 		return nil
 	}
 	p, err := h.service.Find(r.Context(), account, id)
 	switch {
 	case errors.Is(err, ErrNotFound):
-		writeError(w, http.StatusNotFound, "not_found", nil)
+		problem.Refuse(w, http.StatusNotFound, "not_found", nil)
 		return nil
 	case err != nil:
 		return err
 	}
-	writeJSON(w, http.StatusOK, bodyJSON(p))
+	problem.JSON(w, http.StatusOK, bodyJSON(p))
 	return nil
 }
 
@@ -418,19 +395,4 @@ func Announce(p *Payment) (Event, error) {
 		Name:    "payment." + p.Status().String(),
 		Payload: bytes.TrimRight(payload.Bytes(), "\n"),
 	}, nil
-}
-
-// writeError answers with the one shape every failure has: a word for what
-// went wrong, and for a body that was refused, what was wrong with it.
-func writeError(w http.ResponseWriter, status int, word string, problems Problems) {
-	writeJSON(w, status, errorJSON{Error: word, Problems: problemsJSON(problems)})
-}
-
-func writeJSON(w http.ResponseWriter, status int, body any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.WriteHeader(status)
-	// The status line is already written, so a failed encode cannot become an
-	// error response.
-	_ = json.NewEncoder(w).Encode(body) //nolint:errcheck // nothing to report it to
 }

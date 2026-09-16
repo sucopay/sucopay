@@ -1,6 +1,7 @@
 package credential
 
 import (
+	"crypto/hkdf"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -245,6 +246,23 @@ func ParseKey(s string) (Key, error) {
 	var k Key
 	copy(k.bytes[:], raw)
 	return k, nil
+}
+
+// Derive is a key for another purpose, taken from this one with HKDF and the
+// name of the purpose, so that the deployment holds one secret and nothing
+// else is encrypted or signed under it directly. The purpose is part of the
+// derivation: two purposes get two keys, and a key derived once is derived
+// the same way for as long as the purpose keeps its name.
+func (k Key) Derive(purpose string) [keyBytes]byte {
+	// A fixed-length output from a fixed-length secret under SHA-256 cannot
+	// fail; what Key refuses is a length it cannot produce.
+	out, err := hkdf.Key(sha256.New, k.bytes[:], nil, purpose, keyBytes)
+	if err != nil {
+		panic(err)
+	}
+	var derived [keyBytes]byte
+	copy(derived[:], out)
+	return derived
 }
 
 // Hash is the form a token is stored in: HMAC-SHA256 of the token under the

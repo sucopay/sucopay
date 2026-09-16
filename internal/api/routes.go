@@ -36,14 +36,20 @@ type route struct {
 // and refuses a registrar anywhere but [Handler].
 //
 // A handler here closes over what it takes from deps, the Database,
-// Credentials, Payments and Chains, rather than reaching them. routes runs
-// while an instance is still starting, and all four are nil in one configured
-// without a database.
+// Credentials, Payments, Webhooks and Chains, rather than reaching them.
+// routes runs while an instance is still starting, and all five are nil in
+// one configured without a database.
 func routes(log *slog.Logger, deps Dependencies) []route {
 	return []route{
 		{pattern: "GET /healthz", needs: open, handle: alive},
 		{pattern: "GET /readyz", needs: open, handle: ready(log, deps.Database, deps.Credentials, deps.Chains, deps.Settling)},
 		{pattern: "POST /payments", needs: write, handle: forAccount(log, deps.Payments, Payments.Create)},
 		{pattern: "GET /payments/{id}", needs: read, handle: forAccount(log, deps.Payments, Payments.Read)},
+		{pattern: "POST /webhook_endpoints", needs: write, handle: forAccount(log, deps.Webhooks, Webhooks.Create)},
+		{pattern: "GET /webhook_endpoints", needs: read, handle: forAccount(log, deps.Webhooks, Webhooks.List)},
+		{pattern: "GET /webhook_endpoints/{id}", needs: read, handle: forAccount(log, deps.Webhooks, Webhooks.Read)},
+		{pattern: "PATCH /webhook_endpoints/{id}", needs: write, handle: forAccount(log, deps.Webhooks, Webhooks.Update)},
+		{pattern: "POST /webhook_endpoints/{id}/secret", needs: write, handle: forAccount(log, deps.Webhooks, Webhooks.Rotate)},
+		{pattern: "DELETE /webhook_endpoints/{id}", needs: write, handle: forAccount(log, deps.Webhooks, Webhooks.Delete)},
 	}
 }

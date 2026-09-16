@@ -192,46 +192,6 @@ func TestReadRequest_QuotesWhatItRepeatsOfTheBody(t *testing.T) {
 	}
 }
 
-func TestProblemsJSON_LeavesOutTheFieldOfAProblemThatHasNone(t *testing.T) {
-	t.Parallel()
-	body, err := json.Marshal(errorJSON{Error: "invalid", Problems: problemsJSON(Problems{
-		{Message: "body is empty"}, {Field: "amount", Message: "none given"},
-	})})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	want := `{"error":"invalid","problems":[{"message":"body is empty"},{"field":"amount","message":"none given"}]}`
-	if string(body) != want {
-		t.Errorf("wrote %s, want %s", body, want)
-	}
-}
-
-func TestProblemsJSON_LeavesOutTheProblemsOfAnErrorThatHasNone(t *testing.T) {
-	t.Parallel()
-	body, err := json.Marshal(errorJSON{Error: "not_found"})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if want := `{"error":"not_found"}`; string(body) != want {
-		t.Errorf("wrote %s, want %s", body, want)
-	}
-}
-
-func TestProblemsJSON_QuotesAndCutsWhatTheRequestChose(t *testing.T) {
-	t.Parallel()
-	long := strings.Repeat("k", maxProblemBytes+1)
-	out := problemsJSON(Problems{{Field: "we\u200bird", Message: "unknown key"}, {Field: long, Message: "unknown key"}})
-
-	if out[0].Field != strconv.Quote("we\u200bird") {
-		t.Errorf("field = %q, want it quoted so that the character shows", out[0].Field)
-	}
-	if len(out[1].Field) > maxProblemBytes+len("...") || !strings.HasSuffix(out[1].Field, "...") {
-		t.Errorf("a field of %d bytes came out as %d, want it cut to %d", len(long), len(out[1].Field), maxProblemBytes)
-	}
-}
-
 // FuzzReadRequest reads whatever a client sends, and checks what came back
 // against the body as read by encoding/json on its own.
 func FuzzReadRequest(f *testing.F) {
@@ -281,7 +241,7 @@ func FuzzReadRequest(f *testing.F) {
 				t.Errorf("readRequest(%q) reported %q with no field for a body that is an object", body, p.Message)
 			}
 			// A message may repeat a value of the body; a field is a key of it,
-			// and problemsJSON quotes it.
+			// and problem.Refuse quotes it.
 			if invisible.Has(p.Message) {
 				t.Errorf("readRequest(%q) reported %q, which holds a character a reader cannot see", body, p.Message)
 			}

@@ -340,3 +340,26 @@ func TestHash_IsOneValuePerKeyAndToken(t *testing.T) {
 		}
 	})
 }
+
+// A key derived for one purpose is not the key, and is not the key derived
+// for another purpose: what is encrypted under one cannot be opened with the
+// other, and neither is the secret the deployment was configured with.
+func TestDerive_GivesEachPurposeItsOwnKey(t *testing.T) {
+	t.Parallel()
+	k, err := credential.ParseKey("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	one, again, other := k.Derive("one"), k.Derive("one"), k.Derive("other")
+
+	if one != again {
+		t.Error("deriving the same purpose twice gave two keys")
+	}
+	if one == other {
+		t.Error("two purposes derived the same key")
+	}
+	if hex.EncodeToString(one[:]) == k.Hex() {
+		t.Error("the derived key is the key itself")
+	}
+}

@@ -3,7 +3,8 @@
 // A configuration document and a payment request are different things and
 // their problems name different parts of them, so each package keeps its own
 // type. What they share is how a list of them is put in front of a reader,
-// which had come to be written twice.
+// and how a refusal is written as an HTTP response, each of which had come
+// to be written more than once.
 package problem
 
 import (

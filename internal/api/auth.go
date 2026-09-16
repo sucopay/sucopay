@@ -10,6 +10,7 @@ import (
 
 	"github.com/sucopay/sucopay/internal/credential"
 	"github.com/sucopay/sucopay/internal/invisible"
+	"github.com/sucopay/sucopay/internal/problem"
 )
 
 // Credentials is where the credential a request presents is looked up.
@@ -138,7 +139,7 @@ func bearer(header string) (credential.Token, bool) {
 // that is an answer of its own for each.
 func unauthorized(w http.ResponseWriter) {
 	w.Header().Set("WWW-Authenticate", "Bearer")
-	writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+	problem.JSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 }
 
 // forbidden answers a credential this instance holds and will not act on
@@ -147,12 +148,12 @@ func unauthorized(w http.ResponseWriter) {
 // [unauthorized] this says so. Whoever presents a credential holds it, and
 // which of the two it may do is what they chose when they made it.
 func forbidden(w http.ResponseWriter) {
-	writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+	problem.JSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
 }
 
 // unavailable answers a request the instance could not serve for want of
 // a dependency: one it could not reach, or one it runs without. Whoever
 // found that out logs the reason, and the answer carries none of it.
 func unavailable(w http.ResponseWriter) {
-	writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "unavailable"})
+	problem.JSON(w, http.StatusServiceUnavailable, map[string]string{"error": "unavailable"})
 }

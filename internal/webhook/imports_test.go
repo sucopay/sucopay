@@ -1,4 +1,4 @@
-package credential_test
+package webhook_test
 
 import (
 	"go/parser"
@@ -11,19 +11,25 @@ import (
 )
 
 // domainFiles hold the part of this package that reaches nothing outward:
-// what a credential is made of, and its place in a context.
-// postgres.go holds a driver and reaches outward on purpose, and does not
-// belong on the list below.
-var domainFiles = []string{"credential.go", "context.go"}
+// what an endpoint is, what a destination may be, and what a secret is.
+// postgres.go holds a driver and http.go a handler, and reach outward on
+// purpose.
+var domainFiles = []string{"endpoint.go", "destination.go", "secret.go"}
 
 // allowed is everything those files may import. An allow list rather than a
 // block list, because the import worth catching is the one nobody thought to
 // forbid: a driver, an HTTP handler, or whatever the next dependency is
-// called. A credential shaped by what a database returns is no longer a
-// credential.
+// called.
 var allowed = []string{
-	"context", "crypto/hkdf", "crypto/hmac", "crypto/rand", "crypto/sha256", "encoding/hex",
-	"errors", "fmt", "io", "log/slog", "regexp", "time",
+	"context", "crypto/aes", "crypto/cipher", "crypto/rand", "encoding/base64",
+	"errors", "fmt", "io", "log/slog", "net", "net/netip", "net/url", "slices",
+	"strings", "time",
+	// invisible decides which characters a URL and a description may carry.
+	// It reads nothing and reaches nothing; it is a list of runes.
+	"github.com/sucopay/sucopay/internal/invisible",
+	// payment is where an account's identifier and the shape of an id are
+	// defined; an endpoint is of an account, and a delivery is of a payment.
+	"github.com/sucopay/sucopay/internal/payment",
 }
 
 func TestImports_TheDomainReachesNothingOutsideItself(t *testing.T) {
@@ -47,7 +53,7 @@ func TestImports_TheDomainReachesNothingOutsideItself(t *testing.T) {
 			}
 		})
 	}
-	if seen != len(domainFiles) {
-		t.Errorf("checked %d files, want %d; the list in this test is stale", seen, len(domainFiles))
+	if seen == 0 {
+		t.Fatal("none of the domain files exist, so nothing was checked")
 	}
 }

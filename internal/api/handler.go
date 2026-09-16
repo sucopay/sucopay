@@ -2,11 +2,11 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 
 	"github.com/sucopay/sucopay/internal/invisible"
+	"github.com/sucopay/sucopay/internal/problem"
 )
 
 // maxErrorBytes bounds what something else's failure can put in a line.
@@ -22,13 +22,15 @@ type Ready func(context.Context) error
 // Database may be nil, which is what an instance configured without one
 // passes. A function rather than an interface, so that "no database" is a
 // nil nobody can get wrong: a nil pointer in a non-nil interface would read
-// as configured and panic when asked. Credentials, Payments and Chains are
-// nil in the same instance; [Credentials] says what that refuses, [Payments]
-// what it answers, and [Chains] what it leaves out.
+// as configured and panic when asked. Credentials, Payments, Webhooks and
+// Chains are nil in the same instance; [Credentials] says what that refuses,
+// [Payments] and [Webhooks] what it answers, and [Chains] what it leaves
+// out.
 type Dependencies struct {
 	Database    Ready
 	Credentials Credentials
 	Payments    Payments
+	Webhooks    Webhooks
 	Chains      Chains
 	Settling    Settling
 }
@@ -51,7 +53,7 @@ func Handler(log *slog.Logger, deps Dependencies) http.Handler {
 // is working, which does not bring the database back. Whether this instance
 // can do its job is [ready].
 func alive(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	problem.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // readyJSON is what a probe is answered with. What a deployment does not have
@@ -80,7 +82,7 @@ func ready(log *slog.Logger, database Ready, credentials Credentials, chains Cha
 	decides Settling) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if database == nil {
-			writeJSON(w, http.StatusOK, readyJSON{Status: "ok", Database: "none configured"})
+			problem.JSON(w, http.StatusOK, readyJSON{Status: "ok", Database: "none configured"})
 			return
 		}
 		body, err := reached(r.Context(), database, credentials)
@@ -94,7 +96,7 @@ func ready(log *slog.Logger, database Ready, credentials Credentials, chains Cha
 			logger(r.Context(), log).ErrorContext(r.Context(), "not ready",
 				slog.String("dependency", "database"),
 				slog.String("error", invisible.Shown(err.Error(), maxErrorBytes)))
-			writeJSON(w, http.StatusServiceUnavailable,
+			problem.JSON(w, http.StatusServiceUnavailable,
 				readyJSON{Status: "unavailable", Database: "unreachable"})
 			return
 		}
@@ -106,10 +108,10 @@ func ready(log *slog.Logger, database Ready, credentials Credentials, chains Cha
 			// network is named in the document and read through an endpoint
 			// that may carry a key, and whoever can reach the port reads this.
 			body.Status = "unavailable"
-			writeJSON(w, http.StatusServiceUnavailable, body)
+			problem.JSON(w, http.StatusServiceUnavailable, body)
 			return
 		}
-		writeJSON(w, http.StatusOK, body)
+		problem.JSON(w, http.StatusOK, body)
 	}
 }
 
@@ -135,13 +137,4 @@ func reached(ctx context.Context, database Ready, credentials Credentials) (read
 	}
 	body.Credentials = string(inForce)
 	return body, nil
-}
-
-func writeJSON(w http.ResponseWriter, status int, body any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.WriteHeader(status)
-	// The status line is already written, so a failed encode cannot become an
-	// error response.
-	_ = json.NewEncoder(w).Encode(body) //nolint:errcheck // nothing to report it to
 }
