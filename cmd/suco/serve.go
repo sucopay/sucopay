@@ -59,6 +59,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		observers   observe.Observers
 		workers     finality.Workers
 		decides     api.Settling
+		delivering  *webhook.Worker
 	)
 	if cfg.Database.URL != "" {
 		db, err := postgres.Open(ctx, cfg.Database.URL.Expose())
@@ -85,8 +86,8 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		webhooks = webhook.NewHTTP(webhook.NewPostgres(db.Conns(), cipher, cfg.Credentials.KeyID),
-			net.DefaultResolver, time.Now)
+		endpoints := webhook.NewPostgres(db.Conns(), cipher, cfg.Credentials.KeyID)
+		webhooks = webhook.NewHTTP(endpoints, net.DefaultResolver, time.Now)
 
 		// Applied at every start rather than by a command an operator has to
 		// know about, which would leave an evaluator with an empty database
@@ -129,6 +130,11 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 			workers = append(workers, finality.New(n, store, leases, log, time.Now))
 		}
 		decides = workers
+
+		// One for the deployment, under the same leases: a delivery is sent
+		// by whichever instance holds the name, and once.
+		delivering = webhook.NewWorker(endpoints,
+			webhook.NewSender(net.DefaultResolver, nil, time.Now), leases, log, time.Now)
 	}
 
 	addr := net.JoinHostPort(cfg.Listen.Host, strconv.Itoa(cfg.Listen.Port))
@@ -168,6 +174,16 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 			defer rounds.Done()
 			if err := w.Run(reading); err != nil {
 				log.ErrorContext(ctx, "a network stopped being settled",
+					slog.String("error", invisible.Shown(err.Error(), maxDescription)))
+			}
+		}()
+	}
+	if delivering != nil {
+		rounds.Add(1)
+		go func() {
+			defer rounds.Done()
+			if err := delivering.Run(reading); err != nil {
+				log.ErrorContext(ctx, "the deliveries stopped being sent",
 					slog.String("error", invisible.Shown(err.Error(), maxDescription)))
 			}
 		}()

@@ -2,6 +2,7 @@ package webhook
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -339,4 +340,232 @@ func scan(row pgx.Row) (Endpoint, error) {
 	e.Events = events
 	e.CreatedAt = e.CreatedAt.UTC()
 	return e, nil
+}
+
+// Expand turns up to limit rows of the outbox, oldest first, into
+// deliveries: one per endpoint that receives the event, among the enabled
+// endpoints of the payment's account and of the deployment. Each row is
+// removed once its deliveries exist, and a row no endpoint receives is
+// removed with none. It answers with how many rows it took.
+//
+// Row by row in a transaction of its own, so that a row that cannot be
+// expanded stops nothing but itself. Rows are taken with the lock skipped,
+// so that two instances do not expand one twice; the lease makes that rare
+// rather than impossible.
+func (s *Postgres) Expand(ctx context.Context, now time.Time, limit int) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	taken := 0
+	for ; taken < limit; taken++ {
+		more, err := s.expandOne(ctx, now)
+		if err != nil {
+			return taken, err
+		}
+		if !more {
+			return taken, nil
+		}
+	}
+	return taken, nil
+}
+
+// expandOne takes the oldest row of the outbox, and says whether there was
+// one.
+func (s *Postgres) expandOne(ctx context.Context, now time.Time) (more bool, err error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("outbox: %w", err)
+	}
+	defer func() { err = unwind(ctx, tx, "outbox", err) }()
+
+	var (
+		rowID      int64
+		account    payment.AccountID
+		paymentID  payment.ID
+		eventType  string
+		data       []byte
+		occurredAt time.Time
+	)
+	err = tx.QueryRow(ctx, `
+		select id, account_id, payment_id, event, payload, created_at
+		  from outbox order by id limit 1 for update skip locked`).
+		Scan(&rowID, &account, &paymentID, &eventType, &data, &occurredAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("outbox: %w", err)
+	}
+	receiving, err := s.receiving(ctx, tx, account, eventType)
+	if err != nil {
+		return false, fmt.Errorf("outbox %d: %w", rowID, err)
+	}
+	if len(receiving) > 0 {
+		body, err := Envelope(eventType, occurredAt, account, json.RawMessage(data))
+		if err != nil {
+			return false, fmt.Errorf("outbox %d: %w", rowID, err)
+		}
+		for _, endpoint := range receiving {
+			id, err := NewID()
+			if err != nil {
+				return false, err
+			}
+			if _, err := tx.Exec(ctx, `
+				insert into webhook_deliveries
+					(id, endpoint_id, account_id, payment_id, type, occurred_at, payload,
+					 state, attempts, next_at, created_at)
+				values ($1, $2, $3, $4, $5, $6, $7, $8, 0, $9, $9)`,
+				id, endpoint, account, paymentID, eventType, occurredAt, body, Pending, now); err != nil {
+				return false, fmt.Errorf("outbox %d: %w", rowID, err)
+			}
+		}
+	}
+	if _, err := tx.Exec(ctx, `delete from outbox where id = $1`, rowID); err != nil {
+		return false, fmt.Errorf("outbox %d: %w", rowID, err)
+	}
+	return true, tx.Commit(ctx)
+}
+
+// receiving is the id of every endpoint an event of eventType about a
+// payment of account goes to: the account's own and the deployment's, the
+// enabled ones, and of those the ones whose list has the type or is no
+// list.
+func (s *Postgres) receiving(ctx context.Context, tx pgx.Tx, account payment.AccountID, eventType string) ([]ID, error) {
+	rows, err := tx.Query(ctx, `
+		select id, events from webhook_endpoints
+		 where enabled and deleted_at is null
+		   and (account_id = $1 or scope = $2)
+		 order by created_at, id`, account, ScopeDeployment)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ID
+	for rows.Next() {
+		var e Endpoint
+		if err := rows.Scan(&e.ID, &e.Events); err != nil {
+			return nil, err
+		}
+		e.Enabled = true
+		if e.Receives(eventType) {
+			out = append(out, e.ID)
+		}
+	}
+	return out, rows.Err()
+}
+
+// Due is a delivery whose time has come, with what sending it takes from
+// its endpoint.
+type Due struct {
+	Delivery Delivery
+	URL      string
+	Allowed  []netip.Prefix
+}
+
+// Due reads up to limit deliveries whose next attempt is due at now, and no
+// more than perEndpoint to any one endpoint, so that one slow receiver does
+// not take the round. Deliveries to a disabled or deleted endpoint are
+// left where they are, and a delivery is due only once every earlier one
+// to the same endpoint about the same payment is delivered or failed: the
+// events of one payment reach a receiver in the order they happened.
+//
+// The bound per endpoint is applied before the bound on the round, in the
+// query: applied after, a backlog to one endpoint longer than a round would
+// fill the round with rows the bound then drops, and the other endpoints'
+// deliveries would never be read.
+func (s *Postgres) Due(ctx context.Context, now time.Time, limit, perEndpoint int) ([]Due, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx, `
+		select id, endpoint_id, account_id, payment_id, type, occurred_at,
+		       payload, state, attempts, next_at, url, allowed
+		  from (
+		    select d.id, d.endpoint_id, d.account_id, d.payment_id, d.type, d.occurred_at,
+		           d.payload, d.state, d.attempts, d.next_at, d.seq, e.url, e.allowed,
+		           row_number() over (partition by d.endpoint_id order by d.next_at, d.seq) as nth
+		      from webhook_deliveries d
+		      join webhook_endpoints e on e.id = d.endpoint_id
+		     where d.state = $1 and d.next_at <= $2
+		       and e.enabled and e.deleted_at is null
+		       and not exists (
+		             select 1 from webhook_deliveries p
+		              where p.endpoint_id = d.endpoint_id
+		                and p.payment_id is not distinct from d.payment_id
+		                and p.state = $1 and p.seq < d.seq)
+		  ) due
+		 where nth <= $4
+		 order by next_at, seq
+		 limit $3`, Pending, now, limit, perEndpoint)
+	if err != nil {
+		return nil, fmt.Errorf("deliveries due: %w", err)
+	}
+	defer rows.Close()
+	var out []Due
+	for rows.Next() {
+		var (
+			due       Due
+			paymentID *string
+			allowed   []string
+		)
+		d := &due.Delivery
+		if err := rows.Scan(&d.ID, &d.Endpoint, &d.Account, &paymentID, &d.Type, &d.OccurredAt,
+			&d.Body, &d.State, &d.Attempts, &d.NextAt, &due.URL, &allowed); err != nil {
+			return nil, fmt.Errorf("deliveries due: %w", err)
+		}
+		if paymentID != nil {
+			d.Payment = payment.ID(*paymentID)
+		}
+		d.OccurredAt, d.NextAt = d.OccurredAt.UTC(), d.NextAt.UTC()
+		for _, text := range allowed {
+			prefix, err := netip.ParsePrefix(text)
+			if err != nil {
+				return nil, fmt.Errorf("delivery %s: allowance %w", d.ID, err)
+			}
+			due.Allowed = append(due.Allowed, prefix)
+		}
+		out = append(out, due)
+	}
+	return out, rows.Err()
+}
+
+// Attempted writes down one attempt at d made at now, and what it leaves the
+// delivery as: delivered on a 2xx, due again after the interval that follows
+// this many attempts, or failed after the last. random is for the interval's
+// jitter.
+func (s *Postgres) Attempted(ctx context.Context, d Delivery, o Outcome, now time.Time, random func() float64) error {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("delivery %s: %w", d.ID, err)
+	}
+	defer func() { err = unwind(ctx, tx, "delivery "+d.ID.String(), err) }()
+
+	var status *int
+	if o.Status != 0 {
+		status = &o.Status
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into webhook_attempts (delivery_id, at, status, reason, response, took_ms)
+		values ($1, $2, $3, $4, $5, $6)`,
+		d.ID, now, status, o.Reason, o.Response, o.Took.Milliseconds()); err != nil {
+		return fmt.Errorf("delivery %s: %w", d.ID, err)
+	}
+	attempts := d.Attempts + 1
+	state, next, delivered := Failed, (*time.Time)(nil), (*time.Time)(nil)
+	switch again, ok := NextAttempt(attempts, now, random); {
+	case o.Delivered():
+		state, delivered = Delivered, &now
+	case ok:
+		state, next = Pending, &again
+	}
+	if _, err := tx.Exec(ctx, `
+		update webhook_deliveries
+		   set state = $2, attempts = $3, next_at = $4, delivered_at = $5
+		 where id = $1`, d.ID, state, attempts, next, delivered); err != nil {
+		return fmt.Errorf("delivery %s: %w", d.ID, err)
+	}
+	return tx.Commit(ctx)
 }

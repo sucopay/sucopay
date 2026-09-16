@@ -31,6 +31,10 @@ const secretPrefix = "whsec_"
 // redacted is what a Secret turns into on the way to a log or an error.
 const redacted = "[redacted]"
 
+// ErrSealed is a sealed secret this cipher did not seal, which is a row
+// written under a key since swapped.
+var ErrSealed = errors.New("webhook secret: sealed under another key")
+
 // NewSecret mints a secret. crypto/rand.Read cannot fail on the Go this
 // module builds with, as [credential.New] relies on too.
 func NewSecret() Secret {
@@ -88,11 +92,11 @@ func (c Cipher) Seal(s Secret) []byte {
 func (c Cipher) Open(sealed []byte) (Secret, error) {
 	size := c.aead.NonceSize()
 	if len(sealed) < size {
-		return "", errors.New("webhook secret: sealed under another key")
+		return "", ErrSealed
 	}
 	text, err := c.aead.Open(nil, sealed[:size], sealed[size:], nil)
 	if err != nil {
-		return "", errors.New("webhook secret: sealed under another key")
+		return "", ErrSealed
 	}
 	return Secret(text), nil
 }
