@@ -24,6 +24,7 @@ import (
 // key, which no command has a use for once the store is open.
 type opened struct {
 	document string
+	domains  config.Domains
 	assets   config.Assets
 	networks map[string]config.Network
 	// log is how the one command that writes a line rather than answering a
@@ -77,6 +78,7 @@ func openStore(ctx context.Context) (opened, error) {
 	}
 	return opened{
 		document:    document,
+		domains:     cfg.Domains,
 		assets:      cfg.Assets,
 		networks:    cfg.Networks,
 		log:         cfg.Log,

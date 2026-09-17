@@ -7,6 +7,10 @@ import (
 	"time"
 )
 
+// ErrNoDomain is a chain whose assets sign under no EIP-712 domain, which
+// is one where there is nothing to check a document's domain against.
+var ErrNoDomain = errors.New("chain: the asset signs under no domain")
+
 // Chain is what a network is read through. An adapter implements it for one
 // kind of chain.
 //
@@ -49,6 +53,11 @@ type Chain interface {
 	// read for nothing else. A chain whose assets cannot change their code
 	// returns "".
 	Implementation(ctx context.Context, asset string) (string, error)
+	// DomainSeparator is what an asset's contract signs under, as EIP-712
+	// names it, for checking that the name and version a document gives
+	// are the contract's. A chain whose assets sign under nothing answers
+	// [ErrNoDomain].
+	DomainSeparator(ctx context.Context, asset string) ([32]byte, error)
 }
 
 var (

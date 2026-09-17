@@ -262,6 +262,18 @@ func (c *Chain) Receipt(_ context.Context, tx string) ([]chain.Transfer, error) 
 	return nil, fmt.Errorf("simulated: no transaction %s: %w", tx, chain.ErrNoTransaction)
 }
 
+// DomainSeparator is nothing: a simulated asset is signed under no
+// domain, and a document's domain for one has nothing to be checked
+// against.
+func (c *Chain) DomainSeparator(_ context.Context, _ string) ([32]byte, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.enter("DomainSeparator"); err != nil {
+		return [32]byte{}, err
+	}
+	return [32]byte{}, chain.ErrNoDomain
+}
+
 // Implementation is empty. Nothing here stands in front of anything else.
 func (c *Chain) Implementation(_ context.Context, _ string) (string, error) {
 	c.mu.Lock()

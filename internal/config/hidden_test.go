@@ -99,6 +99,7 @@ func TestHidden_ExposeIsTheText(t *testing.T) {
 // validation in this package. Any other call is one to look at.
 var exposers = []string{
 	"cmd/suco/chains.go",
+	"cmd/suco/asset.go",
 	"cmd/suco/credential.go",
 	"cmd/suco/doctor.go",
 	"cmd/suco/serve.go",

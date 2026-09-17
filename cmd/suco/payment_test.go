@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/hex"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sucopay/sucopay/internal/adapter/chain/evm"
 	"github.com/sucopay/sucopay/internal/observe"
 	"github.com/sucopay/sucopay/internal/payment"
 )
@@ -176,7 +178,7 @@ func TestRun_HelpSaysWhatPaymentAwaitIsFor(t *testing.T) {
 // A network that runs inside the process has none, and prints zero.
 func TestRun_PaymentAwaitPrintsTheChainTheDocumentNames(t *testing.T) {
 	d := deployed(t)
-	document(t, namingADatabase()+anEVMNetwork("local")+anAsset("local"))
+	document(t, evmDocumentOnChainOne(t))
 	if _, _, err := runArgs(t, "asset", "accept", "jpyc", theAddress); err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +202,7 @@ func TestRun_PaymentAwaitPrintsTheChainTheDocumentNames(t *testing.T) {
 // same way and checked where that command is.
 func TestRun_PaymentAwaitPrintsTheContractTheChainCompares(t *testing.T) {
 	d := deployed(t)
-	document(t, namingADatabase()+anEVMAssetOn("local"))
+	document(t, evmDocumentOnChainOne(t))
 	if _, _, err := runArgs(t, "asset", "accept", "jpyc", theChecksummed); err != nil {
 		t.Fatal(err)
 	}
@@ -221,4 +223,17 @@ func TestRun_PaymentAwaitPrintsTheContractTheChainCompares(t *testing.T) {
 	if strings.Contains(stdout, theChecksummed) {
 		t.Errorf("what a payer signs holds the form the operator typed:\n%s", stdout)
 	}
+}
+
+// evmDocumentOnChainOne is a document with jpyc on an evm network read through a
+// provider that answers what the contract signs under, which registering
+// the asset asks for.
+func evmDocumentOnChainOne(t *testing.T) string {
+	t.Helper()
+	onChain, err := evm.Domain("JPY Coin", "1", 1, "0x0000000000000000000000000000000000000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := answering(t, map[string]any{"eth_call": "0x" + hex.EncodeToString(onChain[:])})
+	return evmDocument(endpoint, 1, "    eip712:\n      name: JPY Coin\n      version: \"1\"\n")
 }

@@ -1,12 +1,15 @@
 package main
 
 import (
+	"encoding/hex"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/sucopay/sucopay/internal/accepted"
+	"github.com/sucopay/sucopay/internal/adapter/chain/evm"
 	"github.com/sucopay/sucopay/internal/payment"
 )
 
@@ -220,7 +223,14 @@ func TestRun_AssetCommandsRefuseToChooseAmongTwoAccountsAsCredentialNewDoes(t *t
 // block explorer hands them the mixed-case form to copy.
 func TestRun_AssetAcceptStoresAnAddressTheWayTheChainWritesIt(t *testing.T) {
 	deployed(t)
-	document(t, namingADatabase()+anEVMAssetOn("local"))
+	// Registration asks the contract what it signs under, so the provider
+	// answers that.
+	onChain, err := evm.Domain("JPY Coin", "1", 137, "0x0000000000000000000000000000000000000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := answering(t, map[string]any{"eth_call": "0x" + hex.EncodeToString(onChain[:])})
+	document(t, evmDocument(endpoint, 137, "    eip712:\n      name: JPY Coin\n      version: \"1\"\n"))
 
 	if _, _, err := runArgs(t, "asset", "accept", "jpyc", theChecksummed); err != nil {
 		t.Fatal(err)
@@ -248,5 +258,46 @@ func TestRun_AssetAcceptRefusesAnAddressThatIsNotOneOnItsChain(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("an address whose checksum does not hold was accepted")
+	}
+}
+
+// evmDocument is a document naming a database and one evm network read
+// through a provider at endpoint, with jpyc on it and the domain given.
+func evmDocument(endpoint string, chainID uint64, domain string) string {
+	return namingADatabase() + "networks:\n  local:\n    kind: evm\n    chain_id: " + strconv.FormatUint(chainID, 10) +
+		"\n    rpc:\n      own: " + endpoint + "\n" + anAsset("local") + domain
+}
+
+// What a payer's wallet signs under has to be what the contract signs
+// under. The contract is asked at registration, and a document whose
+// domain is not the contract's is refused there rather than at the first
+// payment.
+func TestRun_AssetAcceptChecksTheDomainAgainstTheContract(t *testing.T) {
+	d := deployed(t)
+	onChain, err := evm.Domain("JPY Coin", "1", 137, "0x0000000000000000000000000000000000000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := answering(t, map[string]any{"eth_call": "0x" + hex.EncodeToString(onChain[:])})
+	given := "    eip712:\n      name: JPY Coin\n      version: \"1\"\n"
+
+	document(t, evmDocument(endpoint, 137, given))
+	if _, _, err := runArgs(t, "asset", "accept", "jpyc", theAddress); err != nil {
+		t.Errorf("with the contract's domain: %v, want accepted", err)
+	}
+	document(t, evmDocument(endpoint, 137, "    eip712:\n      name: JPY Coin\n      version: \"2\"\n"))
+	if _, _, err := runArgs(t, "asset", "accept", "jpyc", theAddress); err == nil || !strings.Contains(err.Error(), "eip712") {
+		t.Errorf("with another version: %v, want a refusal naming eip712", err)
+	}
+	document(t, evmDocument(endpoint, 137, "    eip712:\n      name: JPYC\n      version: \"1\"\n"))
+	if _, _, err := runArgs(t, "asset", "accept", "jpyc", theAddress); err == nil || !strings.Contains(err.Error(), "eip712") {
+		t.Errorf("with another name: %v, want a refusal naming eip712", err)
+	}
+	document(t, evmDocument(endpoint, 137, ""))
+	if _, _, err := runArgs(t, "asset", "accept", "jpyc", theAddress); err == nil || !strings.Contains(err.Error(), "eip712") {
+		t.Errorf("with no domain given: %v, want a refusal naming eip712", err)
+	}
+	if _, ok, err := accepted.NewPostgres(d.pool.Conns()).Destination(t.Context(), theAccount(t, d), jpyc(t)); err != nil || !ok {
+		t.Errorf("the first, accepted registration is gone: %t, %v", ok, err)
 	}
 }
