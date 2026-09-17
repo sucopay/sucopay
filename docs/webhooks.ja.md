@@ -17,8 +17,9 @@ event は 1 つの `POST` で、本文は 1 つの形の JSON です。
 ```
 
 `type` は何が起きたか、`timestamp` はいつ起きたか、`account` は誰の payment か、`data` は
-`GET /payments/{id}` が返すのと同じ形の payment で、`metadata` も入ります。知らされるものと
-読めるものは同じです。
+`GET /payments/{id}` が返すのと同じ形の payment で、`metadata` も入ります。`checkout_url` だけは
+入りません。payment の結果を読める鍵で、受け取り側のログに残すものではないからです。それを除け
+ば、知らされるものと読めるものは同じです。
 
 | `type` | いつ | `data` |
 |---|---|---|

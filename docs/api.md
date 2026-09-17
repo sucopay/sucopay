@@ -2,9 +2,10 @@
 
 日本語: [api.ja.md](api.ja.md)
 
-suco serves a merchant's server over HTTP, in JSON. Two routes exist so far: one opens a payment,
-the other reads it back. Both are relative to the `base_url` `suco.yaml` gives under `listen`;
-by default that is `http://localhost:7826`.
+suco serves a merchant's server over HTTP, in JSON: routes that open a payment and read it back,
+and routes that manage where suco tells the server about it. All are relative to the `base_url`
+`suco.yaml` gives under `listen`; by default that is `http://localhost:7826`. The page a payer
+pays on has routes of its own, in [checkout.md](checkout.md).
 
 ## Authentication
 
@@ -47,6 +48,7 @@ Content-Type: application/json
   "asset": "jpyc",
   "amount": "1000",
   "expires_at": "2026-09-07T12:00:00Z",
+  "return_url": "https://shop.example/orders/A-1",
   "metadata": {"order": "A-1"}
 }
 ```
@@ -56,6 +58,7 @@ Content-Type: application/json
 | `asset` | required | The name `suco.yaml` lists the asset under. The account has to accept it, which `suco asset accept <name> <address>` records along with where a payment of it is paid to. |
 | `amount` | required | A number in the asset's units, written as a string: `"1000"` is 1000 JPYC. Digits, and after a point more digits; no sign, no exponent. At most as many places after the point as the asset has decimals, and at most 78 digits once written in the asset's smallest unit. `0` is not a payment. |
 | `expires_at` | optional | An RFC 3339 time, after now and at most 30 days ahead. Fifteen minutes ahead when left out. |
+| `return_url` | optional | Where the payment page sends the payer back to. An `https` URL of at most 2048 bytes with no username or password; `http://localhost` and `http://127.0.0.1` are accepted too. What the page does with it is in [checkout.md](checkout.md). |
 | `metadata` | optional | Strings under string keys: up to 20 entries, keys up to 64 bytes, values up to 512 bytes. Returned as sent, `{}` when left out, and kept out of suco's log. |
 
 Any other key is refused. The body is at most 64 KiB.
@@ -81,7 +84,9 @@ Content-Type: application/json
   "destination": "0x00000000000000000000000000000000000000aa",
   "metadata": {"order": "A-1"},
   "expires_at": "2026-09-07T12:00:00Z",
-  "created_at": "2026-09-05T23:08:53.514971Z"
+  "created_at": "2026-09-05T23:08:53.514971Z",
+  "return_url": "https://shop.example/orders/A-1",
+  "checkout_url": "http://localhost:7826/checkout/2c2f…"
 }
 ```
 
@@ -89,7 +94,10 @@ Content-Type: application/json
 `suco.yaml` lists it under is not returned: an operator may rename it, and a payment stays in
 the token it was opened in. `destination` is the address the payment is paid to, the one
 `suco asset accept` recorded for the asset. `amount` and `received` are in the asset's units;
-`received` is `null` until something arrives. Times are UTC.
+`received` is `null` until something arrives. Times are UTC. `return_url` is `null` when it was
+left out. `checkout_url` is where the merchant sends the payer, and is a key to the payment's
+outcome: keep it out of logs, as suco keeps it out of its own and out of webhook events. A payment
+opened before the instance served pages has none, and the key is left out.
 
 A payment is opened with `status` `created`.
 
@@ -104,6 +112,19 @@ Reads one payment of the account the credential names, and answers `200` with th
 
 A payment of another account, a payment nobody opened, and an identifier of no shape are all
 answered `404`, with one body. The answer says nothing about what exists.
+
+## Checkout
+
+The routes the payment page calls, admitted by the token in `checkout_url` and by no credential.
+What they answer is in [checkout.md](checkout.md).
+
+| Route | |
+|---|---|
+| `GET /checkout/{token}` | The page, as HTML |
+| `GET /checkout/{token}/state` | What the page shows, as JSON |
+| `POST /checkout/{token}/attempts` | What the payer signs, issued or read back |
+
+The page's own script and style, in a deployment that has them, are under `/checkout-assets/`.
 
 ## Webhook endpoints
 
@@ -149,10 +170,10 @@ second. A transfer authorised a moment before the deadline can still be arriving
 without this state the only place to put one would be a payment already called expired, which is
 final.
 
-**Today a payment goes no further than `awaiting_payment`.** Nothing over this API makes one
-payable yet: `suco payment await <id>` does, and prints what a payer signs. A transfer is then
-seen, matched and recorded, and deciding it has settled is not built.
-[ROADMAP.md](../ROADMAP.md) says what else is not.
+A payment becomes payable when its page first issues what the payer signs, which is
+`POST /checkout/{token}/attempts` in [checkout.md](checkout.md), or when an operator runs
+`suco payment await <id>`. Until the page's script is released, the second is the way a payer is
+given anything to sign. [ROADMAP.md](../ROADMAP.md) says what else is not built.
 
 ## Responses
 
@@ -176,6 +197,7 @@ A success is the payment. A failure is one shape, on every route.
 | 401 | `unauthorized` | No credential, or one not in force. |
 | 403 | `forbidden` | The credential may not do what the route does. |
 | 404 | `not_found` | No payment, or no webhook endpoint, of the account under that identifier. |
+| 409 | a reason | Nothing can be signed for the payment. Only `POST /checkout/{token}/attempts` answers it, and [checkout.md](checkout.md) lists the reasons. |
 | 413 | `too_large` | The body is over 64 KiB. |
 | 503 | `unavailable` | suco could not reach its database. The reason is in its log and not in the body. |
 

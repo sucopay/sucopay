@@ -18,8 +18,9 @@ Every event is one `POST` with a JSON body of one shape:
 ```
 
 `type` is what happened, `timestamp` when it happened, `account` whose payment it is, and
-`data` the payment as `GET /payments/{id}` answers it, `metadata` included. What you are told
-and what you can read are the same thing.
+`data` the payment as `GET /payments/{id}` answers it, `metadata` included and `checkout_url`
+left out, since that is a key to the payment's outcome and a receiver's log is not where one
+belongs. What you are told and what you can read are otherwise the same thing.
 
 | `type` | When | `data` |
 |---|---|---|

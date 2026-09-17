@@ -89,6 +89,7 @@ after round and records the transfers that answer them.
 |---|---|
 | [docs/api.md](docs/api.md) | The HTTP API a merchant's server calls |
 | [docs/webhooks.md](docs/webhooks.md) | What suco sends a merchant's server, and how to receive it |
+| [docs/checkout.md](docs/checkout.md) | The page a payer pays on, and where to send them |
 | [docs/configuration.md](docs/configuration.md) | Every setting `suco.yaml` takes |
 | [docs/operating.md](docs/operating.md) | `/readyz`, `suco doctor`, and putting a stopped instance right |
 | [ROADMAP.md](ROADMAP.md) | What works today and what does not |
