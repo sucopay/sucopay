@@ -1,6 +1,7 @@
 package payment_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -294,5 +295,42 @@ func TestUnconfirm_RefusesAnAttemptThatWasNeverConfirmed(t *testing.T) {
 	}
 	if a.Status() != payment.Issued {
 		t.Errorf("the refused move left the attempt %s", a.Status())
+	}
+}
+
+// An attempt needs time to be signed and mined. One issued with less than
+// that left would be refused by the chain, and is refused here instead.
+func TestNewAttempt_RefusesAPaymentWithLessThanTwoMinutesLeft(t *testing.T) {
+	t.Parallel()
+	expires := time.Date(2026, 9, 18, 10, 0, 0, 0, time.UTC)
+	p := awaiting(t, expires)
+
+	if _, err := payment.NewAttempt(p, expires.Add(-payment.MinRemaining)); err != nil {
+		t.Errorf("with exactly the minimum left: %v, want an attempt", err)
+	}
+	_, err := payment.NewAttempt(p, expires.Add(-payment.MinRemaining+time.Second))
+
+	var problems payment.Problems
+	if !errors.As(err, &problems) || problems[0].Field != "expires_at" {
+		t.Errorf("with less than the minimum left: %v, want a problem naming expires_at", err)
+	}
+}
+
+func TestSupersede_RetiresAnIssuedAttemptAndOnlyThat(t *testing.T) {
+	t.Parallel()
+	expires := time.Date(2026, 9, 18, 10, 0, 0, 0, time.UTC)
+	a, err := payment.NewAttempt(awaiting(t, expires), expires.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := a.Supersede(); err != nil || a.Status() != payment.Superseded {
+		t.Errorf("Supersede = %v, status %s; want superseded", err, a.Status())
+	}
+	if err := a.Supersede(); err == nil {
+		t.Error("a superseded attempt was superseded again")
+	}
+	if err := a.Confirm("0xabababababababababababababababababababab"); err == nil {
+		t.Error("a superseded attempt was confirmed")
 	}
 }

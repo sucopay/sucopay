@@ -107,6 +107,10 @@ type Attempts interface {
 	// SaveAttempt writes back an attempt that was read, and reports [ErrStale]
 	// if anything wrote to it in between.
 	SaveAttempt(ctx context.Context, account AccountID, a *Attempt, at Revision) error
+
+	// Attempted counts the attempts ever issued against a payment, whatever
+	// they came to.
+	Attempted(ctx context.Context, account AccountID, payment ID) (int, error)
 }
 
 // Event is what a change to a payment produced, for whatever delivers events

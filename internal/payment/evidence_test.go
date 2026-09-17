@@ -24,7 +24,7 @@ var network = jpycNetwork()
 func judged(t *testing.T) (payment.Transfer, *payment.Attempt, *payment.Payment) {
 	t.Helper()
 	p := awaiting(t, time.Now().Add(time.Hour))
-	a, err := payment.NewAttempt(p, time.Now())
+	a, err := payment.NewAttempt(p, p.CreatedAt())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +214,7 @@ func TestJudge_RefusesToReadATransferAsAnotherAttemptsEvidence(t *testing.T) {
 func spent(t *testing.T, s *payment.Postgres, account payment.AccountID) payment.Hit {
 	t.Helper()
 	p := payableKept(t, s, account)
-	a, err := payment.NewAttempt(p, time.Now())
+	a, err := payment.NewAttempt(p, p.CreatedAt())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +308,7 @@ func spentOn(t *testing.T, s *payment.Postgres, account payment.AccountID, elsew
 	if err := s.Save(t.Context(), account, p, at, payment.Event{}); err != nil {
 		t.Fatal(err)
 	}
-	a, err := payment.NewAttempt(p, time.Now())
+	a, err := payment.NewAttempt(p, p.CreatedAt())
 	if err != nil {
 		t.Fatal(err)
 	}

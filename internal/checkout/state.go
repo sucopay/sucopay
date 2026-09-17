@@ -30,6 +30,10 @@ const (
 	ReasonNotReady = "not_ready"
 	// ReasonReissued is a payment whose one reissue was used.
 	ReasonReissued = "reissued"
+	// ReasonAgain is a request another request of the same page got ahead
+	// of, at a moment nothing was live to answer with. Asked again, it is
+	// answered. Given by the attempts route alone.
+	ReasonAgain = "again"
 )
 
 // Result is the transfer seen for a payment, as the page shows it: what a

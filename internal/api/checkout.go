@@ -16,6 +16,7 @@ import (
 type Checkout interface {
 	Page(w http.ResponseWriter, r *http.Request) error
 	State(w http.ResponseWriter, r *http.Request) error
+	Attempt(w http.ResponseWriter, r *http.Request) error
 	Assets(w http.ResponseWriter, r *http.Request) error
 }
 

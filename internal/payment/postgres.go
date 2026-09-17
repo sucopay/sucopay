@@ -492,6 +492,19 @@ func saveAttempt(ctx context.Context, q queries, account AccountID, a *Attempt, 
 	return nil
 }
 
+// Attempted counts the attempts ever issued against a payment.
+func (s *Postgres) Attempted(ctx context.Context, account AccountID, payment ID) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	var n int
+	if err := s.pool.QueryRow(ctx, `
+		select count(*) from attempts where account_id = $1 and payment_id = $2`, account, payment).Scan(&n); err != nil {
+		return 0, fmt.Errorf("attempts of %s: %w", payment, err)
+	}
+	return n, nil
+}
+
 // observationColumns are what a row holds of a transfer that was seen.
 const observationColumns = `account_id, payment_id, attempt_id, network, key, tx,
                             position, block_height, block_hash, block_time, asset,

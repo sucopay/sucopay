@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -207,5 +208,144 @@ func TestHTTP_PageLoadsTheAssetsWhenTheDeploymentHasThem(t *testing.T) {
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("%s = %d, want 404 rather than a listing", dir, rec.Code)
 		}
+	}
+}
+
+// attempted is the answer to a request for an attempt with body.
+func attempted(t *testing.T, h *checkout.HTTP, token, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/checkout/"+token+"/attempts", strings.NewReader(body))
+	r.SetPathValue("token", token)
+	if err := h.Attempt(rec, r); err != nil {
+		t.Fatal(err)
+	}
+	return rec
+}
+
+func servingWith(t *testing.T, pool *pgxpool.Pool, clock func() time.Time, watched checkout.Watched) *checkout.HTTP {
+	t.Helper()
+	store := payment.NewPostgres(pool)
+	return checkout.NewHTTP(checkout.Deps{
+		Store: checkout.NewPostgres(pool), Payments: store,
+		Service: payment.NewService(store, store, watched, clock),
+		Key:     key, KeyID: "k1", ChainIDs: map[string]uint64{"polygon": 137},
+		Chains: reading{"polygon": "observing"}, Watched: watched,
+		Domain: func(payment.Asset) (string, string) { return "JPY Coin", "1" },
+		Now:    clock,
+	})
+}
+
+type unwatched struct{}
+
+func (unwatched) Has(context.Context, payment.Network) (bool, error) { return false, nil }
+
+func TestHTTP_AttemptIssuesOnceMovesThePaymentAndAnswersTheSameAttemptAgain(t *testing.T) {
+	t.Parallel()
+	pool := opened(t)
+	h := servingWith(t, pool, func() time.Time { return now }, watching{})
+	p := paid(t, pool, first, "")
+	token := string(checkout.Derive(key, p.ID()))
+
+	made := attempted(t, h, token, "")
+
+	if made.Code != http.StatusCreated {
+		t.Fatalf("first = %d %s, want 201", made.Code, made.Body)
+	}
+	var typed checkout.TypedData
+	if err := json.Unmarshal(made.Body.Bytes(), &typed); err != nil {
+		t.Fatal(err)
+	}
+	if typed.Domain.Name != "JPY Coin" || typed.Domain.ChainID != 137 || typed.Message.To != p.Destination() ||
+		typed.Message.ValidBefore != strconv.FormatInt(p.ExpiresAt().Unix(), 10) || !strings.HasPrefix(typed.Message.Nonce, "0x") {
+		t.Errorf("typed = %+v, want the payment's authorisation under the asset's domain", typed)
+	}
+	moved, _, err := payment.NewPostgres(pool).Find(t.Context(), first, p.ID())
+	if err != nil || moved.Status() != payment.AwaitingPayment {
+		t.Errorf("the payment is %s, %v; want awaiting_payment", moved.Status(), err)
+	}
+	again := attempted(t, h, token, "")
+	if again.Code != http.StatusOK || !strings.Contains(again.Body.String(), typed.Message.Nonce) {
+		t.Errorf("again = %d %s, want 200 with the same nonce", again.Code, again.Body)
+	}
+	state := answered(t, h.State, token)
+	if !strings.Contains(state.Body.String(), typed.Message.Nonce) {
+		t.Errorf("state lacks the live attempt:\n%s", state.Body)
+	}
+}
+
+func TestHTTP_AttemptRefusesWithAReasonAndLeavesThePaymentAsItWas(t *testing.T) {
+	t.Parallel()
+	pool := opened(t)
+	for what, c := range map[string]struct {
+		clock   time.Time
+		watched checkout.Watched
+		want    string
+	}{
+		"expired":   {now.Add(20 * time.Minute), watching{}, checkout.ReasonExpired},
+		"closing":   {now.Add(14 * time.Minute), watching{}, checkout.ReasonClosing},
+		"not ready": {now, unwatched{}, checkout.ReasonNotReady},
+	} {
+		t.Run(what, func(t *testing.T) {
+			t.Parallel()
+			h := servingWith(t, pool, func() time.Time { return c.clock }, c.watched)
+			p := paid(t, pool, first, "")
+
+			rec := attempted(t, h, string(checkout.Derive(key, p.ID())), "")
+
+			if rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != `{"error":"`+c.want+`"}` {
+				t.Errorf("answer = %d %s, want 409 %s", rec.Code, rec.Body, c.want)
+			}
+			kept, _, err := payment.NewPostgres(pool).Find(t.Context(), first, p.ID())
+			if err != nil || kept.Status() != payment.Created {
+				t.Errorf("the payment is %s, %v; want created still", kept.Status(), err)
+			}
+		})
+	}
+}
+
+func TestHTTP_AttemptReissuesOnceAtThePagesWordAndRefusesTheRest(t *testing.T) {
+	t.Parallel()
+	pool := opened(t)
+	h := servingWith(t, pool, func() time.Time { return now }, watching{})
+	p := paid(t, pool, first, "")
+	token := string(checkout.Derive(key, p.ID()))
+	var issued checkout.TypedData
+	if err := json.Unmarshal(attempted(t, h, token, "").Body.Bytes(), &issued); err != nil {
+		t.Fatal(err)
+	}
+
+	for what, c := range map[string]struct {
+		body string
+		code int
+	}{
+		"not JSON":              {"{", http.StatusBadRequest},
+		"an unknown key":        {`{"resend": "x"}`, http.StatusBadRequest},
+		"not an id":             {`{"reissue": "nope"}`, http.StatusBadRequest},
+		"another attempt's id":  {`{"reissue": "` + strings.Repeat("f", 32) + `"}`, http.StatusBadRequest},
+		"a second JSON value":   {`{"reissue": "` + string(issued.ID) + `"} {}`, http.StatusBadRequest},
+		"an empty object":       {`{}`, http.StatusOK},
+		"the live attempt's id": {`{"reissue": "` + string(issued.ID) + `"}`, http.StatusCreated},
+	} {
+		t.Run(what, func(t *testing.T) {
+			rec := attempted(t, h, token, c.body)
+			if rec.Code != c.code {
+				t.Errorf("%s = %d %s, want %d", what, rec.Code, rec.Body, c.code)
+			}
+		})
+	}
+	var reissued checkout.TypedData
+	if err := json.Unmarshal(attempted(t, h, token, "").Body.Bytes(), &reissued); err != nil {
+		t.Fatal(err)
+	}
+	if reissued.ID == issued.ID || reissued.Message.Nonce == issued.Message.Nonce {
+		t.Error("the reissue gave the same attempt back")
+	}
+	if rec := attempted(t, h, token, `{"reissue": "`+string(reissued.ID)+`"}`); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), checkout.ReasonReissued) {
+		t.Errorf("a second reissue = %d %s, want 409 reissued", rec.Code, rec.Body)
+	}
+	state := answered(t, h.State, token)
+	if !strings.Contains(state.Body.String(), `"reason":"reissued"`) || !strings.Contains(state.Body.String(), reissued.Message.Nonce) {
+		t.Errorf("state after the reissue was used:\n%s", state.Body)
 	}
 }

@@ -342,7 +342,7 @@ func payableKept(t *testing.T, s *payment.Postgres, account payment.AccountID) *
 // hold after doing so.
 func attempted(t *testing.T, s *payment.Postgres, account payment.AccountID, p *payment.Payment) *payment.Attempt {
 	t.Helper()
-	a, err := payment.NewAttempt(p, time.Now())
+	a, err := payment.NewAttempt(p, p.CreatedAt())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -479,7 +479,7 @@ func TestIssue_RefusesASecondAttemptThatCouldStillBePaid(t *testing.T) {
 	p := payableKept(t, s, first)
 	attempted(t, s, first, p)
 
-	second, err := payment.NewAttempt(p, time.Now())
+	second, err := payment.NewAttempt(p, p.CreatedAt())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -493,7 +493,7 @@ func TestIssue_RefusesAnAttemptAtAnotherAccountsPayment(t *testing.T) {
 	s, _ := store(t)
 	p := payableKept(t, s, first)
 
-	a, err := payment.NewAttempt(p, time.Now())
+	a, err := payment.NewAttempt(p, p.CreatedAt())
 	if err != nil {
 		t.Fatal(err)
 	}

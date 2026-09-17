@@ -111,6 +111,40 @@ func (s *Service) Await(ctx context.Context, account AccountID, id ID) (*Payment
 	return p, nil
 }
 
+// Supersede retires the live attempt of a payment, at the payer's word
+// that its key was spent by something that did not pay, so that another
+// can be issued. Once per payment: a second such word is refused as
+// [ErrReissued]. id has to name the live attempt, or [ErrNotFound].
+func (s *Service) Supersede(ctx context.Context, account AccountID, payment ID, id AttemptID) error {
+	p, _, err := s.payments.Find(ctx, account, payment)
+	if err != nil {
+		return err
+	}
+	// Retiring an attempt is for issuing another, and nothing is issued
+	// against a payment not open for payment.
+	if p.Status() != AwaitingPayment {
+		return fmt.Errorf("%s: %w, it is %s", payment, ErrNotAwaiting, p.Status())
+	}
+	live, at, found, err := s.attempts.Live(ctx, account, payment)
+	if err != nil {
+		return err
+	}
+	if !found || live.ID() != id {
+		return fmt.Errorf("attempt %s: %w", id, ErrNotFound)
+	}
+	n, err := s.attempts.Attempted(ctx, account, payment)
+	if err != nil {
+		return err
+	}
+	if n >= MaxAttempts {
+		return fmt.Errorf("%s: %w", payment, ErrReissued)
+	}
+	if err := live.Supersede(); err != nil {
+		return fmt.Errorf("%s: %w", payment, err)
+	}
+	return s.attempts.SaveAttempt(ctx, account, live, at)
+}
+
 // Find reads one payment back, for whatever shows it. The revision stays
 // with the repository: a caller that would move the payment goes through
 // [Service.Await], which reads and saves it in one call.
@@ -151,6 +185,15 @@ type NoPosition struct {
 	// Network is the network with no position.
 	Network Network
 }
+
+// MaxAttempts is how many attempts a payment may have: the first, and one
+// reissue. A key spent by something that did not pay is a wallet's
+// mistake or a payer's, and one more try settles which without giving
+// either anything.
+const MaxAttempts = 2
+
+// ErrReissued reports that a payment's one reissue was used.
+var ErrReissued = errors.New("payment: the payment was reissued already")
 
 // Error names the network nothing has read.
 func (e NoPosition) Error() string { return "payment: no position on " + string(e.Network) }

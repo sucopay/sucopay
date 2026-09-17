@@ -31,14 +31,17 @@ const EIP3009 Scheme = "eip3009"
 // belongs to submission and to finality, neither of which is here.
 type AttemptStatus string
 
-// The states an attempt moves through so far.
+// The states an attempt moves through so far. Superseded is an issued
+// attempt the payer asked to have replaced, because its key was spent by
+// something that did not pay; it is done with, and a new one is issued.
 const (
 	Issued     AttemptStatus = "issued"
 	Confirming AttemptStatus = "confirming"
+	Superseded AttemptStatus = "superseded"
 )
 
 // Valid reports whether s is a status this package defines.
-func (s AttemptStatus) Valid() bool { return s == Issued || s == Confirming }
+func (s AttemptStatus) Valid() bool { return s == Issued || s == Confirming || s == Superseded }
 
 // String returns the status as written.
 func (s AttemptStatus) String() string { return string(s) }
@@ -85,6 +88,13 @@ func NewAttempt(p *Payment, now time.Time) (*Attempt, error) {
 	// so no key is minted for it.
 	if p.Status() != AwaitingPayment {
 		return nil, Problems{{Field: "status", Message: "payment is " + p.Status().String() + ", not " + AwaitingPayment.String()}}
+	}
+	// Nor for one about to close: a signature the payer cannot get onto
+	// the chain before the deadline is one they would be refused for
+	// anyway, and the refusal is clearer here than there.
+	if remaining := p.ExpiresAt().Sub(now); remaining < MinRemaining {
+		return nil, Problems{{Field: "expires_at", Message: fmt.Sprintf(
+			"the payment closes in %s, and an attempt needs at least %s", remaining.Round(time.Second), MinRemaining)}}
 	}
 	id, err := newAttemptID()
 	if err != nil {
@@ -207,6 +217,17 @@ func (a *Attempt) Unconfirm() error {
 	}
 	a.authorizer = ""
 	a.status = Issued
+	return nil
+}
+
+// Supersede retires an issued attempt at the payer's word that its key was
+// spent by something that did not pay. Only an issued one: a confirming
+// attempt has a transfer seen against it, and what follows is finality's.
+func (a *Attempt) Supersede() error {
+	if a.status != Issued {
+		return Problems{{Field: "status", Message: "attempt is " + a.status.String() + ", not " + Issued.String()}}
+	}
+	a.status = Superseded
 	return nil
 }
 

@@ -16,9 +16,10 @@ type pages struct {
 	err     error
 }
 
-func (p *pages) Page(w http.ResponseWriter, r *http.Request) error   { return p.serve(w, "Page") }
-func (p *pages) State(w http.ResponseWriter, r *http.Request) error  { return p.serve(w, "State") }
-func (p *pages) Assets(w http.ResponseWriter, r *http.Request) error { return p.serve(w, "Assets") }
+func (p *pages) Page(w http.ResponseWriter, r *http.Request) error    { return p.serve(w, "Page") }
+func (p *pages) State(w http.ResponseWriter, r *http.Request) error   { return p.serve(w, "State") }
+func (p *pages) Attempt(w http.ResponseWriter, r *http.Request) error { return p.serve(w, "Attempt") }
+func (p *pages) Assets(w http.ResponseWriter, r *http.Request) error  { return p.serve(w, "Assets") }
 
 func (p *pages) serve(w http.ResponseWriter, method string) error {
 	p.reached = append(p.reached, method)
@@ -31,10 +32,11 @@ func (p *pages) serve(w http.ResponseWriter, method string) error {
 
 const aToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
-var pageRoutes = []struct{ target, reaches string }{
-	{"/checkout/" + aToken, "Page"},
-	{"/checkout/" + aToken + "/state", "State"},
-	{"/checkout-assets/app.js", "Assets"},
+var pageRoutes = []struct{ method, target, reaches string }{
+	{http.MethodGet, "/checkout/" + aToken, "Page"},
+	{http.MethodGet, "/checkout/" + aToken + "/state", "State"},
+	{http.MethodPost, "/checkout/" + aToken + "/attempts", "Attempt"},
+	{http.MethodGet, "/checkout-assets/app.js", "Assets"},
 }
 
 // The routes are open: a token in the path is what admits a payer, and the
@@ -47,7 +49,7 @@ func TestCheckout_ServesEachRouteWithoutACredential(t *testing.T) {
 			p := &pages{}
 			h := Handler(silent(), Dependencies{Credentials: held(ofAccount(first, credential.ReadWrite)), Checkout: p})
 
-			rec := serve(h, http.MethodGet, route.target, false)
+			rec := serve(h, route.method, route.target, false)
 
 			if rec.Code != http.StatusOK || len(p.reached) != 1 || p.reached[0] != route.reaches {
 				t.Errorf("status = %d, reached %v; want 200 from %s", rec.Code, p.reached, route.reaches)

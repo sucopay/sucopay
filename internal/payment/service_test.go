@@ -532,3 +532,69 @@ func TestService_AwaitAnnouncesThePaymentAsAwaitingPayment(t *testing.T) {
 		t.Errorf("events = %v, want payment.awaiting_payment alone", events)
 	}
 }
+
+// A payer whose key was spent by something that did not pay is given one
+// more, by naming the attempt to replace; a second such word is refused.
+func TestService_SupersedesTheLiveAttemptOnceAndIssuesAnother(t *testing.T) {
+	t.Parallel()
+	svc, s, _ := serving(t)
+	opened, err := svc.Open(t.Context(), first, request(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Await(t.Context(), first, opened.ID()); err != nil {
+		t.Fatal(err)
+	}
+	firstAttempt, _, err := svc.Issue(t.Context(), first, opened.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.Supersede(t.Context(), first, opened.ID(), "00000000000000000000000000000000"); !errors.Is(err, payment.ErrNotFound) {
+		t.Errorf("superseding an attempt that is not the live one = %v, want ErrNotFound", err)
+	}
+	if err := svc.Supersede(t.Context(), first, opened.ID(), firstAttempt.ID()); err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := svc.Issue(t.Context(), first, opened.ID())
+	if err != nil || second.Key() == firstAttempt.Key() {
+		t.Fatalf("Issue after superseding = %v, want a new key", err)
+	}
+	if n, err := s.Attempted(t.Context(), first, opened.ID()); err != nil || n != 2 {
+		t.Errorf("Attempted = %d, %v; want 2", n, err)
+	}
+	if err := svc.Supersede(t.Context(), first, opened.ID(), second.ID()); !errors.Is(err, payment.ErrReissued) {
+		t.Errorf("a second reissue = %v, want ErrReissued", err)
+	}
+	if _, _, live, err := s.Live(t.Context(), first, opened.ID()); err != nil || !live {
+		t.Errorf("Live after a refused reissue = %t, %v; want the second attempt still live", live, err)
+	}
+}
+
+// A reissue names the live attempt of the caller's own payment: another
+// account's attempt, and another account's payment, are not found.
+func TestService_SupersedesNothingOfAnotherAccount(t *testing.T) {
+	t.Parallel()
+	svc, s, _ := serving(t)
+	opened, err := svc.Open(t.Context(), first, request(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Await(t.Context(), first, opened.ID()); err != nil {
+		t.Fatal(err)
+	}
+	a, _, err := svc.Issue(t.Context(), first, opened.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.Supersede(t.Context(), other, opened.ID(), a.ID()); !errors.Is(err, payment.ErrNotFound) {
+		t.Errorf("another account's Supersede = %v, want ErrNotFound", err)
+	}
+	if n, err := s.Attempted(t.Context(), other, opened.ID()); err != nil || n != 0 {
+		t.Errorf("another account's Attempted = %d, %v; want 0", n, err)
+	}
+	if _, _, live, err := s.Live(t.Context(), first, opened.ID()); err != nil || !live {
+		t.Errorf("the attempt is not live any more: %t, %v", live, err)
+	}
+}

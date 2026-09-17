@@ -76,9 +76,9 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		credentials = credential.NewPostgres(db.Conns(), key, cfg.Credentials.KeyID)
 		store := payment.NewPostgres(db.Conns())
-		payments = payment.NewHTTP(
-			payment.NewService(store, store, observe.NewCursors(db.Conns()), time.Now),
-			cfg.Assets, accepted.NewPostgres(db.Conns()),
+		cursors := observe.NewCursors(db.Conns())
+		service := payment.NewService(store, store, cursors, time.Now)
+		payments = payment.NewHTTP(service, cfg.Assets, accepted.NewPostgres(db.Conns()),
 			checkout.NewLinks(key.Derive(checkout.KeyPurpose), cfg.Credentials.KeyID, cfg.Listen.BaseURL))
 
 		// Under a key of its own, derived from the credentials key for this
@@ -139,10 +139,14 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 			chainIDs[name] = n.ChainID
 		}
 		pages = checkout.NewHTTP(checkout.Deps{
-			Store: checkout.NewPostgres(db.Conns()), Payments: store,
+			Store: checkout.NewPostgres(db.Conns()), Payments: store, Service: service,
 			Key: key.Derive(checkout.KeyPurpose), KeyID: cfg.Credentials.KeyID,
-			ChainIDs: chainIDs, Chains: observers, Watched: observe.NewCursors(db.Conns()),
-			Now: time.Now,
+			ChainIDs: chainIDs, Chains: observers, Watched: cursors,
+			// The domain of each asset's contract comes with the document;
+			// until it does, the material carries none, and a wallet refuses
+			// to sign it. That is the next change.
+			Domain: func(payment.Asset) (string, string) { return "", "" },
+			Now:    time.Now,
 		})
 
 		// One for the deployment, under the same leases: a delivery is sent

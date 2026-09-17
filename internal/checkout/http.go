@@ -1,9 +1,12 @@
 package checkout
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
+	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"net/http"
 	"strings"
@@ -42,6 +45,11 @@ type Watched interface {
 type Deps struct {
 	Store    *Postgres
 	Payments *payment.Postgres
+	// Service is what issues an attempt and moves a payment.
+	Service *payment.Service
+	// Domain is the EIP-712 domain of an asset's contract: its name and
+	// version, which the document lists with the asset.
+	Domain func(asset payment.Asset) (name, version string)
 	// Key derives tokens, and KeyID says which key.
 	Key   [32]byte
 	KeyID string
@@ -114,15 +122,187 @@ func (h *HTTP) facts(ctx context.Context, f found) (Facts, error) {
 	if err != nil {
 		return Facts{}, err
 	}
+	live, _, found, err := h.deps.Payments.Live(ctx, f.owner.Account, p.ID())
+	if err != nil {
+		return Facts{}, err
+	}
+	attempted, err := h.deps.Payments.Attempted(ctx, f.owner.Account, p.ID())
+	if err != nil {
+		return Facts{}, err
+	}
 	networks, _ := h.deps.Chains.Words()
-	return Facts{
+	facts := Facts{
 		Now:         h.deps.Now(),
 		ChainID:     h.deps.ChainIDs[string(p.Network())],
 		Merchant:    f.owner.Name,
 		NetworkWord: networks[string(p.Network())],
 		Watched:     watched,
 		Matched:     matched,
-	}, nil
+		Reissued:    attempted >= payment.MaxAttempts,
+	}
+	if found {
+		typed := h.typed(p, live)
+		facts.Attempt = &typed
+	}
+	return facts, nil
+}
+
+// typed is the signing material of a against p.
+func (h *HTTP) typed(p *payment.Payment, a *payment.Attempt) TypedData {
+	name, version := h.deps.Domain(p.Asset())
+	return Typed(p, a, name, version, h.deps.ChainIDs[string(p.Network())])
+}
+
+// MaxAttemptBodyBytes bounds the body of a request for an attempt, which
+// is empty or names one attempt.
+const MaxAttemptBodyBytes = 1 << 10
+
+// Attempt gives the payer something to sign: the live attempt if there is
+// one, or a new one. A request may instead ask for the live attempt to be
+// replaced, once, by naming it under reissue; the deployment cannot see a
+// key spent by something that did not pay, and takes the page's word.
+//
+// What refuses the request is answered before anything moves, so that a
+// refused request leaves the payment as it was.
+func (h *HTTP) Attempt(w http.ResponseWriter, r *http.Request) error {
+	setHeaders(w)
+	f, err := h.find(r)
+	if errors.Is(err, ErrNotFound) {
+		problem.Refuse(w, http.StatusNotFound, "not_found", nil)
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	reissue, ok := readReissue(w, r)
+	if !ok {
+		return nil
+	}
+	facts, err := h.facts(r.Context(), f)
+	if err != nil {
+		return err
+	}
+	if reissue != "" && (facts.Attempt == nil || facts.Attempt.ID != reissue) {
+		problem.Refuse(w, http.StatusBadRequest, "invalid", []problem.Field{{
+			Field: "reissue", Message: "names no live attempt of this payment"}})
+		return nil
+	}
+	if facts.Attempt != nil && reissue == "" {
+		problem.JSON(w, http.StatusOK, facts.Attempt)
+		return nil
+	}
+	if reason := Reason(f.payment, facts); reason != "" {
+		problem.JSON(w, http.StatusConflict, map[string]string{"error": reason})
+		return nil
+	}
+	account, p := f.owner.Account, f.payment
+	if reissue != "" {
+		err := h.deps.Service.Supersede(r.Context(), account, p.ID(), reissue)
+		switch {
+		case errors.Is(err, payment.ErrReissued):
+			problem.JSON(w, http.StatusConflict, map[string]string{"error": ReasonReissued})
+			return nil
+		case errors.Is(err, payment.ErrNotFound), errors.Is(err, payment.ErrStale):
+			// Another request of the same page retired it first. What is
+			// live now is the one to sign, if there is one yet.
+			return h.answerLive(w, r, account, p)
+		case err != nil:
+			return err
+		}
+	}
+	if p.Status() == payment.Created {
+		_, err := h.deps.Service.Await(r.Context(), account, p.ID())
+		var moved payment.Problems
+		if errors.Is(err, payment.ErrStale) || errors.As(err, &moved) {
+			// Another request of the same page moved it first. Issuing
+			// goes on: what that request issued, if anything, is answered
+			// with below.
+			err = nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+	a, p, err := h.deps.Service.Issue(r.Context(), account, p.ID())
+	if errors.Is(err, payment.ErrAttemptLive) {
+		// Another request of the same page got there first, and its
+		// attempt is the one to sign.
+		return h.answerLive(w, r, account, p)
+	}
+	if err != nil {
+		return err
+	}
+	typed := h.typed(p, a)
+	problem.JSON(w, http.StatusCreated, typed)
+	return nil
+}
+
+// answerLive answers with the live attempt of p, for a request another
+// request of the same page got ahead of. With none live, the page is told
+// to ask again.
+func (h *HTTP) answerLive(w http.ResponseWriter, r *http.Request, account payment.AccountID, p *payment.Payment) error {
+	live, _, found, err := h.deps.Payments.Live(r.Context(), account, p.ID())
+	if err != nil {
+		return err
+	}
+	if !found {
+		problem.JSON(w, http.StatusConflict, map[string]string{"error": ReasonAgain})
+		return nil
+	}
+	problem.JSON(w, http.StatusOK, h.typed(p, live))
+	return nil
+}
+
+// readReissue reads the body of a request for an attempt: nothing, or an
+// object naming the attempt to replace. Anything else is refused, and the
+// second result says so.
+func readReissue(w http.ResponseWriter, r *http.Request) (payment.AttemptID, bool) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxAttemptBodyBytes))
+	var tooLarge *http.MaxBytesError
+	switch {
+	case errors.As(err, &tooLarge):
+		problem.Refuse(w, http.StatusRequestEntityTooLarge, "too_large", nil)
+		return "", false
+	case err != nil:
+		problem.Refuse(w, http.StatusBadRequest, "invalid", []problem.Field{{Message: "body could not be read"}})
+		return "", false
+	case len(bytes.TrimSpace(body)) == 0:
+		return "", true
+	}
+	var asked struct {
+		Reissue *string `json:"reissue"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&asked); err != nil || dec.More() {
+		problem.Refuse(w, http.StatusBadRequest, "invalid", []problem.Field{{
+			Message: "body is empty, or an object with reissue naming an attempt"}})
+		return "", false
+	}
+	// An empty object asks for nothing, as an empty body does.
+	if asked.Reissue == nil {
+		return "", true
+	}
+	id := *asked.Reissue
+	if !attemptIDShaped(id) {
+		problem.Refuse(w, http.StatusBadRequest, "invalid", []problem.Field{{Field: "reissue", Message: "not an attempt id"}})
+		return "", false
+	}
+	return payment.AttemptID(id), true
+}
+
+// attemptIDShaped says whether s has the shape of an attempt's id: 32
+// lowercase hexadecimal characters, as a token's is 64.
+func attemptIDShaped(s string) bool {
+	if len(s) != 32 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // State answers with what the page shows.
