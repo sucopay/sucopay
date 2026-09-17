@@ -65,6 +65,12 @@ type Attempt struct {
 	createdAt   time.Time
 }
 
+// MinRemaining is the least a payment may have left before its deadline
+// for an attempt to be issued against it: what signing takes, and what a
+// block on Polygon takes, and then some. A first number, not a measured
+// one.
+const MinRemaining = 2 * time.Minute
+
 // NewAttempt makes an attempt at paying p, with a key nothing else holds.
 //
 // The deadline is the payment's, truncated to the second: the chain compares

@@ -22,10 +22,10 @@ type Ready func(context.Context) error
 // Database may be nil, which is what an instance configured without one
 // passes. A function rather than an interface, so that "no database" is a
 // nil nobody can get wrong: a nil pointer in a non-nil interface would read
-// as configured and panic when asked. Credentials, Payments, Webhooks and
-// Chains are nil in the same instance; [Credentials] says what that refuses,
-// [Payments] and [Webhooks] what it answers, and [Chains] what it leaves
-// out.
+// as configured and panic when asked. Credentials, Payments, Webhooks,
+// Checkout and Chains are nil in the same instance; [Credentials] says what
+// that refuses, [Payments], [Webhooks] and [Checkout] what it answers, and
+// [Chains] what it leaves out.
 type Dependencies struct {
 	Database    Ready
 	Credentials Credentials
@@ -34,6 +34,7 @@ type Dependencies struct {
 	Chains      Chains
 	Settling    Settling
 	Delivering  Delivering
+	Checkout    Checkout
 }
 
 // Handler returns the routes an instance serves, each behind what it asks of

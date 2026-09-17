@@ -11,9 +11,10 @@ import (
 )
 
 // domainFiles hold the part of this package that reaches nothing outward:
-// what a token is and how one is derived. A file that holds a handler or a
-// driver reaches outward on purpose and does not belong on this list.
-var domainFiles = []string{"token.go"}
+// what a token is and how one is derived, what a page shows, and what a
+// payer signs. http.go holds a handler and postgres.go a driver, and reach
+// outward on purpose.
+var domainFiles = []string{"token.go", "state.go", "typed.go"}
 
 // allowed is everything those files may import. An allow list rather than a
 // block list, because the import worth catching is the one nobody thought to

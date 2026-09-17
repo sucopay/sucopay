@@ -56,6 +56,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		credentials api.Credentials
 		payments    api.Payments
 		webhooks    api.Webhooks
+		pages       api.Checkout
 		chains      api.Chains
 		observers   observe.Observers
 		workers     finality.Workers
@@ -133,6 +134,17 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		decides = workers
 
+		chainIDs := map[string]uint64{}
+		for name, n := range cfg.Networks {
+			chainIDs[name] = n.ChainID
+		}
+		pages = checkout.NewHTTP(checkout.Deps{
+			Store: checkout.NewPostgres(db.Conns()), Payments: store,
+			Key: key.Derive(checkout.KeyPurpose), KeyID: cfg.Credentials.KeyID,
+			ChainIDs: chainIDs, Chains: observers, Watched: observe.NewCursors(db.Conns()),
+			Now: time.Now,
+		})
+
 		// One for the deployment, under the same leases: a delivery is sent
 		// by whichever instance holds the name, and once.
 		delivering = webhook.NewWorker(endpoints,
@@ -141,7 +153,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 
 	addr := net.JoinHostPort(cfg.Listen.Host, strconv.Itoa(cfg.Listen.Port))
 	deps := api.Dependencies{Database: ready, Credentials: credentials, Payments: payments,
-		Webhooks: webhooks, Chains: chains, Settling: decides}
+		Webhooks: webhooks, Chains: chains, Settling: decides, Checkout: pages}
 	if delivering != nil {
 		// Set only when there is one: a nil pointer in the interface would
 		// read as a worker and be asked.

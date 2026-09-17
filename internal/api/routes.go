@@ -54,5 +54,8 @@ func routes(log *slog.Logger, deps Dependencies) []route {
 		{pattern: "POST /webhook_endpoints/{id}/test", needs: write, handle: forAccount(log, deps.Webhooks, Webhooks.Test)},
 		{pattern: "GET /webhook_endpoints/{id}/deliveries", needs: read, handle: forAccount(log, deps.Webhooks, Webhooks.Deliveries)},
 		{pattern: "POST /webhook_endpoints/{id}/deliveries/{delivery}/resend", needs: write, handle: forAccount(log, deps.Webhooks, Webhooks.Resend)},
+		{pattern: "GET /checkout/{token}", needs: open, handle: forPayer(log, deps.Checkout, Checkout.Page)},
+		{pattern: "GET /checkout/{token}/state", needs: open, handle: forPayer(log, deps.Checkout, Checkout.State)},
+		{pattern: "GET /checkout-assets/{path...}", needs: open, handle: forPayer(log, deps.Checkout, Checkout.Assets)},
 	}
 }
