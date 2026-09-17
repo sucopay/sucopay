@@ -12,6 +12,7 @@ import (
 
 	"github.com/sucopay/sucopay/internal/accepted"
 	"github.com/sucopay/sucopay/internal/api"
+	"github.com/sucopay/sucopay/internal/checkout"
 	"github.com/sucopay/sucopay/internal/credential"
 	"github.com/sucopay/sucopay/internal/finality"
 	"github.com/sucopay/sucopay/internal/invisible"
@@ -76,7 +77,8 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		store := payment.NewPostgres(db.Conns())
 		payments = payment.NewHTTP(
 			payment.NewService(store, store, observe.NewCursors(db.Conns()), time.Now),
-			cfg.Assets, accepted.NewPostgres(db.Conns()))
+			cfg.Assets, accepted.NewPostgres(db.Conns()),
+			checkout.NewLinks(key.Derive(checkout.KeyPurpose), cfg.Credentials.KeyID, cfg.Listen.BaseURL))
 
 		// Under a key of its own, derived from the credentials key for this
 		// purpose, so that a webhook secret and a credential's hash never

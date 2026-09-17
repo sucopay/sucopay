@@ -9,6 +9,7 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"net/url"
 	"slices"
 	"time"
 
@@ -43,17 +44,48 @@ type request struct {
 	amount    Money
 	expiresAt time.Time
 	metadata  map[string]string
+	returnURL string
 }
 
 // requestKeys is every key a body may hold.
-var requestKeys = []string{"amount", "asset", "expires_at", "metadata"}
+var requestKeys = []string{"amount", "asset", "expires_at", "metadata", "return_url"}
+
+// MaxReturnURLBytes bounds where a payer is sent back to.
+const MaxReturnURLBytes = 2048
+
+// checkReturnURL says what is wrong with where a merchant wants the payer
+// sent back to, and nothing when it is a place the checkout page may send
+// them. https, since the page sends the payer there; a scheme that runs in
+// the page, javascript: for one, would run there as the merchant's script.
+// http is allowed for the machine itself, which is where a merchant
+// develops.
+func checkReturnURL(raw string) Problems {
+	if len(raw) > MaxReturnURLBytes {
+		return Problems{{Field: "return_url", Message: fmt.Sprintf("longer than %d bytes", MaxReturnURLBytes)}}
+	}
+	if invisible.Has(raw) {
+		return Problems{{Field: "return_url", Message: "carries a character a reader cannot see"}}
+	}
+	u, err := url.Parse(raw)
+	switch {
+	case err != nil:
+		return Problems{{Field: "return_url", Message: "not a URL"}}
+	case u.User != nil:
+		return Problems{{Field: "return_url", Message: "carries a username or password, which it may not"}}
+	case u.Scheme == "https" && u.Hostname() != "":
+		return nil
+	case u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1"):
+		return nil
+	}
+	return Problems{{Field: "return_url", Message: "must be https, or http on localhost"}}
+}
 
 // readRequest reads a body into what [Service.Open] takes from one, or
 // reports everything that keeps it from being read, so that a client fixes a
 // body in one round. A body that is not one JSON object is one problem with
 // no field. Otherwise each problem's field is the key it is about, and the
 // problems come in one order however the body is written: keys the API does
-// not read, then asset, amount, expires_at and metadata, then a required key
+// not read, then asset, amount, return_url, expires_at and metadata, then a required key
 // the body leaves out. Open judges the values of a body once it is read.
 //
 // Reading the amount in the asset's units takes the asset. A body naming no
@@ -117,6 +149,13 @@ func readRequest(body []byte, assets Assets) (request, Problems) {
 			if r.amount, err = NewMoney(asset, n); err != nil {
 				fail("amount", "%v", err)
 			}
+		}
+	}
+	if s, ok := str("return_url"); ok {
+		if found := checkReturnURL(s); found != nil {
+			problems = append(problems, found...)
+		} else {
+			r.returnURL = s
 		}
 	}
 	if s, ok := str("expires_at"); ok {
@@ -232,6 +271,15 @@ type Accepted interface {
 // as a payment may hold fits in a quarter of it.
 const MaxBodyBytes = 64 << 10
 
+// Links makes what a payment's checkout page is reached by. Declared here,
+// where it is called; the checkout package is one.
+type Links interface {
+	// Checkout is what the row keeps of the page's token.
+	Checkout(id ID) Checkout
+	// CheckoutURL is where a merchant sends the payer.
+	CheckoutURL(id ID) string
+}
+
 // HTTP serves payments over HTTP, one account's at a time: every method takes
 // the account the caller has authenticated, and answers for that account's
 // payments only.
@@ -239,12 +287,14 @@ type HTTP struct {
 	service  *Service
 	assets   Assets
 	accepted Accepted
+	links    Links
 }
 
-// NewHTTP serves the payments of service, naming assets from assets and
-// paying them to where accepted says.
-func NewHTTP(service *Service, assets Assets, accepted Accepted) *HTTP {
-	return &HTTP{service: service, assets: assets, accepted: accepted}
+// NewHTTP serves the payments of service, naming assets from assets, paying
+// them to where accepted says, and giving each a checkout page through
+// links.
+func NewHTTP(service *Service, assets Assets, accepted Accepted, links Links) *HTTP {
+	return &HTTP{service: service, assets: assets, accepted: accepted, links: links}
 }
 
 // Create opens a payment for account from the body of r and answers with it,
@@ -277,11 +327,20 @@ func (h *HTTP) Create(w http.ResponseWriter, r *http.Request, account AccountID)
 			Message: "not accepted by this account: nothing says where a payment of it is paid to"}}))
 		return nil
 	}
-	p, err := h.service.Open(r.Context(), account, Request{
+	// Open mints its own id; OpenAs takes one, because the checkout token
+	// is derived from the id and the row's part of it is written with the
+	// payment.
+	id, err := NewID()
+	if err != nil {
+		return err
+	}
+	p, err := h.service.OpenAs(r.Context(), account, id, Request{
 		Amount:      req.amount,
 		Destination: destination,
 		Metadata:    req.metadata,
 		ExpiresAt:   req.expiresAt,
+		ReturnURL:   req.returnURL,
+		Checkout:    h.links.Checkout(id),
 	})
 	var found Problems
 	if errors.As(err, &found) {
@@ -292,8 +351,21 @@ func (h *HTTP) Create(w http.ResponseWriter, r *http.Request, account AccountID)
 		return err
 	}
 	w.Header().Set("Location", "/payments/"+p.ID().String())
-	problem.JSON(w, http.StatusCreated, bodyJSON(p))
+	problem.JSON(w, http.StatusCreated, h.body(p))
 	return nil
+}
+
+// body is a payment as a route answers with it: what an event carries, and
+// the checkout URL, which an event does not. The URL carries the page's
+// token, which is a key to the payment's outcome, and a receiver's log is
+// not where one belongs.
+func (h *HTTP) body(p *Payment) paymentJSON {
+	body := bodyJSON(p)
+	if p.Checkout().IsSet() {
+		u := h.links.CheckoutURL(p.ID())
+		body.CheckoutURL = &u
+	}
+	return body
 }
 
 // Read answers with the payment of account the path's id names, or that
@@ -314,7 +386,7 @@ func (h *HTTP) Read(w http.ResponseWriter, r *http.Request, account AccountID) e
 	case err != nil:
 		return err
 	}
-	problem.JSON(w, http.StatusOK, bodyJSON(p))
+	problem.JSON(w, http.StatusOK, h.body(p))
 	return nil
 }
 
@@ -332,6 +404,8 @@ type paymentJSON struct {
 	Metadata    map[string]string `json:"metadata"`
 	ExpiresAt   time.Time         `json:"expires_at"`
 	CreatedAt   time.Time         `json:"created_at"`
+	ReturnURL   *string           `json:"return_url"`
+	CheckoutURL *string           `json:"checkout_url,omitempty"`
 }
 
 // assetJSON is an asset as a response writes it.
@@ -357,6 +431,10 @@ func bodyJSON(p *Payment) paymentJSON {
 	if metadata == nil {
 		metadata = map[string]string{}
 	}
+	var returnURL *string
+	if u := p.ReturnURL(); u != "" {
+		returnURL = &u
+	}
 	return paymentJSON{
 		ID:     p.ID(),
 		Status: p.Status(),
@@ -372,6 +450,7 @@ func bodyJSON(p *Payment) paymentJSON {
 		Metadata:    metadata,
 		ExpiresAt:   p.ExpiresAt(),
 		CreatedAt:   p.CreatedAt(),
+		ReturnURL:   returnURL,
 	}
 }
 

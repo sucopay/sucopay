@@ -150,6 +150,9 @@ type Payment struct {
 	metadata    map[string]string
 	createdAt   time.Time
 	expiresAt   time.Time
+	returnURL   string
+	checkout    Checkout
+	closedAt    time.Time
 }
 
 // Request is what a caller supplies to open a payment.
@@ -167,7 +170,26 @@ type Request struct {
 	Destination Address
 	Metadata    map[string]string
 	ExpiresAt   time.Time
+	// ReturnURL is where the payer is sent back to from the checkout page,
+	// and empty when the merchant gave none. What a URL may be is checked
+	// where the request comes in; here it is a string the payment keeps.
+	ReturnURL string
+	// Checkout is what the row keeps of the checkout page's token. Empty for
+	// a payment made without one, which has no page.
+	Checkout Checkout
 }
+
+// Checkout is what a payment's row keeps of the token its checkout page is
+// reached by: a hash of the token, and which key derived it. The token
+// itself is derived again from the key and the payment's id whenever the
+// URL is answered, and never stored.
+type Checkout struct {
+	Hash  []byte
+	KeyID string
+}
+
+// IsSet says whether the payment was made with a checkout page.
+func (c Checkout) IsSet() bool { return len(c.Hash) > 0 }
 
 // New opens a payment under an identifier of its own, or reports every reason
 // it could not as [Problems].
@@ -190,6 +212,11 @@ type Stored struct {
 	Status      Status
 	CreatedAt   time.Time
 	ExpiresAt   time.Time
+	ReturnURL   string
+	Checkout    Checkout
+	// ClosedAt is when the payment reached a final status, and zero while
+	// it has not.
+	ClosedAt time.Time
 }
 
 // Restore rebuilds a payment that was stored, under the identifier and the
@@ -208,10 +235,13 @@ func Restore(s Stored) (*Payment, error) {
 		Destination: s.Destination,
 		Metadata:    s.Metadata,
 		ExpiresAt:   s.ExpiresAt,
+		ReturnURL:   s.ReturnURL,
+		Checkout:    s.Checkout,
 	}, s.Status, s.CreatedAt, s.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
+	p.closedAt = s.ClosedAt.UTC()
 	if s.Received.IsSet() {
 		if err := p.record(s.Received); err != nil {
 			return nil, err
@@ -273,6 +303,8 @@ func build(id ID, r Request, status Status, createdAt, deadlineAfter time.Time) 
 		// stored and read back.
 		createdAt: createdAt.UTC().Truncate(time.Microsecond),
 		expiresAt: r.ExpiresAt.UTC().Truncate(time.Microsecond),
+		returnURL: r.ReturnURL,
+		checkout:  Checkout{Hash: slices.Clone(r.Checkout.Hash), KeyID: r.Checkout.KeyID},
 	}, nil
 }
 
@@ -349,6 +381,20 @@ func (p *Payment) ExpiresAt() time.Time { return p.expiresAt }
 
 // Metadata returns what the merchant attached. The result is a copy.
 func (p *Payment) Metadata() map[string]string { return maps.Clone(p.metadata) }
+
+// ReturnURL is where the checkout page sends the payer back to, and empty
+// when the merchant gave none.
+func (p *Payment) ReturnURL() string { return p.returnURL }
+
+// Checkout is what the row keeps of the checkout page's token.
+func (p *Payment) Checkout() Checkout {
+	return Checkout{Hash: slices.Clone(p.checkout.Hash), KeyID: p.checkout.KeyID}
+}
+
+// ClosedAt is when the payment reached a final status, in UTC, and zero
+// while it has not. The store writes it, since the store is what knows when
+// a final status was saved.
+func (p *Payment) ClosedAt() time.Time { return p.closedAt }
 
 // Await marks the payment as one a customer can now pay.
 func (p *Payment) Await() error { return p.moveTo(AwaitingPayment) }

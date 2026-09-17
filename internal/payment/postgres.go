@@ -85,15 +85,23 @@ func (s *Postgres) Create(ctx context.Context, account AccountID, p *Payment) (e
 	defer func() { err = unwind(ctx, tx, fmt.Sprintf("payment %s", p.ID()), err) }()
 
 	asset := p.Asset()
+	var checkoutHash []byte
+	var checkoutKeyID, returnURL *string
+	if c := p.Checkout(); c.IsSet() {
+		checkoutHash, checkoutKeyID = c.Hash, &c.KeyID
+	}
+	if u := p.ReturnURL(); u != "" {
+		returnURL = &u
+	}
 	_, err = tx.Exec(ctx, `
 		insert into payments (
 			id, account_id, asset_network, asset_reference, asset_symbol,
 			asset_decimals, amount, destination, status, metadata,
-			created_at, expires_at
-		) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+			created_at, expires_at, checkout_hash, checkout_key_id, return_url
+		) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
 		p.ID(), account, asset.Network(), asset.Reference(), asset.Symbol(),
 		asset.Decimals(), digits(p.Amount()), p.Destination(), p.Status(), metadata,
-		p.CreatedAt(), p.ExpiresAt())
+		p.CreatedAt(), p.ExpiresAt(), checkoutHash, checkoutKeyID, returnURL)
 	if err != nil {
 		return fmt.Errorf("payment %s: %w", p.ID(), err)
 	}
@@ -121,12 +129,14 @@ func find(ctx context.Context, q queries, account AccountID, id ID) (*Payment, R
 	err := q.QueryRow(ctx, `
 		select asset_network, asset_reference, asset_symbol, asset_decimals,
 		       amount, received, destination, status, metadata,
-		       created_at, expires_at, version
+		       created_at, expires_at, version,
+		       checkout_hash, checkout_key_id, return_url, closed_at
 		  from payments
 		 where account_id = $1 and id = $2`, account, id).
 		Scan(&row.network, &row.reference, &row.symbol, &row.decimals, &row.amount,
 			&row.received, &row.stored.Destination, &row.stored.Status, &row.metadata,
-			&row.stored.CreatedAt, &row.stored.ExpiresAt, &row.version)
+			&row.stored.CreatedAt, &row.stored.ExpiresAt, &row.version,
+			&row.stored.Checkout.Hash, &row.checkoutKeyID, &row.returnURL, &row.closedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, Revision{}, fmt.Errorf("%s: %w", id, ErrNotFound)
 	}
@@ -290,11 +300,15 @@ func savePayment(ctx context.Context, q queries, account AccountID, p *Payment, 
 		d := digits(r)
 		received = &d
 	}
+	// closed_at is written once, when a final status is first saved, and
+	// left alone after: a resave of a final payment does not move the time
+	// its checkout token's life is counted from.
 	tag, err := q.Exec(ctx, `
 		update payments
-		   set status = $4, received = $5, version = version + 1
+		   set status = $4, received = $5, version = version + 1,
+		       closed_at = coalesce(closed_at, case when $6 then now() end)
 		 where account_id = $1 and id = $2 and version = $3`,
-		account, p.ID(), at.at, p.Status(), received)
+		account, p.ID(), at.at, p.Status(), received, p.Status().Final())
 	if err != nil {
 		return fmt.Errorf("payment %s: %w", p.ID(), err)
 	}
@@ -1127,15 +1141,18 @@ func span(first, last uint64) (int64, int64, error) {
 // payer is a payment as its columns come back, before the asset and the
 // amounts are read into the values the aggregate holds.
 type payer struct {
-	stored    Stored
-	network   string
-	reference string
-	symbol    string
-	decimals  uint8
-	amount    string
-	received  *string
-	metadata  []byte
-	version   int64
+	stored        Stored
+	network       string
+	reference     string
+	symbol        string
+	decimals      uint8
+	amount        string
+	received      *string
+	metadata      []byte
+	version       int64
+	checkoutKeyID *string
+	returnURL     *string
+	closedAt      *time.Time
 }
 
 // payment rebuilds what the columns hold, and the revision they were read at.
@@ -1154,6 +1171,15 @@ func (r payer) payment() (*Payment, Revision, error) {
 	}
 	if err := json.Unmarshal(r.metadata, &r.stored.Metadata); err != nil {
 		return nil, Revision{}, fmt.Errorf("payment %s: metadata: %w", r.stored.ID, err)
+	}
+	if r.checkoutKeyID != nil {
+		r.stored.Checkout.KeyID = *r.checkoutKeyID
+	}
+	if r.returnURL != nil {
+		r.stored.ReturnURL = *r.returnURL
+	}
+	if r.closedAt != nil {
+		r.stored.ClosedAt = *r.closedAt
 	}
 	p, err := Restore(r.stored)
 	if err != nil {

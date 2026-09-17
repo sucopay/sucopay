@@ -283,10 +283,11 @@ func TestRepository_EveryFieldOfAPaymentIsAccountedFor(t *testing.T) {
 	// The lists are checked against the update statement as well as against the
 	// struct, because classifying a new field and then not writing it is the
 	// same silent loss as not classifying it at all.
-	moved := map[string]string{"status": "status", "received": "received"}
+	moved := map[string]string{"status": "status", "received": "received", "closedAt": "closed_at"}
 	fixed := map[string]bool{
 		"id": true, "amount": true, "destination": true,
 		"metadata": true, "createdAt": true, "expiresAt": true,
+		"returnURL": true, "checkout": true,
 	}
 
 	fields := reflect.TypeOf(payment.Payment{})
@@ -1005,5 +1006,51 @@ func TestSave_RefusesHalfOfAnEvent(t *testing.T) {
 				t.Errorf("payment is %s, want the change refused with the event", back.Status())
 			}
 		})
+	}
+}
+
+// When a payment ends is written by the store, once, when the first final
+// status is saved: the checkout page's token lives for a while after it.
+func TestRepository_WritesWhenAPaymentEndedOnceAndLeavesItAlone(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	p := payableKept(t, s, first)
+	loaded, at, err := s.Find(t.Context(), first, p.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.ClosedAt().IsZero() {
+		t.Fatalf("a payable payment has closed_at %s", loaded.ClosedAt())
+	}
+	// Past its deadline and past the wait for finality: the way a payment
+	// nobody paid ends.
+	if err := loaded.AwaitFinality(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := loaded.Expire(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(t.Context(), first, loaded, at, payment.Event{}); err != nil {
+		t.Fatal(err)
+	}
+
+	ended, at, err := s.Find(t.Context(), first, p.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if ended.ClosedAt().IsZero() || time.Since(ended.ClosedAt()) > time.Minute {
+		t.Errorf("closed_at = %s, want about now", ended.ClosedAt())
+	}
+	// Saved again as it is: the time stands.
+	if err := s.Save(t.Context(), first, ended, at, payment.Event{}); err != nil {
+		t.Fatal(err)
+	}
+	var closedAt time.Time
+	if err := pool.QueryRow(t.Context(), `select closed_at from payments where id = $1`, p.ID()).Scan(&closedAt); err != nil {
+		t.Fatal(err)
+	}
+	if !closedAt.Equal(ended.ClosedAt()) {
+		t.Errorf("closed_at moved to %s on a resave, want %s kept", closedAt, ended.ClosedAt())
 	}
 }

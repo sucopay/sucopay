@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/sucopay/sucopay/internal/invisible"
@@ -35,6 +36,10 @@ func logger(ctx context.Context, log *slog.Logger) *slog.Logger {
 // The line names the request rather than repeating it: the method, the route
 // as this process wrote it, and the path cut short and quoted. Whoever sent it
 // chose the path, and a report is a line a terminal acts on.
+//
+// A route whose pattern carries a token is written by the pattern alone:
+// the path would be the token, which is a key to a payment's outcome, and a
+// log is kept longer than the payment.
 func record(log *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -52,9 +57,13 @@ func record(log *slog.Logger, next http.Handler) http.Handler {
 		counted := &counter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(counted, r)
 
+		path := invisible.Shown(r.URL.Path, maxPathBytes)
+		if strings.Contains(r.Pattern, "{token}") {
+			path = r.Pattern
+		}
 		logger(ctx, log).InfoContext(ctx, "served",
 			slog.String("method", invisible.Shown(r.Method, maxMethodBytes)),
-			slog.String("path", invisible.Shown(r.URL.Path, maxPathBytes)),
+			slog.String("path", path),
 			slog.Int("status", counted.status),
 			slog.Int64("duration_ms", time.Since(began).Milliseconds()),
 		)

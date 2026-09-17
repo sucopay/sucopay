@@ -51,11 +51,22 @@ const MaxExpiry = 30 * 24 * time.Hour
 // which [Restore] shares: a payment stored under a bound that has since been
 // lowered still has to load.
 func (s *Service) Open(ctx context.Context, account AccountID, r Request) (*Payment, error) {
+	id, err := NewID()
+	if err != nil {
+		return nil, err
+	}
+	return s.OpenAs(ctx, account, id, r)
+}
+
+// OpenAs is Open under an identifier the caller minted with [NewID]. For a
+// caller that has to know the identifier before the payment exists, which
+// one deriving the checkout page's token from it is.
+func (s *Service) OpenAs(ctx context.Context, account AccountID, id ID, r Request) (*Payment, error) {
 	now := s.now()
 	if r.ExpiresAt.IsZero() {
 		r.ExpiresAt = now.Add(DefaultExpiry)
 	}
-	p, err := New(r, now)
+	p, err := build(id, r, Created, now, now)
 	var problems Problems
 	if err != nil && !errors.As(err, &problems) {
 		return nil, err

@@ -15,6 +15,7 @@ import (
 	"testing/iotest"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/sucopay/sucopay/internal/checkout"
 	"github.com/sucopay/sucopay/internal/payment"
 )
 
@@ -75,7 +76,7 @@ func served(t *testing.T) *handler {
 	svc, store, pool := serving(t)
 	accepted := &accepting{paidTo: map[acceptance]payment.Address{{first, jpyc(t)}: address(t, "c")}}
 	return &handler{
-		h:        payment.NewHTTP(svc, listed{"jpyc": jpyc(t), "usdc": usdc(t)}, accepted),
+		h:        payment.NewHTTP(svc, listed{"jpyc": jpyc(t), "usdc": usdc(t)}, accepted, checkout.NewLinks([32]byte{9}, "k1", "https://pay.example")),
 		accepted: accepted,
 		store:    store,
 		pool:     pool,
@@ -187,6 +188,14 @@ func TestHTTP_CreatesAPaymentFromABodyThatWritesEveryKey(t *testing.T) {
 		"metadata":    map[string]any{"order": "A-1"},
 		"expires_at":  "2026-09-01T14:00:00Z",
 		"created_at":  "2026-09-01T12:00:00Z",
+		"return_url":  nil,
+	}
+	// The checkout URL is the one thing here not written from the body: a
+	// token derived for the payment. Its own test says what it is.
+	checkoutURL, _ := got["checkout_url"].(string)
+	delete(got, "checkout_url")
+	if !strings.HasPrefix(checkoutURL, "https://pay.example/checkout/") {
+		t.Errorf("checkout_url = %q, want one under the base URL", checkoutURL)
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("body:\n%s\nwant %v", w.Body, want)
@@ -499,8 +508,15 @@ func TestAnnounce_NamesTheStatusAndCarriesWhatReadAnswers(t *testing.T) {
 	if err := json.Unmarshal(e.Payload, &told); err != nil {
 		t.Fatalf("Payload is not a JSON object: %v:\n%s", err, e.Payload)
 	}
-	if asked := decoded(t, read); !reflect.DeepEqual(told, asked) {
-		t.Errorf("Payload:\n%s\nwant what read answered:\n%s", e.Payload, read.Body)
+	// Everything a read answers but the checkout URL, which carries the
+	// page's token and is kept out of what goes to a merchant's server.
+	asked := decoded(t, read)
+	if _, has := asked["checkout_url"]; !has {
+		t.Fatalf("read answered no checkout_url:\n%s", read.Body)
+	}
+	delete(asked, "checkout_url")
+	if _, has := told["checkout_url"]; has || !reflect.DeepEqual(told, asked) {
+		t.Errorf("Payload:\n%s\nwant what read answered, less checkout_url:\n%s", e.Payload, read.Body)
 	}
 }
 
@@ -559,5 +575,74 @@ func TestAnnounce_IsWithinTheEventBoundForAPaymentAtItsOwn(t *testing.T) {
 
 	if err != nil {
 		t.Errorf("Save = %v, want the event taken", err)
+	}
+}
+
+func TestHTTP_AnswersTheSameCheckoutURLOnCreateAndOnRead(t *testing.T) {
+	t.Parallel()
+	f := served(t)
+	w, err := f.create(t, first, strings.NewReader(example))
+	if err != nil || w.Code != http.StatusCreated {
+		t.Fatalf("create answered %d, %v:\n%s", w.Code, err, w.Body)
+	}
+	made := decoded(t, w)
+	id, _ := made["id"].(string)
+
+	read, err := f.read(t, first, id)
+
+	if err != nil || read.Code != http.StatusOK {
+		t.Fatalf("read answered %d, %v:\n%s", read.Code, err, read.Body)
+	}
+	url, _ := made["checkout_url"].(string)
+	if again, _ := decoded(t, read)["checkout_url"].(string); url == "" || again != url {
+		t.Errorf("checkout_url = %q on create and %q on read, want one URL both times", url, again)
+	}
+	token := strings.TrimPrefix(url, "https://pay.example/checkout/")
+	if len(token) != 64 || strings.Contains(token, id) {
+		t.Errorf("checkout_url = %q, want a 64-character token that is not the payment's id", url)
+	}
+}
+
+func TestHTTP_KeepsAReturnURLAndRefusesOneThePageMayNotSendAPayerTo(t *testing.T) {
+	t.Parallel()
+	f := served(t)
+	with := func(returnURL string) string {
+		return `{"asset": "jpyc", "amount": "1000", "return_url": ` + returnURL + `}`
+	}
+	for what, body := range map[string]string{
+		"https":     with(`"https://shop.example/orders/42"`),
+		"localhost": with(`"http://localhost:3000/done"`),
+		"loopback":  with(`"http://127.0.0.1:3000/done"`),
+	} {
+		w, err := f.create(t, first, strings.NewReader(body))
+		if err != nil || w.Code != http.StatusCreated {
+			t.Errorf("%s: create answered %d, %v:\n%s", what, w.Code, err, w.Body)
+			continue
+		}
+		if got := decoded(t, w)["return_url"]; got == nil {
+			t.Errorf("%s: return_url = %v, want the one given back", what, got)
+		}
+	}
+	for what, body := range map[string]string{
+		"http elsewhere":      with(`"http://shop.example/done"`),
+		"javascript":          with(`"javascript:alert(1)"`),
+		"a username":          with(`"https://user:pw@shop.example/done"`),
+		"too long":            with(`"https://shop.example/` + strings.Repeat("p", payment.MaxReturnURLBytes) + `"`),
+		"not a string":        with(`42`),
+		"an unseen character": with(`"https://shop.example/\u200bdone"`),
+	} {
+		w, err := f.create(t, first, strings.NewReader(body))
+		if err != nil || w.Code != http.StatusBadRequest {
+			t.Errorf("%s: create answered %d, %v; want 400", what, w.Code, err)
+			continue
+		}
+		if !strings.Contains(w.Body.String(), `"field":"return_url"`) {
+			t.Errorf("%s: problems = %s, want one naming return_url", what, w.Body)
+		}
+	}
+	// Left out, and the answer says so with null rather than leaving it out.
+	w, _ := f.create(t, first, strings.NewReader(example))
+	if got, has := decoded(t, w)["return_url"]; !has || got != nil {
+		t.Errorf("return_url left out = %v (present %t), want null", got, has)
 	}
 }
