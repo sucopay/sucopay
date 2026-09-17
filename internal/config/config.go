@@ -251,6 +251,23 @@ func (a Assets) Asset(name string) (payment.Asset, bool) {
 	return asset, ok
 }
 
+// EIP712 is the domain an asset's contract signs under: the name and the
+// version the contract was deployed with, which a wallet needs to sign a
+// transfer of the asset and nothing else. A fact about the contract, kept
+// beside the asset in the document rather than in the asset, which is what
+// a payment keeps of a token.
+type EIP712 struct {
+	Name    string
+	Version string
+}
+
+// IsSet says whether the document gave a domain.
+func (d EIP712) IsSet() bool { return d.Name != "" && d.Version != "" }
+
+// Domains are the EIP-712 domains of the assets that have one, keyed by the
+// asset's name as [Assets] is.
+type Domains map[string]EIP712
+
 // Config is the boot-time configuration of one instance. [Resolve] validates a
 // document before it returns one; a Config assembled any other way has not been
 // checked.
@@ -261,6 +278,19 @@ type Config struct {
 	Credentials Credentials
 	Networks    map[string]Network
 	Assets      Assets
+	Domains     Domains
+}
+
+// Domain is the EIP-712 domain of the contract behind asset, if the
+// document gave one under any name for that token.
+func (c Config) Domain(asset payment.Asset) (EIP712, bool) {
+	for name, a := range c.Assets {
+		if a.Same(asset) {
+			d, ok := c.Domains[name]
+			return d, ok && d.IsSet()
+		}
+	}
+	return EIP712{}, false
 }
 
 // Resolved is a Config together with where each of its values came from.

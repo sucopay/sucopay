@@ -67,6 +67,9 @@ assets:
     reference: "0xE7C3D8C9a439feDe00D2600032D5dB0Be71C3c29"
     symbol: JPYC
     decimals: 18
+    eip712:
+      name: JPY Coin
+      version: "1"
 ```
 
 Then, with a database configured:

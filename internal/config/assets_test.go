@@ -325,3 +325,57 @@ func TestReport_ShowsTheFourValuesOfAnAsset(t *testing.T) {
 		}
 	}
 }
+
+// The EIP-712 domain an asset's contract signs under is the document's to
+// give, beside the asset, and is read back by the asset rather than by its
+// name.
+func TestResolve_ReadsAnAssetsDomainAndFindsItByTheAsset(t *testing.T) {
+	t.Parallel()
+	got := mustResolve(t, assetDocument(map[string]any{
+		"eip712": map[string]any{"name": "JPY Coin", "version": "1"},
+	}), noEnv)
+
+	asset, _ := got.Config.Assets.Asset("jpyc")
+	domain, ok := got.Config.Domain(asset)
+
+	if !ok || domain.Name != "JPY Coin" || domain.Version != "1" {
+		t.Errorf("Domain = %+v, %t; want JPY Coin 1", domain, ok)
+	}
+	same, err := payment.NewAsset("local", jpycReference, "Other Name", 18)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d, ok := got.Config.Domain(same); !ok || d.Name != "JPY Coin" {
+		t.Errorf("Domain of the same token under another symbol = %+v, %t; want found", d, ok)
+	}
+	var values = map[string]string{}
+	for _, line := range got.Report() {
+		values[line.Path] = line.Value
+	}
+	if values["assets.jpyc.eip712.name"] != "JPY Coin" || values["assets.jpyc.eip712.version"] != "1" {
+		t.Errorf("report = %v, want the domain under assets.jpyc.eip712", values)
+	}
+}
+
+func TestResolve_LeavesAnAssetWithoutADomainWhenNoneIsGivenAndRefusesHalfOfOne(t *testing.T) {
+	t.Parallel()
+	none := mustResolve(t, assetDocument(nil), noEnv).Config
+	asset, _ := none.Assets.Asset("jpyc")
+	if d, ok := none.Domain(asset); ok {
+		t.Errorf("Domain without one given = %+v, want none", d)
+	}
+	for what, half := range map[string]map[string]any{
+		"name alone":    {"name": "JPY Coin"},
+		"version alone": {"version": "1"},
+	} {
+		t.Run(what, func(t *testing.T) {
+			t.Parallel()
+			_, err := config.Resolve(assetDocument(map[string]any{"eip712": half}), noEnv)
+
+			got := problems(t, err)
+			if len(got) != 1 || !strings.HasPrefix(got[0].Path, "assets.jpyc.eip712.") {
+				t.Errorf("problems = %v, want one under assets.jpyc.eip712", got)
+			}
+		})
+	}
+}

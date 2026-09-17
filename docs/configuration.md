@@ -138,8 +138,11 @@ and the CLI say.
 | `assets.<name>.reference` | What that chain identifies the token by. On `evm`, an address |
 | `assets.<name>.symbol` | What to show a person. It does not identify the asset |
 | `assets.<name>.decimals` | How many places divide one unit into the smallest unit. 0 to 36 |
+| `assets.<name>.eip712.name` | The name the token's contract signs under, which a payer's wallet needs to sign a transfer of it. JPYC's is `JPY Coin`. Given with `version` or not at all |
+| `assets.<name>.eip712.version` | The version beside it. JPYC's is `1` |
 
-All four are required. Two names for one token are refused: a transfer seen on the chain is in
+The first four are required, and `eip712` is what a deployment that runs suco Checkout gives.
+Two names for one token are refused: a transfer seen on the chain is in
 the token, and would have no one name to be recorded under.
 
 A reference is read into the form its chain compares. An EVM chain writes an account in either
@@ -166,6 +169,9 @@ assets:
     reference: "0xE7C3D8C9a439feDe00D2600032D5dB0Be71C3c29"
     symbol: JPYC
     decimals: 18
+    eip712:
+      name: JPY Coin
+      version: "1"
 ```
 
 The network is named `polygon-amoy` and never `polygon` with other values. JPYC sits at the same
@@ -218,4 +224,7 @@ assets:
     reference: "0xE7C3D8C9a439feDe00D2600032D5dB0Be71C3c29"
     symbol: JPYC
     decimals: 18
+    eip712:
+      name: JPY Coin
+      version: "1"
 ```

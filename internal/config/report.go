@@ -76,6 +76,10 @@ func (r Resolved) Report() []ReportLine {
 		values["assets."+name+".reference"] = a.Reference()
 		values["assets."+name+".symbol"] = a.Symbol()
 		values["assets."+name+".decimals"] = strconv.Itoa(int(a.Decimals()))
+		if d, ok := r.Config.Domains[name]; ok {
+			values["assets."+name+".eip712.name"] = d.Name
+			values["assets."+name+".eip712.version"] = d.Version
+		}
 	}
 
 	lines := make([]ReportLine, 0, len(values))

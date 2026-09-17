@@ -73,7 +73,7 @@ func Resolve(doc map[string]any, env Lookup) (Resolved, error) {
 	credentialsKey := r.text("credentials.key", "")
 	credentialsKeyID := r.text("credentials.key_id", "")
 	networks := r.networks()
-	assets := r.assets(networks)
+	assets, domains := r.assets(networks)
 
 	cfg := Config{
 		Listen:      Listen{Host: host, Port: port, BaseURL: baseURL},
@@ -82,6 +82,7 @@ func Resolve(doc map[string]any, env Lookup) (Resolved, error) {
 		Credentials: Credentials{Key: Hidden(credentialsKey), KeyID: credentialsKeyID},
 		Networks:    networks,
 		Assets:      assets,
+		Domains:     domains,
 	}
 	r.validate(cfg)
 	r.reportUnknownKeys()
@@ -460,14 +461,35 @@ func (r *reader) chainID(path string) uint64 {
 	return 0
 }
 
-func (r *reader) assets(networks map[string]Network) Assets {
-	out := Assets{}
+func (r *reader) assets(networks map[string]Network) (Assets, Domains) {
+	out, domains := Assets{}, Domains{}
 	for _, name := range r.section("assets", "asset") {
 		if asset, ok := r.asset("assets."+name, networks); ok {
 			out[name] = asset
 		}
+		if domain, ok := r.domain("assets." + name + ".eip712"); ok {
+			domains[name] = domain
+		}
 	}
-	return out
+	return out, domains
+}
+
+// domain reads the EIP-712 domain an asset's entry gives, if any. Both
+// halves or neither: a name without a version, or the other way round, is
+// a domain a wallet would sign under and a contract would refuse.
+func (r *reader) domain(path string) (EIP712, bool) {
+	domain := EIP712{Name: r.text(path+".name", ""), Version: r.text(path+".version", "")}
+	switch {
+	case r.failed(path+".name") || r.failed(path+".version"):
+	case domain.Name == "" && domain.Version == "":
+	case domain.Name == "":
+		r.fail(path+".name", "required alongside %s.version", path)
+	case domain.Version == "":
+		r.fail(path+".version", "required alongside %s.name", path)
+	default:
+		return domain, true
+	}
+	return EIP712{}, false
 }
 
 // asset reads one entry and returns the token it describes once payment

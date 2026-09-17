@@ -130,9 +130,12 @@ asset は 1 つの network 上の 1 つのトークンです。名前は文書�
 | `assets.<name>.reference` | そのチェーンがトークンを識別する値。`evm` ではアドレス |
 | `assets.<name>.symbol` | 人に見せる語。asset を識別しません |
 | `assets.<name>.decimals` | 1 単位を最小単位へ分ける桁数。0 から 36 |
+| `assets.<name>.eip712.name` | トークンのコントラクトが署名に使う名前。支払者のウォレットが送金に署名するのに要ります。JPYC は `JPY Coin`。`version` と一緒に書くか、どちらも書きません |
+| `assets.<name>.eip712.version` | それと対の版。JPYC は `1` |
 
-4 つとも必須です。1 つのトークンに 2 つの名前は断ります。チェーンで見つかる送金はトークンの
-ものなので、どちらの名前で記録するかが決まりません。
+先の 4 つは必須で、`eip712` は suco Checkout を動かす配備が書きます。1 つのトークンに 2 つの
+名前は断ります。チェーンで見つかる送金はトークンのものなので、どちらの名前で記録するかが
+決まりません。
 
 reference は、そのチェーンが比較する形に読み込みます。EVM のチェーンはアカウントを大文字小文字
 どちらでも書くので、ブロックエクスプローラが見せる大文字混じりの形を、送金が持つ小文字の形と
@@ -158,6 +161,9 @@ assets:
     reference: "0xE7C3D8C9a439feDe00D2600032D5dB0Be71C3c29"
     symbol: JPYC
     decimals: 18
+    eip712:
+      name: JPY Coin
+      version: "1"
 ```
 
 network の名前は `polygon-amoy` で、値だけ変えた `polygon` にはしません。JPYC は Amoy でも
@@ -208,4 +214,7 @@ assets:
     reference: "0xE7C3D8C9a439feDe00D2600032D5dB0Be71C3c29"
     symbol: JPYC
     decimals: 18
+    eip712:
+      name: JPY Coin
+      version: "1"
 ```

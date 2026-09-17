@@ -142,11 +142,13 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 			Store: checkout.NewPostgres(db.Conns()), Payments: store, Service: service,
 			Key: key.Derive(checkout.KeyPurpose), KeyID: cfg.Credentials.KeyID,
 			ChainIDs: chainIDs, Chains: observers, Watched: cursors,
-			// The domain of each asset's contract comes with the document;
-			// until it does, the material carries none, and a wallet refuses
-			// to sign it. That is the next change.
-			Domain: func(payment.Asset) (string, string) { return "", "" },
-			Now:    time.Now,
+			// The domain of an asset's contract is the document's to give;
+			// without it a wallet is handed material it will not sign.
+			Domain: func(asset payment.Asset) (string, string) {
+				d, _ := cfg.Domain(asset)
+				return d.Name, d.Version
+			},
+			Now: time.Now,
 		})
 
 		// One for the deployment, under the same leases: a delivery is sent
