@@ -1,6 +1,7 @@
 package payment_test
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -975,5 +976,70 @@ func TestRecord_KeepsWhatPaidAPaymentThatIsAlreadyPaid(t *testing.T) {
 	}
 	if got := back.Received(); !got.IsSet() {
 		t.Errorf("received = %v, want what paid it to still be there", got)
+	}
+}
+
+// A merchant waiting for money is told when some is seen, ahead of
+// finality, with what they can check against a node of their own.
+func TestRecord_AnnouncesAConfirmingAttemptWithItsTransfer(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	hit := spent(t, s, first)
+
+	if err := recording(t, s, pool, 100, 100, true, seenAt(hit, "tx1", 100, payment.Matched)); err != nil {
+		t.Fatal(err)
+	}
+
+	var events []string
+	var payload []byte
+	rows, err := pool.Query(t.Context(), `select event, payload from outbox where payment_id = $1 order by id`, hit.Payment.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var event string
+		if err := rows.Scan(&event, &payload); err != nil {
+			t.Fatal(err)
+		}
+		events = append(events, event)
+	}
+	rows.Close()
+	if len(events) == 0 || events[len(events)-1] != "attempt.confirming" {
+		t.Fatalf("events = %v, want attempt.confirming last", events)
+	}
+	var body struct {
+		ID       payment.ID `json:"id"`
+		Status   string     `json:"status"`
+		Received *string    `json:"received"`
+		Transfer struct {
+			Tx          string `json:"tx"`
+			BlockHeight uint64 `json:"block_height"`
+			BlockHash   string `json:"block_hash"`
+			From        string `json:"from"`
+			Value       string `json:"value"`
+		} `json:"transfer"`
+	}
+	if err := json.Unmarshal(payload, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.ID != hit.Payment.ID() || body.Status == "" {
+		t.Errorf("payload = %s, want the payment as a read answers", payload)
+	}
+	// As a read after the round answers: with what arrived, not the payment
+	// as it stood before.
+	if body.Received == nil || *body.Received != hit.Payment.Amount().Units() {
+		t.Errorf("received = %v, want %s, what the transfer carried", body.Received, hit.Payment.Amount().Units())
+	}
+	tr := body.Transfer
+	if tr.Tx != "tx1" || tr.BlockHeight != 100 || tr.BlockHash != "blocktx1" || tr.From != theSigner || tr.Value != hit.Payment.Amount().Amount().String() {
+		t.Errorf("transfer = %+v, want the one seen", tr)
+	}
+	// A second sight of the same transfer confirms nothing again, and
+	// announces nothing again.
+	if err := recording(t, s, pool, 101, 101, true, seenAt(hit, "tx1", 100, payment.Matched)); err != nil {
+		t.Fatal(err)
+	}
+	if again := eventsFor(t, pool, first, hit.Payment.ID()); len(again) != len(events) {
+		t.Errorf("events after a second sight = %v, want no more than %v", again, events)
 	}
 }

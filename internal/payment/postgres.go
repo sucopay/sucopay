@@ -151,27 +151,8 @@ func (s *Postgres) Save(ctx context.Context, account AccountID, p *Payment, at R
 	// name with no body fails the insert with whatever the driver makes of an
 	// empty value, taking a change that was fine down with it. Both are the
 	// caller's mistake, and both are named as one here.
-	if e.Produced() != (len(e.Payload) > 0) {
-		return fmt.Errorf("payment %s: an event was given %s", p.ID(), half(e))
-	}
-	if len(e.Name) > MaxEventNameBytes {
-		return fmt.Errorf("payment %s: an event's name is %d bytes, at most %d",
-			p.ID(), len(e.Name), MaxEventNameBytes)
-	}
-	if len(e.Payload) > MaxEventBytes {
-		return fmt.Errorf("payment %s: an event's body is %d bytes, at most %d",
-			p.ID(), len(e.Payload), MaxEventBytes)
-	}
-	// The column takes JSON, so a body that is not JSON fails the insert and
-	// takes a change that was fine down with it. What a caller handed over is
-	// the caller's mistake and is named as one, rather than reaching the
-	// database as whatever the driver makes of it.
-	//
-	// Asked of an event that produced one, because no body is not JSON either
-	// and a change that produced nothing would be refused for a body it never
-	// gave. The check above is what leaves those two the only cases.
-	if e.Produced() && !json.Valid(e.Payload) {
-		return fmt.Errorf("payment %s: an event's body is not JSON", p.ID())
+	if err := checkEvent(p.ID(), e); err != nil {
+		return err
 	}
 	// Two zero values pass this, because an empty identifier equals an empty
 	// identifier. The where clause below is what refuses them: no row carries
@@ -194,15 +175,56 @@ func (s *Postgres) Save(ctx context.Context, account AccountID, p *Payment, at R
 	// After the update and inside the same transaction: a row here describes a
 	// change, and the change is refused above when the revision had moved.
 	if e.Produced() {
-		if _, err := tx.Exec(ctx, `
-			insert into outbox (account_id, payment_id, event, payload)
-			values ($1, $2, $3, $4)`,
-			account, p.ID(), e.Name, e.Payload); err != nil {
-			return fmt.Errorf("payment %s: %w", p.ID(), err)
+		if err := writeOutbox(ctx, tx, account, p.ID(), e); err != nil {
+			return err
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("payment %s: %w", p.ID(), err)
+	}
+	return nil
+}
+
+// checkEvent refuses an event that is not one the outbox may hold, before
+// anything of the change it came with is written.
+func checkEvent(id ID, e Event) error {
+	if e.Produced() != (len(e.Payload) > 0) {
+		return fmt.Errorf("payment %s: an event was given %s", id, half(e))
+	}
+	if len(e.Name) > MaxEventNameBytes {
+		return fmt.Errorf("payment %s: an event's name is %d bytes, at most %d",
+			id, len(e.Name), MaxEventNameBytes)
+	}
+	if len(e.Payload) > MaxEventBytes {
+		return fmt.Errorf("payment %s: an event's body is %d bytes, at most %d",
+			id, len(e.Payload), MaxEventBytes)
+	}
+	// The column takes JSON, so a body that is not JSON fails the insert and
+	// takes a change that was fine down with it. What a caller handed over is
+	// the caller's mistake and is named as one, rather than reaching the
+	// database as whatever the driver makes of it.
+	//
+	// Asked of an event that produced one, because no body is not JSON either
+	// and a change that produced nothing would be refused for a body it never
+	// gave. The check above is what leaves those two the only cases.
+	if e.Produced() && !json.Valid(e.Payload) {
+		return fmt.Errorf("payment %s: an event's body is not JSON", id)
+	}
+	return nil
+}
+
+// writeOutbox puts one event a payment produced where whatever delivers
+// events reads them, inside the transaction that made the change. The one
+// place the outbox is written, so that every row passed [checkEvent].
+func writeOutbox(ctx context.Context, q queries, account AccountID, id ID, e Event) error {
+	if err := checkEvent(id, e); err != nil {
+		return err
+	}
+	if _, err := q.Exec(ctx, `
+		insert into outbox (account_id, payment_id, event, payload)
+		values ($1, $2, $3, $4)`,
+		account, id, e.Name, e.Payload); err != nil {
+		return fmt.Errorf("payment %s: %w", id, err)
 	}
 	return nil
 }
@@ -796,6 +818,8 @@ func scanDue(rows pgx.Rows, network Network) ([]Due, error) {
 //
 // The attempts move with their rows: matched confirms one, and a row that
 // vanished takes one back to issued unless another transfer still matches it.
+// An attempt confirmed here is announced, as attempt.confirming, with the
+// transfer that confirmed it.
 //
 // The payments move with them too. What a transfer carried is put on the
 // payment it was for, and taken back when the transfer is no longer on the
@@ -833,6 +857,22 @@ func (s *Postgres) Record(ctx context.Context, tx pgx.Tx, network Network, first
 			continue
 		}
 		if err := saveAttempt(ctx, tx, one.Account, one.Attempt, one.AttemptAt); err != nil {
+			return err
+		}
+		// The one event written outside Save: the payment does not move
+		// here, its attempt does, and a merchant waiting for money is told
+		// that some was seen. The payment is read again inside the
+		// transaction, as arrived reads it, so that the event carries what
+		// arrived rather than the payment as it stood before the round.
+		p, _, err := find(ctx, tx, one.Account, one.Payment.ID())
+		if err != nil {
+			return err
+		}
+		event, err := AnnounceConfirming(p, one.Transfer)
+		if err != nil {
+			return err
+		}
+		if err := writeOutbox(ctx, tx, one.Account, p.ID(), event); err != nil {
 			return err
 		}
 	}

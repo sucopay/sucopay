@@ -235,6 +235,32 @@ func (h *HTTP) Delete(w http.ResponseWriter, r *http.Request, account payment.Ac
 	return nil
 }
 
+// Test makes one delivery of endpoint.test to one endpoint of account, and
+// answers that it is on its way, with the delivery's id. Whether it arrived
+// is what the delivery's attempts say, once the worker has sent it.
+func (h *HTTP) Test(w http.ResponseWriter, r *http.Request, account payment.AccountID) error {
+	id, err := ParseID(r.PathValue("id"))
+	if err != nil {
+		notFound(w)
+		return nil
+	}
+	delivery, err := h.store.Test(r.Context(), account, id, h.now())
+	if errors.Is(err, ErrNotFound) {
+		notFound(w)
+		return nil
+	}
+	if errors.Is(err, ErrDisabled) {
+		problem.Refuse(w, http.StatusBadRequest, "invalid", []problem.Field{{
+			Field: "enabled", Message: "the endpoint is disabled, and receives nothing until it is enabled"}})
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	problem.JSON(w, http.StatusAccepted, map[string]string{"delivery": delivery.String()})
+	return nil
+}
+
 // find reads the endpoint the path names, answering for the ones it cannot.
 func (h *HTTP) find(w http.ResponseWriter, r *http.Request, account payment.AccountID) (Endpoint, bool, error) {
 	id, err := ParseID(r.PathValue("id"))

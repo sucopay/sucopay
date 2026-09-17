@@ -108,3 +108,7 @@ var ErrNotFound = errors.New("webhook: not found")
 // ErrTooMany is a registration that would take an account past
 // [MaxEndpoints].
 var ErrTooMany = errors.New("webhook: too many endpoints")
+
+// ErrDisabled is a delivery asked of an endpoint that is disabled, which
+// receives nothing until it is enabled again.
+var ErrDisabled = errors.New("webhook: endpoint is disabled")

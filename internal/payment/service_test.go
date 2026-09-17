@@ -512,3 +512,23 @@ func TestService_IssuesNothingAgainstAnotherAccountsPayment(t *testing.T) {
 		t.Errorf("a key was issued to another account's caller: %v, %v", live, err)
 	}
 }
+
+// A payment becoming payable is told to the merchant, although the move was
+// asked for by somebody else, the operator's command today: it is the
+// moment the merchant starts waiting for money.
+func TestService_AwaitAnnouncesThePaymentAsAwaitingPayment(t *testing.T) {
+	t.Parallel()
+	svc, _, pool := serving(t)
+	opened, err := svc.Open(t.Context(), first, request(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.Await(t.Context(), first, opened.ID()); err != nil {
+		t.Fatal(err)
+	}
+
+	if events := eventsFor(t, pool, first, opened.ID()); len(events) != 1 || events[0] != "payment.awaiting_payment" {
+		t.Errorf("events = %v, want payment.awaiting_payment alone", events)
+	}
+}

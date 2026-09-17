@@ -609,3 +609,37 @@ func (s *Postgres) Sweep(ctx context.Context, before time.Time, limit int) (int,
 	}
 	return int(tag.RowsAffected()), tx.Commit(ctx)
 }
+
+// Test makes one delivery of endpoint.test to one endpoint of one account,
+// due at once, and answers with its id. Not through the outbox: the event
+// is about no payment, and the outbox is a payment's. A disabled endpoint
+// is refused, as the outbox's events pass it by.
+func (s *Postgres) Test(ctx context.Context, account payment.AccountID, id ID, now time.Time) (ID, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	e, err := s.Get(ctx, account, id)
+	if err != nil {
+		return "", err
+	}
+	if !e.Enabled {
+		return "", ErrDisabled
+	}
+	body, err := Envelope("endpoint.test", now, account, json.RawMessage("{}"))
+	if err != nil {
+		return "", err
+	}
+	delivery, err := NewID()
+	if err != nil {
+		return "", err
+	}
+	if _, err := s.pool.Exec(ctx, `
+		insert into webhook_deliveries
+			(id, endpoint_id, account_id, payment_id, type, occurred_at, payload,
+			 state, attempts, next_at, created_at)
+		values ($1, $2, $3, null, 'endpoint.test', $4, $5, $6, 0, $4, $4)`,
+		delivery, id, account, now, body, Pending); err != nil {
+		return "", fmt.Errorf("endpoint %s: %w", id, err)
+	}
+	return delivery, nil
+}

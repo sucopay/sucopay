@@ -174,3 +174,36 @@ func TestWorker_RoundSendsToAQuickReceiverWhileASlowOneIsStillAnswering(t *testi
 		t.Errorf("attempts at %v, want the quick receiver's written before the slow one answered", at)
 	}
 }
+
+// endpoint.test goes the way every event goes: made due at once, sent in
+// the next round, and signed like the rest.
+func TestWorker_RoundDeliversAnEndpointTest(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	rc := listening(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	e, secret := created(t, s, first, rc.url("example.com"))
+	if _, err := pool.Exec(t.Context(), `update webhook_endpoints set allowed = '{127.0.0.1/32}' where id = $1`, e.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Test(t.Context(), first, e.ID, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
+	w := webhook.NewWorker(s, sending(rc), observe.NewLeases(pool), quiet, time.Now)
+
+	if err := w.Round(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	got := rc.received()
+	if len(got) != 1 || !strings.Contains(string(rc.bodies[0]), "endpoint.test") {
+		t.Fatalf("the receiver got %d requests, want one endpoint.test", len(got))
+	}
+	r := got[0]
+	if !verify(secret, r.Header.Get("webhook-id"), r.Header.Get("webhook-timestamp"), r.Header.Get("webhook-signature"), rc.bodies[0]) {
+		t.Error("the receiver does not verify the test delivery")
+	}
+	if d := deliveries(t, pool); len(d) != 1 || d[0].State != webhook.Delivered {
+		t.Errorf("deliveries = %+v, want the one delivered", d)
+	}
+}

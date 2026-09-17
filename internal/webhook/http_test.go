@@ -250,3 +250,53 @@ func TestHTTP_RotateShowsANewSecretAndDeleteAnswersNoContent(t *testing.T) {
 		t.Errorf("List after Delete = %s, want none", rec.Body)
 	}
 }
+
+func TestHTTP_TestMakesOneDeliveryOfEndpointTestAndAnswersThatItIsOnItsWay(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	h := webhook.NewHTTP(s, answering{"93.184.216.34"}, func() time.Time { return now })
+	id, _ := registered(t, h, first)["id"].(string)
+
+	rec := answered(t, h.Test, http.MethodPost, "/webhook_endpoints/"+id+"/test", "", first)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("Test = %d %s, want 202", rec.Code, rec.Body)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	var (
+		endpoint, typ, state string
+		paymentID            *string
+		payload              []byte
+	)
+	if err := pool.QueryRow(t.Context(), `select endpoint_id, type, state, payment_id, payload from webhook_deliveries where id = $1`, body["delivery"]).
+		Scan(&endpoint, &typ, &state, &paymentID, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if endpoint != id || typ != "endpoint.test" || state != webhook.Pending || paymentID != nil {
+		t.Errorf("delivery = %s %s %s %v, want a pending endpoint.test to the endpoint about no payment", endpoint, typ, state, paymentID)
+	}
+	var envelope struct {
+		Type    string          `json:"type"`
+		Account string          `json:"account"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &envelope); err != nil || envelope.Type != "endpoint.test" || envelope.Account != string(first) || string(envelope.Data) != "{}" {
+		t.Errorf("payload = %s, %v; want endpoint.test for the account with empty data", payload, err)
+	}
+	if rec := answered(t, h.Test, http.MethodPost, "/webhook_endpoints/"+id+"/test", "", other); rec.Code != http.StatusNotFound {
+		t.Errorf("another account's Test = %d, want 404", rec.Code)
+	}
+	if rec := answered(t, h.Update, http.MethodPatch, "/webhook_endpoints/"+id, `{"enabled":false}`, first); rec.Code != http.StatusOK {
+		t.Fatalf("Update = %d %s", rec.Code, rec.Body)
+	}
+	rec = answered(t, h.Test, http.MethodPost, "/webhook_endpoints/"+id+"/test", "", first)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("a disabled endpoint's Test = %d %s, want 400", rec.Code, rec.Body)
+	}
+	if _, named := problems(t, rec)["enabled"]; !named {
+		t.Errorf("problems = %s, want one naming enabled", rec.Body)
+	}
+}

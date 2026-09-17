@@ -331,12 +331,28 @@ type event struct {
 	Payload string
 }
 
-// events are the outbox rows of a payment, in the order they were written.
+// events are the outbox rows a payment's moves wrote, in the order they
+// were written. What its attempts wrote, which is a transfer being seen, is
+// [decider.sightings]: the tests here are about what a round settles, and
+// a sighting comes with the transfer that is then settled.
 func (d *decider) events(t *testing.T, account payment.AccountID, p *payment.Payment) []event {
 	t.Helper()
+	return d.outbox(t, account, p, "payment.%")
+}
+
+// sightings are the outbox rows written when a transfer for the payment was
+// seen, ahead of what it settled.
+func (d *decider) sightings(t *testing.T, account payment.AccountID, p *payment.Payment) []event {
+	t.Helper()
+	return d.outbox(t, account, p, "attempt.%")
+}
+
+func (d *decider) outbox(t *testing.T, account payment.AccountID, p *payment.Payment, like string) []event {
+	t.Helper()
 	rows, err := d.pool.Query(t.Context(),
-		`select event, payload from outbox where account_id = $1 and payment_id = $2 order by id`,
-		account, p.ID())
+		`select event, payload from outbox
+		  where account_id = $1 and payment_id = $2 and event like $3 order by id`,
+		account, p.ID(), like)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,6 +384,11 @@ func TestRound_PaysAPaymentWhoseTransferTheEndpointCallsFinal(t *testing.T) {
 	events := d.events(t, held, d.payment)
 	if len(events) != 1 || events[0].Name != "payment.succeeded" {
 		t.Fatalf("the outbox holds %+v, want one payment.succeeded", events)
+	}
+	// The sighting came first, with the transfer beside the payment.
+	if seen := d.sightings(t, held, d.payment); len(seen) != 1 || seen[0].Name != "attempt.confirming" ||
+		!strings.Contains(seen[0].Payload, `"tx": "tx1"`) {
+		t.Errorf("the outbox holds %+v of sightings, want one attempt.confirming carrying tx1", seen)
 	}
 	var told map[string]any
 	if err := json.Unmarshal([]byte(events[0].Payload), &told); err != nil {

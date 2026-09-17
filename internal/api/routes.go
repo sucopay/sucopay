@@ -51,5 +51,6 @@ func routes(log *slog.Logger, deps Dependencies) []route {
 		{pattern: "PATCH /webhook_endpoints/{id}", needs: write, handle: forAccount(log, deps.Webhooks, Webhooks.Update)},
 		{pattern: "POST /webhook_endpoints/{id}/secret", needs: write, handle: forAccount(log, deps.Webhooks, Webhooks.Rotate)},
 		{pattern: "DELETE /webhook_endpoints/{id}", needs: write, handle: forAccount(log, deps.Webhooks, Webhooks.Delete)},
+		{pattern: "POST /webhook_endpoints/{id}/test", needs: write, handle: forAccount(log, deps.Webhooks, Webhooks.Test)},
 	}
 }

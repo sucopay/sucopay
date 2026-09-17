@@ -375,6 +375,32 @@ func bodyJSON(p *Payment) paymentJSON {
 	}
 }
 
+// transferJSON is a transfer as an event carries it: what a merchant can
+// check against a node of their own, and nothing that says it is final.
+type transferJSON struct {
+	Tx          string `json:"tx"`
+	BlockHeight uint64 `json:"block_height"`
+	BlockHash   string `json:"block_hash"`
+	From        string `json:"from"`
+	Value       string `json:"value"`
+}
+
+// AnnounceConfirming is the event a payment produces when a transfer for it
+// is seen, ahead of finality: the payment as a read of it would answer,
+// with the transfer beside it.
+func AnnounceConfirming(p *Payment, t Transfer) (Event, error) {
+	var payload bytes.Buffer
+	writer := json.NewEncoder(&payload)
+	writer.SetEscapeHTML(false)
+	if err := writer.Encode(struct {
+		paymentJSON
+		Transfer transferJSON `json:"transfer"`
+	}{bodyJSON(p), transferJSON{Tx: t.Tx, BlockHeight: t.BlockHeight, BlockHash: t.BlockHash, From: t.From, Value: t.Value}}); err != nil {
+		return Event{}, fmt.Errorf("payment %s: %w", p.ID(), err)
+	}
+	return Event{Name: "attempt.confirming", Payload: bytes.TrimRight(payload.Bytes(), "\n")}, nil
+}
+
 // Announce is the event a payment produces on reaching the status it is in,
 // carrying the payment as a read of it would answer. What a merchant is told
 // and what a merchant can ask for are then the same thing.
