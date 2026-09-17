@@ -105,8 +105,8 @@ Payment を 2 回作ると、Payment が 2 つできます。冪等性キーは�
 ## Webhook の宛先
 
 payment が変わったことを加盟店のサーバーに知らせる先です。宛先の登録、一覧、変更、秘密の
-更新、削除、試験の送信と、届けたものの確認は `/webhook_endpoints` の下の経路で、どれも資格
-情報が指す account のものです。何を送るか、どう署名するか、受け取り側が何をするかは
+更新、削除、試験の送信と、届けたものの確認と再送は `/webhook_endpoints` の下の経路で、どれも
+資格情報が指す account のものです。何を送るか、どう署名するか、受け取り側が何をするかは
 [webhooks.ja.md](webhooks.ja.md) にあります。
 
 | 経路 | 資格情報 | |
@@ -119,6 +119,7 @@ payment が変わったことを加盟店のサーバーに知らせる先です
 | `DELETE /webhook_endpoints/{id}` | read-write | 消す |
 | `POST /webhook_endpoints/{id}/test` | read-write | `endpoint.test` を 1 つ送る |
 | `GET /webhook_endpoints/{id}/deliveries` | read-only | 新しい順に 100 件の配送と試行 |
+| `POST /webhook_endpoints/{id}/deliveries/{delivery}/resend` | read-write | もう 1 度送る |
 
 他 account の宛先、無い宛先、形を成さない識別子は、payment の経路と同じく `404` です。
 

@@ -18,6 +18,7 @@ type Webhooks interface {
 	Delete(w http.ResponseWriter, r *http.Request, account payment.AccountID) error
 	Test(w http.ResponseWriter, r *http.Request, account payment.AccountID) error
 	Deliveries(w http.ResponseWriter, r *http.Request, account payment.AccountID) error
+	Resend(w http.ResponseWriter, r *http.Request, account payment.AccountID) error
 }
 
 // Delivering is what the deployment's webhook deliveries have come to, in

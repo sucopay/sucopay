@@ -53,5 +53,6 @@ func routes(log *slog.Logger, deps Dependencies) []route {
 		{pattern: "DELETE /webhook_endpoints/{id}", needs: write, handle: forAccount(log, deps.Webhooks, Webhooks.Delete)},
 		{pattern: "POST /webhook_endpoints/{id}/test", needs: write, handle: forAccount(log, deps.Webhooks, Webhooks.Test)},
 		{pattern: "GET /webhook_endpoints/{id}/deliveries", needs: read, handle: forAccount(log, deps.Webhooks, Webhooks.Deliveries)},
+		{pattern: "POST /webhook_endpoints/{id}/deliveries/{delivery}/resend", needs: write, handle: forAccount(log, deps.Webhooks, Webhooks.Resend)},
 	}
 }

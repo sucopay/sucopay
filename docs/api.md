@@ -108,8 +108,9 @@ answered `404`, with one body. The answer says nothing about what exists.
 ## Webhook endpoints
 
 Where suco tells your server that a payment changed. Registering, listing, changing, rotating
-the secret of, deleting and testing an endpoint, and reading what was delivered to it, are the
-routes under `/webhook_endpoints`, all for the account the credential names. What is sent, how
+the secret of, deleting and testing an endpoint, reading what was delivered to it and sending
+one of those again, are the routes under `/webhook_endpoints`, all for the account the
+credential names. What is sent, how
 it is signed and what a receiver does with it is in [webhooks.md](webhooks.md).
 
 | Route | Credential | |
@@ -122,6 +123,7 @@ it is signed and what a receiver does with it is in [webhooks.md](webhooks.md).
 | `DELETE /webhook_endpoints/{id}` | read-write | Remove it |
 | `POST /webhook_endpoints/{id}/test` | read-write | Send one `endpoint.test` |
 | `GET /webhook_endpoints/{id}/deliveries` | read-only | The newest 100 deliveries and their attempts |
+| `POST /webhook_endpoints/{id}/deliveries/{delivery}/resend` | read-write | Send one again |
 
 An endpoint of another account, none, and an identifier of no shape are answered `404`, as a
 payment's route answers them.

@@ -81,8 +81,9 @@ POST /webhook_endpoints
 | `PATCH /webhook_endpoints/{id}` | read-write | `url`、`description`、`events`、`enabled` を変える |
 | `POST /webhook_endpoints/{id}/secret` | read-write | 秘密を更新する。古い秘密はあと 24 時間検証に通る |
 | `DELETE /webhook_endpoints/{id}` | read-write | 消す。待っていた配送は failed になる |
-| `POST /webhook_endpoints/{id}/test` | read-write | `endpoint.test` を 1 つ送る。`202` で配送の id を返す |
+| `POST /webhook_endpoints/{id}/test` | read-write | `endpoint.test` を 1 つ送る。`202` で配送の id を返す。前の test が pending の間は次を断る |
 | `GET /webhook_endpoints/{id}/deliveries` | read-only | 新しい順に 100 件の配送と、それぞれの全部の試行 |
+| `POST /webhook_endpoints/{id}/deliveries/{delivery}/resend` | read-write | delivered か failed の配送をもう 1 度送る。`202` |
 
 無効にした宛先（`"enabled": false`）には何も届かず、配送も作られません。待っていた配送は
 そのまま待ち、有効に戻すと送られます。
@@ -128,6 +129,14 @@ delivered か failed になるまで待ちます。別の payment の配送は�
 検査に通らなくなった `destination`、配備が署名に使う秘密を読めなくなった `secret` です。
 `response` は受け取り側が返した本文の先頭 256 バイトです。delivered と failed の配送は 30 日
 残ります。
+
+## 手での再送
+
+`POST /webhook_endpoints/{id}/deliveries/{delivery}/resend` は、delivered か failed の配送を
+もう 1 度送ります。同じ `webhook-id` で、新しい `webhook-timestamp` と署名を付け、試行の数は
+続きから数えます。落ちていた受け取り側が戻ったときや、`2xx` を返した後に受け取ったものを
+失ったときのためです。見た id を覚えている受け取り側は、受け取り済みの配送の再送を捨てます。
+pending の配送の再送は断ります。すでに送る途中だからです。
 
 ## 運用者が配備の鍵を入れ替えたとき
 

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sucopay/sucopay/internal/payment"
 	"github.com/sucopay/sucopay/internal/webhook"
@@ -490,5 +491,124 @@ func TestStand_CountsPendingAndFailedByAccountAndSecretsSealedElsewhere(t *testi
 	}
 	if standing.SealedElsewhere != 1 {
 		t.Errorf("sealed elsewhere = %d, want the one under k0", standing.SealedElsewhere)
+	}
+}
+
+func TestTest_AllowsOnePendingTestPerEndpointAndNoneToAnEndpointThatIsGone(t *testing.T) {
+	t.Parallel()
+	s, _ := store(t)
+	e, _ := created(t, s, first, "https://hooks.example/in")
+
+	id, err := s.Test(t.Context(), first, e.ID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Test(t.Context(), first, e.ID, now); !errors.Is(err, webhook.ErrPending) {
+		t.Errorf("a second test while the first is pending = %v, want ErrPending", err)
+	}
+	// Delivered, and a test may be made again.
+	if err := s.Attempted(t.Context(), webhook.Delivery{ID: id, Endpoint: e.ID}, webhook.Outcome{Status: 200}, now, func() float64 { return 0 }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Test(t.Context(), first, e.ID, now); err != nil {
+		t.Errorf("a test after the last was delivered = %v, want none", err)
+	}
+	if err := s.Delete(t.Context(), first, e.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Test(t.Context(), first, e.ID, now); !errors.Is(err, webhook.ErrNotFound) {
+		t.Errorf("a test to a deleted endpoint = %v, want ErrNotFound", err)
+	}
+}
+
+// Two tests at once each find none pending. The schema holds the one that
+// the statement's own check cannot: a second pending test row is refused
+// whoever writes it, and a caller is answered as it would be had it seen
+// the first.
+func TestSchema_HoldsOnePendingTestPerEndpoint(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	e, _ := created(t, s, first, "https://hooks.example/in")
+	if _, err := s.Test(t.Context(), first, e.ID, now); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := pool.Exec(t.Context(), `
+		insert into webhook_deliveries
+			(id, endpoint_id, account_id, payment_id, type, occurred_at, payload, state, next_at, created_at)
+		values ($1, $2, $3, null, 'endpoint.test', $4, '{}', 'pending', $4, $4)`,
+		strings.Repeat("a", 32), e.ID, first, now)
+
+	var refused *pgconn.PgError
+	if !errors.As(err, &refused) || refused.Code != "23505" {
+		t.Errorf("a second pending test was written: %v", err)
+	}
+	// A delivered one is no longer in the way.
+	if _, err := pool.Exec(t.Context(), `update webhook_deliveries set state = 'delivered', next_at = null where endpoint_id = $1`, e.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Test(t.Context(), first, e.ID, now); err != nil {
+		t.Errorf("a test after the last was delivered = %v, want none", err)
+	}
+}
+
+func TestResend_FindsNothingOfADeletedEndpoint(t *testing.T) {
+	t.Parallel()
+	s, _ := store(t)
+	e, _ := created(t, s, first, "https://hooks.example/in")
+	id, err := s.Test(t.Context(), first, e.ID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Attempted(t.Context(), webhook.Delivery{ID: id, Endpoint: e.ID}, webhook.Outcome{Status: 200}, now, func() float64 { return 0 }); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete(t.Context(), first, e.ID, now); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Resend(t.Context(), first, e.ID, id, now); !errors.Is(err, webhook.ErrNotFound) {
+		t.Errorf("a resend to a deleted endpoint = %v, want ErrNotFound", err)
+	}
+}
+
+func TestResend_PutsADeliveredOrFailedDeliveryBackOnItsWayUnderTheSameID(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	e, _ := created(t, s, first, "https://hooks.example/in")
+	paid(t, pool, first, p1, "payment.succeeded")
+	if _, err := s.Expand(t.Context(), now, 1); err != nil {
+		t.Fatal(err)
+	}
+	due, err := s.Due(t.Context(), now, 1, 1)
+	if err != nil || len(due) != 1 {
+		t.Fatal(err)
+	}
+	d := due[0].Delivery
+
+	if err := s.Resend(t.Context(), first, e.ID, d.ID, now); !errors.Is(err, webhook.ErrPending) {
+		t.Errorf("a resend of a pending delivery = %v, want ErrPending", err)
+	}
+	if err := s.Attempted(t.Context(), d, webhook.Outcome{Status: 200}, now, func() float64 { return 0 }); err != nil {
+		t.Fatal(err)
+	}
+	later := now.Add(time.Hour)
+	// Delivered, and still nobody else's to resend.
+	for what, err := range map[string]error{
+		"another account":  s.Resend(t.Context(), other, e.ID, d.ID, later),
+		"another endpoint": s.Resend(t.Context(), first, webhook.ID(strings.Repeat("e", 32)), d.ID, later),
+		"no such delivery": s.Resend(t.Context(), first, e.ID, webhook.ID(strings.Repeat("f", 32)), later),
+	} {
+		if !errors.Is(err, webhook.ErrNotFound) {
+			t.Errorf("%s = %v, want ErrNotFound", what, err)
+		}
+	}
+	if err := s.Resend(t.Context(), first, e.ID, d.ID, later); err != nil {
+		t.Fatal(err)
+	}
+
+	again, err := s.Due(t.Context(), later, 1, 1)
+	if err != nil || len(again) != 1 || again[0].Delivery.ID != d.ID || again[0].Delivery.Attempts != 1 || !again[0].Delivery.NextAt.Equal(later) {
+		t.Errorf("Due after the resend = %+v, %v; want the same delivery, due now, its attempts kept", again, err)
 	}
 }

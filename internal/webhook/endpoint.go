@@ -112,3 +112,8 @@ var ErrTooMany = errors.New("webhook: too many endpoints")
 // ErrDisabled is a delivery asked of an endpoint that is disabled, which
 // receives nothing until it is enabled again.
 var ErrDisabled = errors.New("webhook: endpoint is disabled")
+
+// ErrPending is a delivery asked for while one like it is still on its
+// way: a test while the last test is pending, or a resend of a delivery
+// that has not been delivered or failed yet.
+var ErrPending = errors.New("webhook: delivery is pending")

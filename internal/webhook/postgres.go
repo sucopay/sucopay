@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sucopay/sucopay/internal/payment"
@@ -21,6 +22,12 @@ const KeyPurpose = "suco webhook secret"
 
 // storeTimeout bounds one call to the database.
 const storeTimeout = 5 * time.Second
+
+// uniqueViolation is the SQLSTATE the database answers an insert the schema
+// refuses as a duplicate with. Written here rather than taken from a
+// module, since the one that names it is not among what this project
+// depends on.
+const uniqueViolation = "23505"
 
 // Postgres keeps endpoints in the database, their secrets sealed.
 //
@@ -613,18 +620,20 @@ func (s *Postgres) Sweep(ctx context.Context, before time.Time, limit int) (int,
 // Test makes one delivery of endpoint.test to one endpoint of one account,
 // due at once, and answers with its id. Not through the outbox: the event
 // is about no payment, and the outbox is a payment's. A disabled endpoint
-// is refused, as the outbox's events pass it by.
+// is refused, as the outbox's events pass it by; and so is a second test
+// while the last is still pending, since one says what a second would and
+// a test is the one delivery a caller can make at will.
+//
+// One statement: the endpoint is read and the row written in the same
+// snapshot, so that a delete or a disable that lands between them cannot
+// leave a delivery to an endpoint nothing will send to. The one pending
+// test is the schema's to hold, since two of these at once would each
+// find none pending: the unique index refuses the second, and that is
+// answered as pending too.
 func (s *Postgres) Test(ctx context.Context, account payment.AccountID, id ID, now time.Time) (ID, error) {
 	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
 	defer cancel()
 
-	e, err := s.Get(ctx, account, id)
-	if err != nil {
-		return "", err
-	}
-	if !e.Enabled {
-		return "", ErrDisabled
-	}
 	body, err := Envelope("endpoint.test", now, account, json.RawMessage("{}"))
 	if err != nil {
 		return "", err
@@ -633,15 +642,39 @@ func (s *Postgres) Test(ctx context.Context, account payment.AccountID, id ID, n
 	if err != nil {
 		return "", err
 	}
-	if _, err := s.pool.Exec(ctx, `
+	tag, err := s.pool.Exec(ctx, `
 		insert into webhook_deliveries
 			(id, endpoint_id, account_id, payment_id, type, occurred_at, payload,
 			 state, attempts, next_at, created_at)
-		values ($1, $2, $3, null, 'endpoint.test', $4, $5, $6, 0, $4, $4)`,
-		delivery, id, account, now, body, Pending); err != nil {
+		select $1, e.id, e.account_id, null, 'endpoint.test', $4, $5, $6, 0, $4, $4
+		  from webhook_endpoints e
+		 where e.id = $2 and e.account_id = $3 and e.deleted_at is null and e.enabled
+		   and not exists (
+		         select 1 from webhook_deliveries d
+		          where d.endpoint_id = e.id and d.type = 'endpoint.test' and d.state = $6)`,
+		delivery, id, account, now, body, Pending)
+	var refused *pgconn.PgError
+	if errors.As(err, &refused) && refused.Code == uniqueViolation {
+		return "", ErrPending
+	}
+	if err != nil {
 		return "", fmt.Errorf("endpoint %s: %w", id, err)
 	}
-	return delivery, nil
+	if tag.RowsAffected() == 1 {
+		return delivery, nil
+	}
+	// Nothing was written, and which of the conditions refused it is what
+	// the caller is answered with. Read after rather than before: the
+	// answer may be a moment out of date, and a delivery never is.
+	e, err := s.Get(ctx, account, id)
+	switch {
+	case err != nil:
+		return "", err
+	case !e.Enabled:
+		return "", ErrDisabled
+	default:
+		return "", ErrPending
+	}
 }
 
 // MaxListed is how many deliveries a list answers with: the newest, and no
@@ -814,4 +847,46 @@ func Stand(ctx context.Context, pool *pgxpool.Pool, keyID string) (Standing, err
 		return out, fmt.Errorf("endpoints: %w", err)
 	}
 	return out, nil
+}
+
+// Resend puts one delivery to one endpoint of one account, delivered or
+// failed, back on its way: pending, due at once, under the same id, and
+// with its attempts going on from where they were. A receiver that fixed
+// what refused the delivery gets it once more; one that keeps refusing
+// fails it again after that one attempt. A delivery still pending is
+// refused: it is on its way already.
+//
+// Of the endpoint, of the account, and not deleted, all in the one
+// statement, so that a delivery of another endpoint or another account is
+// not found rather than resent.
+func (s *Postgres) Resend(ctx context.Context, account payment.AccountID, endpoint, id ID, now time.Time) error {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	tag, err := s.pool.Exec(ctx, `
+		update webhook_deliveries d
+		   set state = $4, next_at = $5, delivered_at = null
+		  from webhook_endpoints e
+		 where d.id = $1 and d.endpoint_id = $2 and e.id = d.endpoint_id
+		   and e.account_id = $3 and e.deleted_at is null
+		   and d.state <> $4`, id, endpoint, account, Pending, now)
+	if err != nil {
+		return fmt.Errorf("delivery %s: %w", id, err)
+	}
+	if tag.RowsAffected() == 1 {
+		return nil
+	}
+	var state string
+	err = s.pool.QueryRow(ctx, `
+		select d.state from webhook_deliveries d
+		  join webhook_endpoints e on e.id = d.endpoint_id
+		 where d.id = $1 and d.endpoint_id = $2 and e.account_id = $3 and e.deleted_at is null`,
+		id, endpoint, account).Scan(&state)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("delivery %s: %w", id, err)
+	}
+	return ErrPending
 }

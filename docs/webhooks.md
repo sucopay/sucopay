@@ -82,8 +82,9 @@ eight endpoints.
 | `PATCH /webhook_endpoints/{id}` | read-write | Change `url`, `description`, `events` or `enabled` |
 | `POST /webhook_endpoints/{id}/secret` | read-write | Rotate the secret; the old one verifies for 24 more hours |
 | `DELETE /webhook_endpoints/{id}` | read-write | Remove it. Pending deliveries to it are failed |
-| `POST /webhook_endpoints/{id}/test` | read-write | Send one `endpoint.test`; answers `202` with the delivery's id |
+| `POST /webhook_endpoints/{id}/test` | read-write | Send one `endpoint.test`; answers `202` with the delivery's id. One at a time: while the last test is pending, the next is refused |
 | `GET /webhook_endpoints/{id}/deliveries` | read-only | The newest 100 deliveries and every attempt at each |
+| `POST /webhook_endpoints/{id}/deliveries/{delivery}/resend` | read-write | Send a delivered or failed delivery again; answers `202` |
 
 A disabled endpoint (`"enabled": false`) receives nothing and has no deliveries made for it;
 what was pending waits, and is sent once it is enabled again.
@@ -131,6 +132,15 @@ answered, and a `reason` when it did not: `timeout`, `connection`, `destination`
 longer passes its check, or `secret` when the deployment can no longer read the secret to sign
 with. `response` is the first 256 bytes of what the receiver answered. Deliveries that are
 delivered or failed are kept for 30 days.
+
+## Resending by hand
+
+`POST /webhook_endpoints/{id}/deliveries/{delivery}/resend` sends a delivery that is delivered
+or failed once more: under the same `webhook-id`, with a fresh `webhook-timestamp` and
+signature, and with its attempts going on from where they were. It is for a receiver that was
+down and is back, or one that answered `2xx` and then lost what it took. A receiver that keeps
+the ids it has seen drops a resend of a delivery it already took. A delivery still pending is
+refused; it is on its way already.
 
 ## When the operator swaps the deployment's key
 

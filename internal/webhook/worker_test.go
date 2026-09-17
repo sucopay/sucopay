@@ -207,3 +207,54 @@ func TestWorker_RoundDeliversAnEndpointTest(t *testing.T) {
 		t.Errorf("deliveries = %+v, want the one delivered", d)
 	}
 }
+
+// A resend goes out under the same webhook-id, so that a receiver which
+// took the first can drop it, and with a fresh timestamp and signature, so
+// that one which did not can verify it.
+func TestWorker_RoundSendsAResendUnderTheSameIDWithAFreshSignature(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	rc := listening(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	e, secret := created(t, s, first, rc.url("example.com"))
+	if _, err := pool.Exec(t.Context(), `update webhook_endpoints set allowed = '{127.0.0.1/32}' where id = $1`, e.ID); err != nil {
+		t.Fatal(err)
+	}
+	clock := time.Now().Truncate(time.Second)
+	tick := func() time.Time { return clock }
+	id, err := s.Test(t.Context(), first, e.ID, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
+	w := webhook.NewWorker(s, webhook.NewSender(answering{"127.0.0.1"}, rc.roots(), tick), observe.NewLeases(pool), quiet, tick)
+	if err := w.Round(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	clock = clock.Add(time.Minute)
+	if err := s.Resend(t.Context(), first, e.ID, id, clock); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := w.Round(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	got := rc.received()
+	if len(got) != 2 {
+		t.Fatalf("the receiver got %d requests, want the delivery and its resend", len(got))
+	}
+	sent, resent := got[0], got[1]
+	if sent.Header.Get("webhook-id") != string(id) || resent.Header.Get("webhook-id") != string(id) {
+		t.Errorf("webhook-id %q then %q, want the delivery's both times", sent.Header.Get("webhook-id"), resent.Header.Get("webhook-id"))
+	}
+	if sent.Header.Get("webhook-timestamp") == resent.Header.Get("webhook-timestamp") {
+		t.Error("the resend carries the first send's timestamp")
+	}
+	if !verify(secret, string(id), resent.Header.Get("webhook-timestamp"), resent.Header.Get("webhook-signature"), rc.bodies[1]) {
+		t.Error("the receiver does not verify the resend")
+	}
+	listed, err := s.Deliveries(t.Context(), first, e.ID)
+	if err != nil || len(listed) != 1 || len(listed[0].Attempts) != 2 || listed[0].Delivery.State != webhook.Delivered {
+		t.Errorf("Deliveries = %+v, %v; want the one delivery, delivered, with two attempts", listed, err)
+	}
+}

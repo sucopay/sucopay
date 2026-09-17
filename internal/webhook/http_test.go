@@ -356,3 +356,46 @@ func TestHTTP_DeliveriesListsWhatWasSentAndWhatCameOfIt(t *testing.T) {
 		t.Errorf("another account's Deliveries = %d, want 404", rec.Code)
 	}
 }
+
+func TestHTTP_ResendAnswersThatTheDeliveryIsOnItsWayAgainOrWhyNot(t *testing.T) {
+	t.Parallel()
+	s, _ := store(t)
+	h := webhook.NewHTTP(s, answering{"93.184.216.34"}, func() time.Time { return now })
+	id, _ := registered(t, h, first)["id"].(string)
+	made := answered(t, h.Test, http.MethodPost, "/webhook_endpoints/"+id+"/test", "", first)
+	var body map[string]string
+	if err := json.Unmarshal(made.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	delivery := body["delivery"]
+	target := "/webhook_endpoints/" + id + "/deliveries/" + delivery + "/resend"
+	resend := func(account payment.AccountID) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodPost, target, nil)
+		r.SetPathValue("id", id)
+		r.SetPathValue("delivery", delivery)
+		if err := h.Resend(rec, r, account); err != nil {
+			t.Fatal(err)
+		}
+		return rec
+	}
+
+	if rec := resend(first); rec.Code != http.StatusBadRequest {
+		t.Errorf("a resend while pending = %d %s, want 400", rec.Code, rec.Body)
+	}
+	if err := s.Attempted(t.Context(), webhook.Delivery{ID: webhook.ID(delivery)}, webhook.Outcome{Reason: webhook.ReasonTimeout}, now, func() float64 { return 0 }); err != nil {
+		t.Fatal(err)
+	}
+	for i := range webhook.MaxAttempts {
+		_ = s.Attempted(t.Context(), webhook.Delivery{ID: webhook.ID(delivery), Attempts: i + 1}, webhook.Outcome{Reason: webhook.ReasonTimeout}, now, func() float64 { return 0 })
+	}
+	if rec := resend(first); rec.Code != http.StatusAccepted || !strings.Contains(rec.Body.String(), delivery) {
+		t.Errorf("a resend of a failed delivery = %d %s, want 202 with its id", rec.Code, rec.Body)
+	}
+	if rec := resend(other); rec.Code != http.StatusNotFound {
+		t.Errorf("another account's resend = %d, want 404", rec.Code)
+	}
+	if rec := answered(t, h.Test, http.MethodPost, "/webhook_endpoints/"+id+"/test", "", first); rec.Code != http.StatusBadRequest {
+		t.Errorf("a second test while one is on its way = %d %s, want 400", rec.Code, rec.Body)
+	}
+}

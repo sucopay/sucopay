@@ -327,6 +327,42 @@ func (h *HTTP) Test(w http.ResponseWriter, r *http.Request, account payment.Acco
 			Field: "enabled", Message: "the endpoint is disabled, and receives nothing until it is enabled"}})
 		return nil
 	}
+	if errors.Is(err, ErrPending) {
+		problem.Refuse(w, http.StatusBadRequest, "invalid", []problem.Field{{
+			Message: "a test is already on its way; its delivery says what came of it"}})
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	problem.JSON(w, http.StatusAccepted, map[string]string{"delivery": delivery.String()})
+	return nil
+}
+
+// Resend sends one delivery to one endpoint of account again, under the
+// same webhook-id, and answers that it is on its way. For a receiver that
+// was down and is back, or one that answered 2xx and lost what it took.
+func (h *HTTP) Resend(w http.ResponseWriter, r *http.Request, account payment.AccountID) error {
+	id, err := ParseID(r.PathValue("id"))
+	if err != nil {
+		notFound(w)
+		return nil
+	}
+	delivery, err := ParseID(r.PathValue("delivery"))
+	if err != nil {
+		notFound(w)
+		return nil
+	}
+	err = h.store.Resend(r.Context(), account, id, delivery, h.now())
+	if errors.Is(err, ErrNotFound) {
+		notFound(w)
+		return nil
+	}
+	if errors.Is(err, ErrPending) {
+		problem.Refuse(w, http.StatusBadRequest, "invalid", []problem.Field{{
+			Message: "the delivery is still on its way; a resend is for one that was delivered or failed"}})
+		return nil
+	}
 	if err != nil {
 		return err
 	}
