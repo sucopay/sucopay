@@ -28,7 +28,7 @@ chain inside the process, and one step at a time against Polygon on a payment so
 - [ ] suco Component: the same payment, embedded in a merchant's own page
 - [ ] suco Link: a fixed URL that buys one specific item
 - [ ] Frontend SDK: what a merchant's page embeds suco Component with
-- [ ] Webhooks: signed, retried, with delivery history
+- [x] Webhooks: signed, retried, with delivery history
 - [ ] Refunds: records and transfer intents
 - [ ] Reconciliation: periodic diff between internal state and the chain
 - [ ] Console: payments, transactions, refunds, webhook deliveries

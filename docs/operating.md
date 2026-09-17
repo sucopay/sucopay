@@ -103,6 +103,8 @@ suco.yaml
 
 database: PostgreSQL 17.5, schema 0010_credential_access
 credentials: read-write
+webhooks:
+  3f9c2c1e-6a1b-4a1e-9f4e-2f0f2c5a7b11  2 pending, 1 failed to 7c1d…
 
 networks:
   polygon  evm  chain 137, latest 78123, final 78100, position 78090, behind 10, 2 waiting to settle
@@ -114,6 +116,13 @@ them. The worker is in the process that serves, so a report counts what the data
 rather than asking a worker that is not there. A number that keeps growing between reports is a
 deployment whose settling has stopped getting anywhere, and `/readyz` says which of the words
 above it is in.
+
+`webhooks` counts the deliveries the database holds, by account: `pending` ones waiting for
+their next attempt, and `failed` ones given up on after their last, with the endpoints the
+failed ones were to. `nothing pending, nothing failed` is the line when there are none. A count
+of endpoints holding a secret sealed under another key follows when there are any, which is what
+a swapped `credentials.key` leaves behind: those merchants rotate their secret, and deliveries go
+on. What the worker itself is doing is the `webhooks` word of `/readyz`.
 
 `doctor` names a testnet as one after its chain id, as `chain 80002 (Polygon Amoy, a testnet)`,
 so that a document copied from the step before production is caught here.
@@ -133,6 +142,24 @@ instance would meet. It writes nothing.
 
 A deployment with no database, or one nothing has applied the schema to, still has its chains
 read. What it cannot say is how far each has been read.
+
+## Allowing a webhook endpoint inside the deployment
+
+A webhook URL that resolves to an address inside the deployment, such as a private network or
+the loopback, is refused at registration and at every send, so that a merchant cannot make the
+deployment call what only it can reach. An operator running a receiver of their own inside can
+allow one endpoint to reach one address or range, by writing it on the endpoint's row:
+
+```sql
+update webhook_endpoints set allowed = '{10.0.5.0/24}' where id = '<endpoint id>';
+```
+
+The allowance is bound to the endpoint and to the address, not to the name: a name moved to
+another inside address is refused as before. Since a URL that resolves inside cannot be
+registered, the merchant registers a URL that resolves outside, the operator writes the
+allowance, and the merchant then changes the URL with `PATCH /webhook_endpoints/{id}`, which
+checks it again with the allowance in force. An entry that is not a prefix allows nothing and
+stops nothing else.
 
 ## suco network cursor
 

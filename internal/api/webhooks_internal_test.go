@@ -33,6 +33,10 @@ func (h *hooks) Test(w http.ResponseWriter, r *http.Request, account payment.Acc
 	return h.serve(w, r, "Test", account)
 }
 
+func (h *hooks) Deliveries(w http.ResponseWriter, r *http.Request, account payment.AccountID) error {
+	return h.serve(w, r, "Deliveries", account)
+}
+
 // hookRoutes is each route that ends in Webhooks, with the method it ends
 // in, the identifier it hands on, and whether it writes.
 var hookRoutes = []struct {
@@ -46,6 +50,7 @@ var hookRoutes = []struct {
 	{http.MethodPost, "/webhook_endpoints/" + id + "/secret", "Rotate", id, true},
 	{http.MethodDelete, "/webhook_endpoints/" + id, "Delete", id, true},
 	{http.MethodPost, "/webhook_endpoints/" + id + "/test", "Test", id, true},
+	{http.MethodGet, "/webhook_endpoints/" + id + "/deliveries", "Deliveries", id, false},
 }
 
 func TestWebhooks_ServesEachRouteForTheAccountTheCredentialNames(t *testing.T) {

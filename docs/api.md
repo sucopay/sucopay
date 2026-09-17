@@ -105,6 +105,27 @@ Reads one payment of the account the credential names, and answers `200` with th
 A payment of another account, a payment nobody opened, and an identifier of no shape are all
 answered `404`, with one body. The answer says nothing about what exists.
 
+## Webhook endpoints
+
+Where suco tells your server that a payment changed. Registering, listing, changing, rotating
+the secret of, deleting and testing an endpoint, and reading what was delivered to it, are the
+routes under `/webhook_endpoints`, all for the account the credential names. What is sent, how
+it is signed and what a receiver does with it is in [webhooks.md](webhooks.md).
+
+| Route | Credential | |
+|---|---|---|
+| `POST /webhook_endpoints` | read-write | Register one and receive its secret |
+| `GET /webhook_endpoints` | read-only | List them, without secrets |
+| `GET /webhook_endpoints/{id}` | read-only | Read one |
+| `PATCH /webhook_endpoints/{id}` | read-write | Change `url`, `description`, `events` or `enabled` |
+| `POST /webhook_endpoints/{id}/secret` | read-write | Rotate the secret |
+| `DELETE /webhook_endpoints/{id}` | read-write | Remove it |
+| `POST /webhook_endpoints/{id}/test` | read-write | Send one `endpoint.test` |
+| `GET /webhook_endpoints/{id}/deliveries` | read-only | The newest 100 deliveries and their attempts |
+
+An endpoint of another account, none, and an identifier of no shape are answered `404`, as a
+payment's route answers them.
+
 ## The life of a payment
 
 | `status` | |
@@ -152,7 +173,7 @@ A success is the payment. A failure is one shape, on every route.
 | 400 | `invalid` | The body is not a JSON object, holds a key the API does not read, gives a value of another type, or gives a value outside its rules. `problems` says which. |
 | 401 | `unauthorized` | No credential, or one not in force. |
 | 403 | `forbidden` | The credential may not do what the route does. |
-| 404 | `not_found` | No payment of the account under that identifier. |
+| 404 | `not_found` | No payment, or no webhook endpoint, of the account under that identifier. |
 | 413 | `too_large` | The body is over 64 KiB. |
 | 503 | `unavailable` | suco could not reach its database. The reason is in its log and not in the body. |
 

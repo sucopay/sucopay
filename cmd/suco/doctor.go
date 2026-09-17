@@ -8,6 +8,7 @@ import (
 	"io"
 	"maps"
 	"slices"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/sucopay/sucopay/internal/config"
@@ -17,6 +18,7 @@ import (
 	"github.com/sucopay/sucopay/internal/observe"
 	"github.com/sucopay/sucopay/internal/payment"
 	"github.com/sucopay/sucopay/internal/postgres"
+	"github.com/sucopay/sucopay/internal/webhook"
 )
 
 // maxDescription bounds what a database can put in front of an operator.
@@ -90,6 +92,13 @@ func doctor(ctx context.Context, args []string, stdout io.Writer) error {
 	if credentials != "" {
 		fmt.Fprintf(&tail, "credentials: %s\n", credentials)
 	}
+	// The deliveries, by account: what waits for its next attempt and what
+	// was given up on. Counted from the database rather than asked of the
+	// worker, which is in the process that serves, as what waits to settle
+	// is. Only where there is a schema to count in.
+	if db != nil && schema != "" {
+		describeWebhooks(ctx, &tail, db, resolved.Config.Credentials.KeyID)
+	}
 	// The networks after the database, because how far each has been read is
 	// written there. A network that could not be read is said and not failed
 	// on: the instance still serves, and its probe is what says it is unfit.
@@ -105,6 +114,40 @@ func doctor(ctx context.Context, args []string, stdout io.Writer) error {
 		return err
 	}
 	return reach
+}
+
+// describeWebhooks writes what the deployment's deliveries have come to: for
+// each account with any, how many wait and how many were given up on, with
+// the endpoints the given-up ones were to; and how many endpoints hold a
+// secret sealed under a key other than the one in force, which is a key
+// swapped under them. A deployment with nothing waiting and nothing given
+// up on says so in one line.
+func describeWebhooks(ctx context.Context, w io.Writer, db *postgres.Pool, keyID string) {
+	standing, err := webhook.Stand(ctx, db.Conns(), keyID)
+	if err != nil {
+		fmt.Fprintf(w, "webhooks: %s\n", invisible.Quote(err.Error()))
+		return
+	}
+	if len(standing.Accounts) == 0 && standing.SealedElsewhere == 0 {
+		fmt.Fprintf(w, "webhooks: nothing pending, nothing failed\n")
+		return
+	}
+	fmt.Fprintf(w, "webhooks:\n")
+	for _, a := range standing.Accounts {
+		line := fmt.Sprintf("  %s  %d pending, %d failed", a.Account, a.Pending, a.Failed)
+		if len(a.FailedTo) > 0 {
+			to := make([]string, 0, len(a.FailedTo))
+			for _, id := range a.FailedTo {
+				to = append(to, id.String())
+			}
+			line += " to " + strings.Join(to, ", ")
+		}
+		fmt.Fprintf(w, "%s\n", line)
+	}
+	if standing.SealedElsewhere > 0 {
+		fmt.Fprintf(w, "  %d endpoints hold a secret sealed under another key; their merchants rotate it\n",
+			standing.SealedElsewhere)
+	}
 }
 
 // describeDatabase reports what an instance would reach, what credentials

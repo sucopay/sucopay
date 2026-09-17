@@ -100,6 +100,8 @@ suco.yaml
 
 database: PostgreSQL 17.5, schema 0010_credential_access
 credentials: read-write
+webhooks:
+  3f9c2c1e-6a1b-4a1e-9f4e-2f0f2c5a7b11  2 pending, 1 failed to 7c1d…
 
 networks:
   polygon  evm  chain 137, latest 78123, final 78100, position 78090, behind 10, 2 waiting to settle
@@ -110,6 +112,12 @@ networks:
 serve のプロセスの中にいるので、報告は worker に訊く代わりにデータベースが持っているものを
 数えます。報告のたびに増えていく配備は、確定の判定が進まなくなった配備です。どの語なのかは
 `/readyz` が言います。
+
+`webhooks` は、データベースが持つ配送を account ごとに数えます。次の試行を待つ `pending`
+と、最後の試行の後に諦めた `failed` で、failed には宛先の id を添えます。どちらも無ければ
+`nothing pending, nothing failed` の 1 行です。今と違う鍵で暗号化した秘密を持つ宛先があれば、
+その数が続きます。`credentials.key` を入れ替えた後に残るもので、その加盟店が秘密を更新すれば
+配送は続きます。worker 自身が何をしているかは `/readyz` の `webhooks` の語が言います。
 
 `doctor` はテストネットの chain id の後に `chain 80002 (Polygon Amoy, a testnet)` の形で名前を
 添えます。本番の前の段から写した文書をここで捕まえるためです。
@@ -129,6 +137,22 @@ serve のプロセスの中にいるので、報告は worker に訊く代わり
 
 データベースの無い配備でも、schema を当てていない配備でも、チェーンは読みます。言えなくなるのは
 それぞれをどこまで読んだかだけです。
+
+## 配備の内側の webhook の宛先を許す
+
+private なネットワークや loopback など、配備の内側のアドレスに解決する webhook の URL は、
+登録時と毎回の送信時に断ります。加盟店が、配備からしか届かない先を配備に呼ばせられないため
+です。運用者が自分の受け取り側を内側で動かすときは、宛先の行にアドレスか範囲を書いて、その
+宛先だけに許します。
+
+```sql
+update webhook_endpoints set allowed = '{10.0.5.0/24}' where id = '<宛先の id>';
+```
+
+許可は宛先とアドレスに結び付き、名前には結び付きません。名前を別の内側のアドレスに向け直せば
+前と同じく断ります。内側に解決する URL は登録できないので、加盟店は外側に解決する URL で登録
+し、運用者が許可を書き、加盟店が `PATCH /webhook_endpoints/{id}` で URL を変えます。変更時の
+検査は許可込みで行います。prefix として読めない値は何も許さず、他の配送も止めません。
 
 ## suco network cursor
 

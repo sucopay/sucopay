@@ -409,3 +409,56 @@ func TestRun_DoctorSaysWhatIsWaitingToSettle(t *testing.T) {
 		t.Errorf("the report does not say what is waiting to settle:\n%s", networks)
 	}
 }
+
+// What the deployment's deliveries have come to is counted from the
+// database, by account, with the endpoints the failed ones were to and the
+// endpoints whose secret the deployment can no longer read.
+func TestRun_DoctorSaysWhatIsPendingAndFailedToDeliverAndWhatItCannotSign(t *testing.T) {
+	d := deployed(t)
+	pool := d.pool.Conns()
+	const account = "00000000-0000-0000-0000-000000000001"
+	const endpoint = "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
+	const paymentID = "11111111111111111111111111111111"
+	for _, sql := range []string{
+		`insert into webhook_endpoints (id, scope, account_id, url, description, enabled, secret, key_id, created_at)
+		 values ('` + endpoint + `', 'account', '` + account + `', 'https://hooks.example/in', '', true, '\x00', 'oldkey', now())`,
+		`insert into payments (id, account_id, asset_network, asset_reference, asset_symbol, asset_decimals,
+		                       amount, received, destination, status, created_at, expires_at)
+		 values ('` + paymentID + `', '` + account + `', 'polygon', 'r', 'JPYC', 18, 1, 1, '0xabc', 'succeeded', now(), now() + interval '1 hour')`,
+		`insert into webhook_deliveries (id, endpoint_id, account_id, payment_id, type, occurred_at, payload, state, next_at, created_at)
+		 values ('d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1', '` + endpoint + `', '` + account + `', '` + paymentID + `', 'payment.succeeded', now(), '{}', 'pending', now(), now()),
+		        ('d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2', '` + endpoint + `', '` + account + `', '` + paymentID + `', 'payment.succeeded', now(), '{}', 'failed', null, now())`,
+	} {
+		if _, err := pool.Exec(t.Context(), sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stdout, _, err := runArgs(t, "doctor")
+
+	if err != nil {
+		t.Fatalf("err = %v, want none", err)
+	}
+	for _, want := range []string{
+		"webhooks:\n",
+		"  " + account + "  1 pending, 1 failed to " + endpoint + "\n",
+		"  1 endpoints hold a secret sealed under another key",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("the report lacks %q:\n%s", want, stdout)
+		}
+	}
+}
+
+func TestRun_DoctorSaysNothingIsPendingOrFailedWhereNothingIs(t *testing.T) {
+	deployed(t)
+
+	stdout, _, err := runArgs(t, "doctor")
+
+	if err != nil {
+		t.Fatalf("err = %v, want none", err)
+	}
+	if !strings.Contains(stdout, "webhooks: nothing pending, nothing failed\n") {
+		t.Errorf("the report does not say the deliveries stand clear:\n%s", stdout)
+	}
+}

@@ -235,6 +235,79 @@ func (h *HTTP) Delete(w http.ResponseWriter, r *http.Request, account payment.Ac
 	return nil
 }
 
+// deliveryJSON is a delivery as its endpoint's list writes it.
+type deliveryJSON struct {
+	ID          ID            `json:"id"`
+	Type        string        `json:"type"`
+	Payment     *payment.ID   `json:"payment"`
+	OccurredAt  time.Time     `json:"occurred_at"`
+	State       string        `json:"state"`
+	Attempts    []attemptJSON `json:"attempts"`
+	NextAt      *time.Time    `json:"next_at"`
+	DeliveredAt *time.Time    `json:"delivered_at"`
+}
+
+// attemptJSON is one attempt as the list writes it. status is null where
+// nothing answered, and reason then says why.
+type attemptJSON struct {
+	At       time.Time `json:"at"`
+	Status   *int      `json:"status"`
+	Reason   string    `json:"reason,omitempty"`
+	Response string    `json:"response"`
+	TookMs   int64     `json:"took_ms"`
+}
+
+func listedJSON(l Listed) deliveryJSON {
+	d := l.Delivery
+	out := deliveryJSON{ID: d.ID, Type: d.Type, OccurredAt: d.OccurredAt, State: d.State, Attempts: []attemptJSON{}}
+	if d.Payment != "" {
+		p := d.Payment
+		out.Payment = &p
+	}
+	if !d.NextAt.IsZero() {
+		next := d.NextAt
+		out.NextAt = &next
+	}
+	if !l.DeliveredAt.IsZero() {
+		delivered := l.DeliveredAt
+		out.DeliveredAt = &delivered
+	}
+	for _, a := range l.Attempts {
+		one := attemptJSON{At: a.At, Reason: a.Reason, Response: a.Response, TookMs: a.Took.Milliseconds()}
+		if a.Status != 0 {
+			status := a.Status
+			one.Status = &status
+		}
+		out.Attempts = append(out.Attempts, one)
+	}
+	return out
+}
+
+// Deliveries answers with the newest deliveries to one endpoint of account
+// and every attempt at each, which is what a merchant reads when something
+// did not arrive.
+func (h *HTTP) Deliveries(w http.ResponseWriter, r *http.Request, account payment.AccountID) error {
+	id, err := ParseID(r.PathValue("id"))
+	if err != nil {
+		notFound(w)
+		return nil
+	}
+	listed, err := h.store.Deliveries(r.Context(), account, id)
+	if errors.Is(err, ErrNotFound) {
+		notFound(w)
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	out := make([]deliveryJSON, 0, len(listed))
+	for _, l := range listed {
+		out = append(out, listedJSON(l))
+	}
+	problem.JSON(w, http.StatusOK, map[string]any{"deliveries": out})
+	return nil
+}
+
 // Test makes one delivery of endpoint.test to one endpoint of account, and
 // answers that it is on its way, with the delivery's id. Whether it arrived
 // is what the delivery's attempts say, once the worker has sent it.

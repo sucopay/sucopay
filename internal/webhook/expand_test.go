@@ -2,6 +2,7 @@ package webhook_test
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -375,5 +376,119 @@ func TestSweep_RemovesDeliveredAndFailedPastTheRetentionAndKeepsTheRest(t *testi
 	var attempts int
 	if err := pool.QueryRow(t.Context(), `select count(*) from webhook_attempts`).Scan(&attempts); err != nil || attempts != 2 {
 		t.Errorf("attempts left = %d, %v; want the two of the deliveries kept", attempts, err)
+	}
+}
+
+func TestDeliveries_ListsTheNewestFirstWithTheirAttemptsForTheEndpointsAccountAlone(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	e, _ := created(t, s, first, "https://hooks.example/in")
+	for i := range 3 {
+		paid(t, pool, first, fmt.Sprintf("%032d", i), "payment.succeeded")
+	}
+	if _, err := s.Expand(t.Context(), now, 10); err != nil {
+		t.Fatal(err)
+	}
+	due, err := s.Due(t.Context(), now, 32, 4)
+	if err != nil || len(due) != 3 {
+		t.Fatalf("Due = %d, %v", len(due), err)
+	}
+	none := func() float64 { return 0 }
+	if err := s.Attempted(t.Context(), due[0].Delivery, webhook.Outcome{Status: 500, Response: "no", Took: 2 * time.Second}, now, none); err != nil {
+		t.Fatal(err)
+	}
+	due[0].Delivery.Attempts = 1
+	if err := s.Attempted(t.Context(), due[0].Delivery, webhook.Outcome{Status: 204}, now.Add(5*time.Second), none); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Attempted(t.Context(), due[2].Delivery, webhook.Outcome{Reason: webhook.ReasonTimeout, Took: 20 * time.Second}, now, none); err != nil {
+		t.Fatal(err)
+	}
+
+	listed, err := s.Deliveries(t.Context(), first, e.ID)
+
+	if err != nil || len(listed) != 3 {
+		t.Fatalf("Deliveries = %d, %v; want three", len(listed), err)
+	}
+	if listed[0].Delivery.ID != due[2].Delivery.ID || listed[2].Delivery.ID != due[0].Delivery.ID {
+		t.Errorf("listed %s first and %s last, want the newest first", listed[0].Delivery.ID, listed[2].Delivery.ID)
+	}
+	oldest := listed[2]
+	if oldest.Delivery.State != webhook.Delivered || oldest.DeliveredAt.IsZero() || len(oldest.Attempts) != 2 {
+		t.Fatalf("the delivered one = %+v, want delivered with two attempts", oldest)
+	}
+	if a := oldest.Attempts[0]; a.Status != 500 || a.Response != "no" || a.Took != 2*time.Second || !a.At.Equal(now) {
+		t.Errorf("first attempt = %+v, want the 500", a)
+	}
+	if a := oldest.Attempts[1]; a.Status != 204 || !a.At.Equal(now.Add(5*time.Second)) {
+		t.Errorf("second attempt = %+v, want the 204 after it", a)
+	}
+	if newest := listed[0]; newest.Delivery.State != webhook.Pending || len(newest.Attempts) != 1 || newest.Attempts[0].Status != 0 || newest.Attempts[0].Reason != webhook.ReasonTimeout {
+		t.Errorf("the timed-out one = %+v, want pending with one attempt of no status and the reason", newest)
+	}
+	if untouched := listed[1]; len(untouched.Attempts) != 0 || untouched.Delivery.NextAt.IsZero() {
+		t.Errorf("the untried one = %+v, want no attempts and a next time", untouched)
+	}
+	if _, err := s.Deliveries(t.Context(), other, e.ID); !errors.Is(err, webhook.ErrNotFound) {
+		t.Errorf("another account's Deliveries = %v, want ErrNotFound", err)
+	}
+}
+
+func TestDeliveries_StopsAtTheNewestHundred(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	e, _ := created(t, s, first, "https://hooks.example/in")
+	for i := range webhook.MaxListed + 5 {
+		paid(t, pool, first, fmt.Sprintf("%032d", i), "payment.succeeded")
+	}
+	if _, err := s.Expand(t.Context(), now, 200); err != nil {
+		t.Fatal(err)
+	}
+
+	listed, err := s.Deliveries(t.Context(), first, e.ID)
+
+	if err != nil || len(listed) != webhook.MaxListed {
+		t.Errorf("Deliveries = %d, %v; want %d", len(listed), err, webhook.MaxListed)
+	}
+}
+
+func TestStand_CountsPendingAndFailedByAccountAndSecretsSealedElsewhere(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	e, _ := created(t, s, first, "https://hooks.example/in")
+	created(t, s, other, "https://hooks.example/other")
+	created(t, s, other, "https://hooks.example/another")
+	for i := range 3 {
+		paid(t, pool, first, fmt.Sprintf("%032d", i), "payment.succeeded")
+	}
+	paid(t, pool, other, strings.Repeat("9", 32), "payment.succeeded")
+	if _, err := s.Expand(t.Context(), now, 10); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), `
+		update webhook_deliveries set state = 'failed', next_at = null
+		 where id = (select id from webhook_deliveries where account_id = $1 order by seq limit 1)`, first); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), `update webhook_endpoints set key_id = 'k0' where id = $1`, e.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	standing, err := webhook.Stand(t.Context(), pool, "k1")
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(standing.Accounts) != 2 {
+		t.Fatalf("accounts = %+v, want both", standing.Accounts)
+	}
+	if a := standing.Accounts[0]; a.Account != first || a.Pending != 2 || a.Failed != 1 || len(a.FailedTo) != 1 || a.FailedTo[0] != e.ID {
+		t.Errorf("first = %+v, want 2 pending, 1 failed to the endpoint", a)
+	}
+	if a := standing.Accounts[1]; a.Account != other || a.Pending != 2 || a.Failed != 0 || len(a.FailedTo) != 0 {
+		t.Errorf("other = %+v, want 2 pending and nothing failed", a)
+	}
+	if standing.SealedElsewhere != 1 {
+		t.Errorf("sealed elsewhere = %d, want the one under k0", standing.SealedElsewhere)
 	}
 }

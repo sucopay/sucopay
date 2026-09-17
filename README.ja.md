@@ -84,6 +84,7 @@ assets:
 | | |
 |---|---|
 | [docs/api.ja.md](docs/api.ja.md) | 加盟店のサーバが呼ぶ HTTP API |
+| [docs/webhooks.ja.md](docs/webhooks.ja.md) | suco が加盟店のサーバに送るものと、その受け取り方 |
 | [docs/configuration.ja.md](docs/configuration.ja.md) | `suco.yaml` が取る設定の全て |
 | [docs/operating.ja.md](docs/operating.ja.md) | `/readyz`、`suco doctor`、止まったインスタンスの直し方 |
 | [ROADMAP.ja.md](ROADMAP.ja.md) | 今できることとできないこと |

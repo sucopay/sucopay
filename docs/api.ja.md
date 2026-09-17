@@ -102,6 +102,26 @@ Payment を 2 回作ると、Payment が 2 つできます。冪等性キーは�
 他の account の Payment、誰も作っていない Payment、識別子の形をしていないものは、どれも同じ本文の
 `404` です。応答は何が存在するかを言いません。
 
+## Webhook の宛先
+
+payment が変わったことを加盟店のサーバーに知らせる先です。宛先の登録、一覧、変更、秘密の
+更新、削除、試験の送信と、届けたものの確認は `/webhook_endpoints` の下の経路で、どれも資格
+情報が指す account のものです。何を送るか、どう署名するか、受け取り側が何をするかは
+[webhooks.ja.md](webhooks.ja.md) にあります。
+
+| 経路 | 資格情報 | |
+|---|---|---|
+| `POST /webhook_endpoints` | read-write | 登録し、秘密を受け取る |
+| `GET /webhook_endpoints` | read-only | 一覧。秘密は入らない |
+| `GET /webhook_endpoints/{id}` | read-only | 1 つ読む |
+| `PATCH /webhook_endpoints/{id}` | read-write | `url`、`description`、`events`、`enabled` を変える |
+| `POST /webhook_endpoints/{id}/secret` | read-write | 秘密を更新する |
+| `DELETE /webhook_endpoints/{id}` | read-write | 消す |
+| `POST /webhook_endpoints/{id}/test` | read-write | `endpoint.test` を 1 つ送る |
+| `GET /webhook_endpoints/{id}/deliveries` | read-only | 新しい順に 100 件の配送と試行 |
+
+他 account の宛先、無い宛先、形を成さない識別子は、payment の経路と同じく `404` です。
+
 ## Payment の一生
 
 | `status` | |
@@ -148,7 +168,7 @@ Payment は `created` から `awaiting_payment` へ進み、そこから `succee
 | 400 | `invalid` | 本文が JSON のオブジェクトでない、API が読まないキーがある、型が違う、値が規則の外にあるときです。どれかは `problems` が言います |
 | 401 | `unauthorized` | 資格情報が無いか、効力を失っているときです |
 | 403 | `forbidden` | 経路のすることをその資格情報がしてよくないときです |
-| 404 | `not_found` | その識別子の Payment がこの account に無いときです |
+| 404 | `not_found` | その識別子の Payment か Webhook の宛先がこの account に無いときです |
 | 413 | `too_large` | 本文が 64 KiB を越えたときです |
 | 503 | `unavailable` | suco がデータベースに届かなかったときです。理由は suco の記録にあり、本文にはありません |
 

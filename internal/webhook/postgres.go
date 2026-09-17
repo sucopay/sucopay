@@ -643,3 +643,175 @@ func (s *Postgres) Test(ctx context.Context, account payment.AccountID, id ID, n
 	}
 	return delivery, nil
 }
+
+// MaxListed is how many deliveries a list answers with: the newest, and no
+// page after them. Three days of retries for a payment's events is a
+// handful of rows, and a hundred reaches back through a receiver's outage.
+const MaxListed = 100
+
+// Attempt is one try at a delivery, as its list shows it.
+type Attempt struct {
+	At time.Time
+	// Status is what the receiver answered, and 0 when there was none, in
+	// which case Reason says why.
+	Status   int
+	Reason   string
+	Response string
+	Took     time.Duration
+}
+
+// Listed is a delivery as its endpoint's list shows it: the delivery, and
+// every attempt at it, oldest first.
+type Listed struct {
+	Delivery    Delivery
+	DeliveredAt time.Time
+	Attempts    []Attempt
+}
+
+// Deliveries lists the newest deliveries to one endpoint of one account,
+// up to [MaxListed], with their attempts. The body of each is left out: it
+// is the payment as a read of it answers, and a read answers with it.
+func (s *Postgres) Deliveries(ctx context.Context, account payment.AccountID, id ID) ([]Listed, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	if _, err := s.Get(ctx, account, id); err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.Query(ctx, `
+		select id, payment_id, type, occurred_at, state, attempts, next_at, delivered_at
+		  from webhook_deliveries
+		 where endpoint_id = $1
+		 order by seq desc limit $2`, id, MaxListed)
+	if err != nil {
+		return nil, fmt.Errorf("endpoint %s: %w", id, err)
+	}
+	defer rows.Close()
+	out := []Listed{}
+	at := map[ID]int{}
+	for rows.Next() {
+		var (
+			l         Listed
+			paymentID *string
+			next      *time.Time
+			delivered *time.Time
+		)
+		d := &l.Delivery
+		if err := rows.Scan(&d.ID, &paymentID, &d.Type, &d.OccurredAt, &d.State, &d.Attempts, &next, &delivered); err != nil {
+			return nil, fmt.Errorf("endpoint %s: %w", id, err)
+		}
+		d.Endpoint, d.Account = id, account
+		if paymentID != nil {
+			d.Payment = payment.ID(*paymentID)
+		}
+		d.OccurredAt = d.OccurredAt.UTC()
+		if next != nil {
+			d.NextAt = next.UTC()
+		}
+		if delivered != nil {
+			l.DeliveredAt = delivered.UTC()
+		}
+		l.Attempts = []Attempt{}
+		at[d.ID] = len(out)
+		out = append(out, l)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("endpoint %s: %w", id, err)
+	}
+	if len(out) == 0 {
+		return out, nil
+	}
+	ids := make([]ID, 0, len(out))
+	for _, l := range out {
+		ids = append(ids, l.Delivery.ID)
+	}
+	tries, err := s.pool.Query(ctx, `
+		select delivery_id, at, status, reason, response, took_ms
+		  from webhook_attempts
+		 where delivery_id = any($1)
+		 order by at, id`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("endpoint %s: %w", id, err)
+	}
+	defer tries.Close()
+	for tries.Next() {
+		var (
+			delivery ID
+			a        Attempt
+			status   *int
+			tookMs   int64
+		)
+		if err := tries.Scan(&delivery, &a.At, &status, &a.Reason, &a.Response, &tookMs); err != nil {
+			return nil, fmt.Errorf("endpoint %s: %w", id, err)
+		}
+		if status != nil {
+			a.Status = *status
+		}
+		a.At, a.Took = a.At.UTC(), time.Duration(tookMs)*time.Millisecond
+		i := at[delivery]
+		out[i].Attempts = append(out[i].Attempts, a)
+	}
+	return out, tries.Err()
+}
+
+// Standing is what a report says of the deployment's deliveries: how many
+// are waiting and how many have been given up on, by account, which
+// endpoints the given-up ones were to, and how many endpoints hold a secret
+// sealed under a key other than the one in force.
+type Standing struct {
+	Accounts []AccountStanding
+	// SealedElsewhere is how many endpoints in use hold a secret this
+	// deployment cannot open.
+	SealedElsewhere int
+}
+
+// AccountStanding is one account's deliveries, as a report counts them.
+type AccountStanding struct {
+	Account payment.AccountID
+	Pending int
+	Failed  int
+	// FailedTo are the endpoints failed deliveries were to, so that the
+	// operator knows which receiver to ask about.
+	FailedTo []ID
+}
+
+// Stand counts the deployment's deliveries for a report, without a cipher:
+// nothing here opens a secret, only says which key sealed it.
+func Stand(ctx context.Context, pool *pgxpool.Pool, keyID string) (Standing, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	var out Standing
+	rows, err := pool.Query(ctx, `
+		select account_id,
+		       count(*) filter (where state = $1),
+		       count(*) filter (where state = $2),
+		       array_remove(array_agg(distinct endpoint_id) filter (where state = $2), null)
+		  from webhook_deliveries
+		 where state in ($1, $2)
+		 group by account_id order by account_id`, Pending, Failed)
+	if err != nil {
+		return out, fmt.Errorf("deliveries: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var a AccountStanding
+		var to []string
+		if err := rows.Scan(&a.Account, &a.Pending, &a.Failed, &to); err != nil {
+			return out, fmt.Errorf("deliveries: %w", err)
+		}
+		for _, id := range to {
+			a.FailedTo = append(a.FailedTo, ID(id))
+		}
+		out.Accounts = append(out.Accounts, a)
+	}
+	if err := rows.Err(); err != nil {
+		return out, fmt.Errorf("deliveries: %w", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		select count(*) from webhook_endpoints
+		 where deleted_at is null and key_id <> $1`, keyID).Scan(&out.SealedElsewhere); err != nil {
+		return out, fmt.Errorf("endpoints: %w", err)
+	}
+	return out, nil
+}

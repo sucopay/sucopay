@@ -27,7 +27,7 @@ payment は `succeeded` に届きます。確定の判定は network ごとに�
 - [ ] suco Component: 同じ支払いを、加盟店のページの中に埋め込む部品
 - [ ] suco Link: 特定の商品を買う固定の URL
 - [ ] フロントエンド SDK: 加盟店のページが suco Component を埋め込むためのもの
-- [ ] Webhook: 署名、リトライ、送信履歴
+- [x] Webhook: 署名、リトライ、送信履歴
 - [ ] Refund: 記録と送金指示の作成
 - [ ] 照合: 内部状態とチェーンの定期突合
 - [ ] Console: Payment と Transaction の照会、返金、Webhook 送信履歴

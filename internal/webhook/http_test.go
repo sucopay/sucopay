@@ -300,3 +300,59 @@ func TestHTTP_TestMakesOneDeliveryOfEndpointTestAndAnswersThatItIsOnItsWay(t *te
 		t.Errorf("problems = %s, want one naming enabled", rec.Body)
 	}
 }
+
+func TestHTTP_DeliveriesListsWhatWasSentAndWhatCameOfIt(t *testing.T) {
+	t.Parallel()
+	s, _ := store(t)
+	h := webhook.NewHTTP(s, answering{"93.184.216.34"}, func() time.Time { return now })
+	id, _ := registered(t, h, first)["id"].(string)
+	if rec := answered(t, h.Test, http.MethodPost, "/webhook_endpoints/"+id+"/test", "", first); rec.Code != http.StatusAccepted {
+		t.Fatal(rec.Body)
+	}
+	due, err := s.Due(t.Context(), now, 1, 1)
+	if err != nil || len(due) != 1 {
+		t.Fatal(err)
+	}
+	if err := s.Attempted(t.Context(), due[0].Delivery, webhook.Outcome{Reason: webhook.ReasonConnection, Took: 300 * time.Millisecond}, now, func() float64 { return 0 }); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := answered(t, h.Deliveries, http.MethodGet, "/webhook_endpoints/"+id+"/deliveries", "", first)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Deliveries = %d %s, want 200", rec.Code, rec.Body)
+	}
+	var body struct {
+		Deliveries []struct {
+			ID       string  `json:"id"`
+			Type     string  `json:"type"`
+			Payment  *string `json:"payment"`
+			State    string  `json:"state"`
+			NextAt   *string `json:"next_at"`
+			Attempts []struct {
+				Status *int   `json:"status"`
+				Reason string `json:"reason"`
+				TookMs int64  `json:"took_ms"`
+			} `json:"attempts"`
+		} `json:"deliveries"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Deliveries) != 1 {
+		t.Fatalf("deliveries = %s, want one", rec.Body)
+	}
+	d := body.Deliveries[0]
+	if d.Type != "endpoint.test" || d.Payment != nil || d.State != webhook.Pending || d.NextAt == nil {
+		t.Errorf("delivery = %+v, want a pending endpoint.test about no payment with a next time", d)
+	}
+	if len(d.Attempts) != 1 || d.Attempts[0].Status != nil || d.Attempts[0].Reason != webhook.ReasonConnection || d.Attempts[0].TookMs != 300 {
+		t.Errorf("attempts = %+v, want one with no status and the reason", d.Attempts)
+	}
+	if strings.Contains(rec.Body.String(), "whsec_") {
+		t.Error("the list carries a secret")
+	}
+	if rec := answered(t, h.Deliveries, http.MethodGet, "/webhook_endpoints/"+id+"/deliveries", "", other); rec.Code != http.StatusNotFound {
+		t.Errorf("another account's Deliveries = %d, want 404", rec.Code)
+	}
+}
