@@ -25,16 +25,18 @@ belongs. What you are told and what you can read are otherwise the same thing.
 | `type` | When | `data` |
 |---|---|---|
 | `payment.awaiting_payment` | The payment can be paid | the payment |
-| `attempt.confirming` | A transfer for it was seen on the chain, before it is settled | the payment, and `transfer` |
+| `attempt.confirming` | A transfer for it was seen on the chain, before it is settled | the payment |
 | `payment.succeeded` | The payment settled | the payment |
 | `payment.expired` | Nothing arrived before the deadline | the payment |
 | `payment.failed` | It will not settle | the payment |
 | `endpoint.test` | You called `POST /webhook_endpoints/{id}/test` | `{}` |
 
-`attempt.confirming` carries `transfer`: `tx`, `block_height`, `block_hash`, `from` and `value`,
-which is what you can check against a node of your own. It says a transfer was seen, not that
-the payment settled; a transfer can be reorganised away, and `payment.succeeded` is what says the
-money is yours.
+The payment carries `transfer` once a transfer has been seen for it: `tx`, `block_height`,
+`block_hash`, `block_time`, `from` and `value`, which is what you can check against a node of
+your own. `attempt.confirming` is the first event to carry one, and it says a transfer was seen,
+not that the payment settled; a transfer can be reorganised away, and `payment.succeeded` is
+what says the money is yours. What the fields mean, and why `value` is not written the way
+`amount` and `received` are, is in [api.md](api.md).
 
 Fields are added and never removed or renamed. Read the fields you need and ignore the rest.
 

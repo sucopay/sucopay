@@ -85,7 +85,8 @@ Content-Type: application/json
   "expires_at": "2026-09-07T12:00:00Z",
   "created_at": "2026-09-05T23:08:53.514971Z",
   "return_url": "https://shop.example/orders/A-1",
-  "checkout_url": "http://localhost:7826/checkout/2c2f…"
+  "checkout_url": "http://localhost:7826/checkout/2c2f…",
+  "transfer": null
 }
 ```
 
@@ -98,6 +99,33 @@ Content-Type: application/json
 インスタンスがページを配信する前に作った Payment には無く、キーごと省きます。
 
 `POST /payments` が作る Payment の `status` は `created` です。
+
+### transfer
+
+`transfer` は、その Payment が払われたチェーン上の送金です。見つかるまでは `null` です。
+
+```json
+{
+  "tx": "0x9f1e…",
+  "block_height": 78123,
+  "block_hash": "0x4c2a…",
+  "block_time": "2026-09-05T23:10:44Z",
+  "from": "0xab…",
+  "value": "1000000000000000000000"
+}
+```
+
+加盟店が自分の node で送金を引くための値です。`status` が `succeeded` になるまでは候補で、
+送金が reorg でチェーンから無くなれば、ここにも出なくなります。
+
+`value` はチェーンが動かした額で、資産の最小単位です。`amount` と `received` は資産の単位です。
+同じ額が、`amount` では `"1000"`、`transfer` では `"1000000000000000000000"` になります。
+
+チェーンと送り先はここに重ねません。チェーンは `asset.network` で、この Payment を払った送金の
+送り先は必ず `destination` です。
+
+`amount` より少ない額の送金は、この Payment のものになりません。届いた額を `received` に書き、
+ここには出ません。`received` が入っていて `transfer` が `null` のことがあります。
 
 ### Idempotency-Key
 

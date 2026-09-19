@@ -24,16 +24,17 @@ event は 1 つの `POST` で、本文は 1 つの形の JSON です。
 | `type` | いつ | `data` |
 |---|---|---|
 | `payment.awaiting_payment` | 支払い可能になった | payment |
-| `attempt.confirming` | チェーン上で送金が見えた。確定の前 | payment と `transfer` |
+| `attempt.confirming` | チェーン上で送金が見えた。確定の前 | payment |
 | `payment.succeeded` | 確定した | payment |
 | `payment.expired` | 期限までに何も届かなかった | payment |
 | `payment.failed` | 確定しないことが決まった | payment |
 | `endpoint.test` | `POST /webhook_endpoints/{id}/test` を呼んだ | `{}` |
 
-`attempt.confirming` は `transfer` を持ちます。`tx`、`block_height`、`block_hash`、`from`、
-`value` で、自分の node で確かめられる値です。送金が見えたことを言うだけで、確定したとは言い
-ません。送金は reorg で消えることがあり、資金が加盟店のものになったと言うのは
-`payment.succeeded` です。
+payment は、送金が見つかると `transfer` を持ちます。`tx`、`block_height`、`block_hash`、
+`block_time`、`from`、`value` で、自分の node で確かめられる値です。最初にこれを持つ event が
+`attempt.confirming` で、送金が見えたことを言うだけで、確定したとは言いません。送金は reorg で
+消えることがあり、資金が加盟店のものになったと言うのは `payment.succeeded` です。項目の意味と、
+`value` を `amount` や `received` と違う書き方にしている理由は [api.ja.md](api.ja.md) にあります。
 
 項目は増えるだけで、消えたり名前が変わったりしません。要る項目だけを読み、他は無視してくだ
 さい。

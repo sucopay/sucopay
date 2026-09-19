@@ -86,7 +86,8 @@ Content-Type: application/json
   "expires_at": "2026-09-07T12:00:00Z",
   "created_at": "2026-09-05T23:08:53.514971Z",
   "return_url": "https://shop.example/orders/A-1",
-  "checkout_url": "http://localhost:7826/checkout/2c2f…"
+  "checkout_url": "http://localhost:7826/checkout/2c2f…",
+  "transfer": null
 }
 ```
 
@@ -100,6 +101,37 @@ outcome: keep it out of logs, as suco keeps it out of its own and out of webhook
 opened before the instance served pages has none, and the key is left out.
 
 A payment is opened with `status` `created`.
+
+### transfer
+
+`transfer` is the transfer on the chain that this payment was paid by, and `null` until one has
+been seen for it.
+
+```json
+{
+  "tx": "0x9f1e…",
+  "block_height": 78123,
+  "block_hash": "0x4c2a…",
+  "block_time": "2026-09-05T23:10:44Z",
+  "from": "0xab…",
+  "value": "1000000000000000000000"
+}
+```
+
+It is what you look the transfer up with on a node of your own. Until `status` is `succeeded` it
+is a candidate: a transfer that a chain reorganises away stops being answered here.
+
+`value` is what the chain moved, in the asset's smallest unit. It is not written the way `amount`
+and `received` are, which are in the asset's units: the same money is `"1000"` there and
+`"1000000000000000000000"` here.
+
+The chain and the address the money went to are not repeated in it. The chain is
+`asset.network`, and a transfer that paid the payment went to `destination` or it would not have
+been this payment's.
+
+A transfer that moved less than the payment asks for is not the payment's either. It puts what
+it moved in `received` and is not answered here, so a payment can carry a `received` with
+`transfer` still `null`.
 
 ### Idempotency-Key
 
