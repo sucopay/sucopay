@@ -79,3 +79,27 @@ func TestReceipt_ReadsAPaymentThatWasMadeOnPolygon(t *testing.T) {
 		t.Errorf("the key reads as %q", transfer.Key)
 	}
 }
+
+// The two controls an issuer holds, read off the token that is actually paid
+// in: both answer, and neither is set. This is what says the selectors are
+// the contract's, which no fake provider can.
+func TestPausedAndBlocklisted_ReadJPYCOnPolygonAsNeitherPausedNorListing(t *testing.T) {
+	t.Parallel()
+	const jpyc = "0xE7C3D8C9a439feDe00D2600032D5dB0Be71C3c29"
+	n := live(t)
+
+	paused, err := n.Paused(t.Context(), jpyc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if paused {
+		t.Error("JPYC reads as paused")
+	}
+	listed, err := n.Blocklisted(t.Context(), jpyc, "0x0000000000000000000000000000000000000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listed {
+		t.Error("an address nobody holds reads as blocklisted")
+	}
+}

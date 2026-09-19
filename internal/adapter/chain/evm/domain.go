@@ -36,7 +36,10 @@ func (n *network) DomainSeparator(ctx context.Context, asset string) ([32]byte, 
 	}
 	var answer word
 	if err := json.Unmarshal(raw, &answer); err != nil {
-		return [32]byte{}, fmt.Errorf("DOMAIN_SEPARATOR(): %w", err)
+		// Through the client, so that a provider's writing in the answer is
+		// cut short and has the endpoint taken out, as every other error
+		// that repeats one does.
+		return [32]byte{}, n.client.failed("DOMAIN_SEPARATOR()", err)
 	}
 	return answer, nil
 }

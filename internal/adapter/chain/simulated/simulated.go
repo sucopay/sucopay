@@ -49,6 +49,10 @@ type Chain struct {
 	pending failure
 	// calls counts the calls to each method of the interface, by name.
 	calls map[string]int
+	// paused are the assets whose issuer has stopped every transfer, and
+	// blocklisted the accounts each asset's issuer refuses transfers of.
+	paused      map[string]bool
+	blocklisted map[string]map[string]bool
 }
 
 // failure is a call made to fail. An empty method is the next call whatever it
@@ -73,7 +77,7 @@ var _ chain.Chain = (*Chain)(nil)
 // block. A chain never lacks one, so a test that wants [chain.ErrNoFinal]
 // hands it to [Chain.Fail].
 func New() *Chain {
-	c := &Chain{calls: map[string]int{}}
+	c := &Chain{calls: map[string]int{}, paused: map[string]bool{}, blocklisted: map[string]map[string]bool{}}
 	c.mine(nil)
 	return c
 }
@@ -107,6 +111,32 @@ func (c *Chain) Upgrade(asset string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.changing = append(c.changing, asset)
+}
+
+// Pause stops every transfer of an asset, the way an issuer does with the
+// whole token. What [Chain.Paused] answers for it is true until [Chain.Unpause].
+func (c *Chain) Pause(asset string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.paused[asset] = true
+}
+
+// Unpause lets an asset's transfers through again.
+func (c *Chain) Unpause(asset string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.paused, asset)
+}
+
+// Blocklist refuses transfers of an asset from or to an account, the way an
+// issuer does to one account. Nothing here takes an account off it again.
+func (c *Chain) Blocklist(asset, account string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.blocklisted[asset] == nil {
+		c.blocklisted[asset] = map[string]bool{}
+	}
+	c.blocklisted[asset][account] = true
 }
 
 // Finalize makes the block at a height the final one. Every block at or below
@@ -272,6 +302,28 @@ func (c *Chain) DomainSeparator(_ context.Context, _ string) ([32]byte, error) {
 		return [32]byte{}, err
 	}
 	return [32]byte{}, chain.ErrNoDomain
+}
+
+// Paused is whether [Chain.Pause] was called for the asset. False until it
+// is: a simulated issuer has stopped nothing unless a test says so.
+func (c *Chain) Paused(_ context.Context, asset string) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.enter("Paused"); err != nil {
+		return false, err
+	}
+	return c.paused[asset], nil
+}
+
+// Blocklisted is whether [Chain.Blocklist] was called for the asset and the
+// account.
+func (c *Chain) Blocklisted(_ context.Context, asset, account string) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.enter("Blocklisted"); err != nil {
+		return false, err
+	}
+	return c.blocklisted[asset][account], nil
 }
 
 // Implementation is empty. Nothing here stands in front of anything else.

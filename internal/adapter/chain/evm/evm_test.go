@@ -29,12 +29,16 @@ type request struct {
 //
 // A body is found under the method, or under the method and its first
 // parameter, which is how one call is told from another where the same method
-// is asked more than once.
+// is asked more than once. A call whose first parameter is an object is told
+// apart by the data in it, which is the function being called.
 type provider struct {
 	t      *testing.T
 	mu     sync.Mutex
 	bodies map[string]string
 	asked  []request
+	// url is where the provider is reached, for a test asserting that an
+	// error does not repeat it.
+	url string
 }
 
 // opening is an adapter reading a provider that answers those bodies.
@@ -43,6 +47,7 @@ func opening(t *testing.T, bodies map[string]string) (*network, *provider) {
 	p := &provider{t: t, bodies: bodies}
 	server := httptest.NewServer(p)
 	t.Cleanup(server.Close)
+	p.url = server.URL
 	return &network{client: opened(t, server.URL)}, p
 }
 
@@ -58,8 +63,13 @@ func (p *provider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.asked = append(p.asked, request{method: body.Method, params: body.Params})
 	answer, found := "", false
 	if len(body.Params) > 0 {
-		if first, ok := body.Params[0].(string); ok {
+		switch first := body.Params[0].(type) {
+		case string:
 			answer, found = p.bodies[body.Method+" "+first]
+		case map[string]any:
+			if data, ok := first["data"].(string); ok {
+				answer, found = p.bodies[body.Method+" "+data]
+			}
 		}
 	}
 	if !found {

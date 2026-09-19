@@ -58,6 +58,19 @@ type Chain interface {
 	// are the contract's. A chain whose assets sign under nothing answers
 	// [ErrNoDomain].
 	DomainSeparator(ctx context.Context, asset string) ([32]byte, error)
+	// Paused says whether the asset's contract has stopped every transfer,
+	// which an issuer does to the whole token at once.
+	//
+	// An answer the chain cannot give is an error, and is never read as
+	// unpaused: a contract that does not answer, a reading that failed, and
+	// a provider that will not say are one thing here, and none of them is
+	// "not paused". A flag a provider could talk into false by answering
+	// nothing would be a flag the provider decides.
+	Paused(ctx context.Context, asset string) (bool, error)
+	// Blocklisted says whether the asset's contract refuses transfers from
+	// or to account, which an issuer does to one account at a time. Under
+	// the same rule as Paused: what cannot be read is an error, not false.
+	Blocklisted(ctx context.Context, asset, account string) (bool, error)
 }
 
 var (
