@@ -1790,12 +1790,25 @@ func (s *Postgres) OverdueRefunds(ctx context.Context, network Network, at time.
 }
 
 // UnsettledRefunds reads the refunds of a network that are waiting, whose
-// deadline the reading of the chain has passed, and which no transfer
-// matched.
+// deadline the reading of the chain has passed, and whose key nothing was
+// seen to have spent out of the wallet the refund would come from.
 //
 // The position and not the clock, for the reason the paying side reads it
 // that way: a refund whose transfer this deployment has not read yet is not
 // one nothing settled.
+//
+// What holds a refund open is a transfer of its key out of the payment's
+// destination, whatever the rules made of that transfer. Matched is one such
+// transfer; so is one carrying more than was authorised, or going somewhere
+// else, or arriving after the deadline. Each of those is the merchant's
+// money already gone, and expiring the refund would hand its amount back to
+// what the payment can still refund and let the same money go out twice.
+//
+// The sender is what tells those apart from a transfer somebody else made. A
+// key is a nonce, and a nonce is the signer's own, so any wallet can spend
+// the same one; a transfer that left another wallet costs the merchant
+// nothing and must not hold their money up. A row whose transfer is no
+// longer on the chain holds nothing either.
 func (s *Postgres) UnsettledRefunds(ctx context.Context, network Network, limit int) ([]RefundDue, error) {
 	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
 	defer cancel()
@@ -1810,10 +1823,11 @@ func (s *Postgres) UnsettledRefunds(ctx context.Context, network Network, limit 
 		   and not exists (
 		       select 1 from observations o
 		        where o.account_id = r.account_id and o.payment_id = r.payment_id
-		          and o.refund_id = r.id and o.reason = $3)
+		          and o.refund_id = r.id and o.reason <> $3
+		          and o.sender = p.destination)
 		 order by r.expires_at, r.id
 		 limit $4`,
-		network, RefundAwaitingFinality, Matched, limit)
+		network, RefundAwaitingFinality, Vanished, limit)
 	if err != nil {
 		return nil, fmt.Errorf("refunds on %s: %w", network, err)
 	}

@@ -469,11 +469,15 @@ func (w *Worker) swept(ctx context.Context) error {
 	return w.sweptRefunds(ctx, network, now)
 }
 
-// sweptRefunds moves the refunds the clock has passed by. The two moves are
-// the payments': a refund whose deadline has passed stops being signable, and
-// one whose network has been read past the deadline with nothing that could
-// settle it expires and gives its amount back to what the payment can still
-// refund.
+// sweptRefunds moves the refunds the clock has passed by. A refund whose
+// deadline has passed stops being signable, as a payment past its deadline
+// stops being payable.
+//
+// The second move parts from the paying side. An expired refund gives its
+// amount back to what the payment can still refund, so only a refund nothing
+// was seen to have sent may take it: one whose key was spent out of the
+// wallet it comes from stays where it is, whatever the rules made of that
+// transfer, and the read is what leaves it out.
 func (w *Worker) sweptRefunds(ctx context.Context, network payment.Network, now time.Time) error {
 	reached, err := w.store.OverdueRefunds(ctx, network, now, w.perRound)
 	if err != nil {

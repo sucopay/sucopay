@@ -624,3 +624,114 @@ func TestRefund_AnnouncesNothingWhileItIsStillOpen(t *testing.T) {
 		t.Errorf("a refund waiting for finality announced %q, %v", event.Name, err)
 	}
 }
+
+// TestRefund_ExpiresOnlyWhenNothingLeftTheWalletItWouldComeFrom holds the
+// rule the ceiling rests on. An expired refund hands its amount back to what
+// the payment can still refund, so a refund whose money has already gone must
+// not expire however the rules judged the transfer that took it.
+//
+// A key is a nonce and a nonce is the signer's own, so the sender is what
+// separates the merchant's money leaving from somebody else spending the same
+// number out of a wallet of their own.
+func TestRefund_ExpiresOnlyWhenNothingLeftTheWalletItWouldComeFrom(t *testing.T) {
+	t.Parallel()
+	for name, c := range map[string]struct {
+		sent     bool
+		value    string
+		to, from string
+		late     bool
+		vanish   bool
+		reason   payment.Reason
+		expires  bool
+	}{
+		"nothing sent":          {expires: true},
+		"out of another wallet": {sent: true, from: "e", reason: payment.WrongFrom, expires: true},
+		"and then gone":         {sent: true, vanish: true, reason: payment.Matched, expires: true},
+		"what the refund says":  {sent: true, reason: payment.Matched},
+		"more than it says":     {sent: true, value: "more", reason: payment.Over},
+		"somewhere else":        {sent: true, to: "d", reason: payment.WrongTo},
+		"after the deadline":    {sent: true, late: true, reason: payment.Late},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			s, pool := store(t)
+			p := paidFor(t, s, pool, first)
+			r := refunding(t, s, first, p, "0.5")
+
+			if c.sent {
+				to, from := r.Destination(), p.Destination()
+				if c.to != "" {
+					to = address(t, c.to)
+				}
+				if c.from != "" {
+					from = address(t, c.from)
+				}
+				value := r.Amount().Amount().String()
+				if c.value == "more" {
+					value += "0"
+				}
+				at := now
+				if c.late {
+					at = r.ExpiresAt()
+				}
+				seen := sending(t, s, first, p, r, "0xsent", value, to, from, at)
+				if seen.Reason != c.reason {
+					t.Fatalf("the transfer is %s, want %s", seen.Reason, c.reason)
+				}
+				if err := recordingRefund(t, s, pool, now, 1, 20, true, seen); err != nil {
+					t.Fatal(err)
+				}
+				if c.vanish {
+					if err := s.Vanish(t.Context(), p.Network(), r.Key(), "0xsent", now); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+
+			// The deadline passes and the chain is read past it, which is
+			// every condition for expiry bar the one under test.
+			pastDeadline(t, s, first, p, r)
+			readPast(t, pool, p.Network(), r.ExpiresAt().Add(time.Minute))
+
+			over, err := s.UnsettledRefunds(t.Context(), p.Network(), 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := len(over) == 1; got != c.expires {
+				t.Fatalf("UnsettledRefunds = %d rows, want the refund to expire: %v", len(over), c.expires)
+			}
+			if c.expires {
+				return
+			}
+			// Held open, the amount is still the payment's to account for and
+			// not the merchant's to send again.
+			held, err := s.Refunded(t.Context(), first, p.ID())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if held != r.Amount().Amount().String() {
+				t.Errorf("the refunds hold %s, want the amount already gone", held)
+			}
+		})
+	}
+}
+
+// pastDeadline takes a refund to awaiting_finality, which is where the sweep
+// that expires one reads from.
+func pastDeadline(t *testing.T, s *payment.Postgres, account payment.AccountID,
+	p *payment.Payment, r *payment.Refund) {
+	t.Helper()
+	due, err := s.OverdueRefunds(t.Context(), p.Network(), r.ExpiresAt(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(due) != 1 {
+		t.Fatalf("OverdueRefunds = %d rows, want the one past its deadline", len(due))
+	}
+	if err := due[0].Refund.AwaitFinality(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveRefund(t.Context(), account, due[0].Refund, due[0].RefundAt, payment.Event{}); err != nil {
+		t.Fatal(err)
+	}
+}
