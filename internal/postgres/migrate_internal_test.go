@@ -9,11 +9,13 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sucopay/sucopay/internal/postgres/postgrestest"
@@ -159,5 +161,50 @@ func TestMigrate_RefusesADirectoryHoldingNoMigration(t *testing.T) {
 
 	if !errors.Is(err, ErrNoMigrations) {
 		t.Errorf("err = %v, want ErrNoMigrations", err)
+	}
+}
+
+// A start that hangs on the lock is the one an operator has to act on, and
+// the wait alone does not say whether another instance is applying a long
+// migration or a session took the key and never let go. The pid is what
+// separates them, and what terminating the session is addressed by.
+func TestMigrate_NamesTheSessionHoldingTheLock(t *testing.T) {
+	t.Parallel()
+	dsn := postgrestest.Fresh(t)
+	holding, err := pgx.Connect(t.Context(), dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := holding.Close(context.WithoutCancel(t.Context())); err != nil {
+			t.Error(err)
+		}
+	}()
+
+	var pid int32
+	if err := holding.QueryRow(t.Context(), `select pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := holding.Exec(t.Context(), `select pg_advisory_lock($1)`, migrationLock); err != nil {
+		t.Fatal(err)
+	}
+
+	pool, err := Open(t.Context(), dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	// The caller's deadline, not lockTimeout: what is under test is what the
+	// wait says when it ends, not how long the wait is.
+	waiting, stop := context.WithTimeout(t.Context(), 2*time.Second)
+	defer stop()
+
+	_, err = pool.Migrate(waiting)
+
+	if err == nil {
+		t.Fatal("the migration took a lock another session holds")
+	}
+	if got := err.Error(); !strings.Contains(got, fmt.Sprintf("pid %d", pid)) {
+		t.Errorf("err = %q, want it to name pid %d", got, pid)
 	}
 }

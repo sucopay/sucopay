@@ -39,6 +39,43 @@ var ErrNoMigrations = errors.New("no migrations to apply")
 // and nothing can tell which of them the database holds.
 var ErrMigrationChanged = errors.New("an applied migration has changed")
 
+// holder names the session holding the migration lock, as the tail of a
+// sentence, and is empty when nothing can be said.
+//
+// Waiting for the lock is what an operator sees when a start hangs, and the
+// wait alone does not say whether another instance is applying a long
+// migration or a session took the key and never let go. The pid is what turns
+// the second into something to act on: it is what `pg_terminate_backend` and
+// the server's own log are addressed by.
+//
+// Asked over a connection of its own, because the one that just timed out was
+// cancelled mid-statement. Nothing here fails the caller: a lock that cannot
+// be attributed is reported as a lock that could not be taken, which is what
+// the caller already knows.
+func (p *Pool) holder(ctx context.Context) string {
+	ask, stop := context.WithTimeout(context.WithoutCancel(ctx), queryTimeout)
+	defer stop()
+
+	// pg_advisory_lock takes one 64-bit key and the catalogue splits it in
+	// two, with a subid of 1 marking it as the one-argument form.
+	//
+	// Filtered to this database, because an advisory lock is held in one and
+	// the catalogue shows every database's. Two deployments in one cluster use
+	// the same key, and naming the wrong one's session would send an operator
+	// to terminate a backend doing nothing wrong.
+	var pid int32
+	if err := p.pool.QueryRow(ask, `
+		select pid from pg_locks
+		 where locktype = 'advisory' and granted
+		   and database = (select oid from pg_database where datname = current_database())
+		   and classid = $1::oid and objid = $2::oid and objsubid = 1
+		 limit 1`,
+		int64(uint32(migrationLock>>32)), int64(uint32(migrationLock))).Scan(&pid); err != nil {
+		return ""
+	}
+	return fmt.Sprintf(", which is held by pid %d", pid)
+}
+
 // Migrate brings the database up to the schema this build carries, and reports
 // how many migrations it applied.
 //
@@ -97,7 +134,7 @@ func (p *Pool) migrate(ctx context.Context, fsys fs.FS, dir string) (applied int
 	taking, stopTaking := context.WithTimeout(ctx, lockTimeout)
 	defer stopTaking()
 	if _, err := conn.Exec(taking, `select pg_advisory_lock($1)`, migrationLock); err != nil {
-		return 0, fmt.Errorf("migrations: taking the lock: %w", err)
+		return 0, fmt.Errorf("migrations: taking the lock%s: %w", p.holder(ctx), err)
 	}
 	defer func() {
 		// Detached from the caller's cancellation, which may be what ended
