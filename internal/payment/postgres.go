@@ -160,6 +160,43 @@ func (s *Postgres) FindByKey(ctx context.Context, account AccountID, key string)
 	return find(ctx, s.pool, account, id)
 }
 
+// MatchedTransfer reads the transfer that matched a payment: what a merchant
+// is answered with, and what the page shows a payer.
+//
+// The newest, should more than one have been seen, which is the order the
+// page reads them in. A transfer that is no longer on the chain is left out:
+// vanish rewrites the reason of the row it wrote, so reading the matched ones
+// leaves it behind.
+func (s *Postgres) MatchedTransfer(ctx context.Context, account AccountID, id ID) (Transfer, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	var (
+		t      Transfer
+		height int64
+	)
+	err := s.pool.QueryRow(ctx, `
+		select asset, key, authorizer, sender, recipient, value,
+		       tx, position, block_height, block_hash, block_time
+		  from observations
+		 where account_id = $1 and payment_id = $2 and reason = $3
+		 order by seen_at desc limit 1`, account, id, Matched).
+		Scan(&t.Asset, &t.Key, &t.Authorizer, &t.From, &t.To, &t.Value,
+			&t.Tx, &t.Position, &height, &t.BlockHash, &t.BlockTime)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Transfer{}, false, nil
+	}
+	if err != nil {
+		return Transfer{}, false, fmt.Errorf("payment %s: %w", id, err)
+	}
+	if height < 0 {
+		return Transfer{}, false, fmt.Errorf("payment %s: block height %d is below zero", id, height)
+	}
+	t.BlockHeight = uint64(height)
+	t.BlockTime = t.BlockTime.UTC()
+	return t, true, nil
+}
+
 // find reads one payment through whatever the caller is holding, so that a
 // round already inside a transaction reads what that transaction can see.
 func find(ctx context.Context, q queries, account AccountID, id ID) (*Payment, Revision, error) {

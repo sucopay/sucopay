@@ -3,6 +3,7 @@ package payment_test
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1041,5 +1042,107 @@ func TestRecord_AnnouncesAConfirmingAttemptWithItsTransfer(t *testing.T) {
 	}
 	if again := eventsFor(t, pool, first, hit.Payment.ID()); len(again) != len(events) {
 		t.Errorf("events after a second sight = %v, want no more than %v", again, events)
+	}
+}
+
+func TestRepository_ReadsTheTransferThatMatchedAPayment(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	hit := spent(t, s, first)
+	seen := seenAt(hit, "0xtx", 10, payment.Matched)
+	if err := recordingAt(t, s, pool, now, 1, 20, false, seen); err != nil {
+		t.Fatal(err)
+	}
+
+	got, found, err := s.MatchedTransfer(t.Context(), first, hit.Payment.ID())
+
+	if err != nil || !found {
+		t.Fatalf("MatchedTransfer found %v, %v", found, err)
+	}
+	want := seen.Transfer
+	want.Scheme = ""
+	want.BlockTime = want.BlockTime.UTC().Truncate(time.Microsecond)
+	got.BlockTime = got.BlockTime.Truncate(time.Microsecond)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("MatchedTransfer = %+v, want %+v", got, want)
+	}
+}
+
+func TestRepository_ReadsNoTransferForAPaymentNothingMatched(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	nothing := payableKept(t, s, first)
+	hit := spent(t, s, first)
+	elsewhere := spent(t, s, first)
+	if err := recordingAt(t, s, pool, now, 1, 20, false,
+		seenAt(hit, "0xshort", 10, payment.Short),
+		seenAt(elsewhere, "0xwrongto", 11, payment.WrongTo)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, found, err := s.MatchedTransfer(t.Context(), first, nothing.ID()); err != nil || found {
+		t.Errorf("a payment nothing was seen for: found %v, %v", found, err)
+	}
+	if _, found, err := s.MatchedTransfer(t.Context(), first, hit.Payment.ID()); err != nil || found {
+		t.Errorf("a payment only a short transfer was seen for: found %v, %v", found, err)
+	}
+	if _, found, err := s.MatchedTransfer(t.Context(), first, elsewhere.Payment.ID()); err != nil || found {
+		t.Errorf("a payment only a transfer elsewhere was seen for: found %v, %v", found, err)
+	}
+}
+
+func TestRepository_ReadsTheNewestOfTwoTransfersThatMatched(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	hit := spent(t, s, first)
+	if err := recordingAt(t, s, pool, now, 1, 20, false,
+		seenAt(hit, "0xfirst", 10, payment.Matched)); err != nil {
+		t.Fatal(err)
+	}
+	if err := recordingAt(t, s, pool, now.Add(time.Minute), 21, 40, false,
+		seenAt(hit, "0xsecond", 30, payment.Matched)); err != nil {
+		t.Fatal(err)
+	}
+
+	got, found, err := s.MatchedTransfer(t.Context(), first, hit.Payment.ID())
+
+	if err != nil || !found {
+		t.Fatalf("MatchedTransfer found %v, %v", found, err)
+	}
+	if got.Tx != "0xsecond" {
+		t.Errorf("MatchedTransfer = %s, want the transfer seen last", got.Tx)
+	}
+}
+
+func TestRepository_ReadsNoTransferOnceItIsNoLongerOnTheChain(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	hit := spent(t, s, first)
+	if err := recordingAt(t, s, pool, now, 1, 20, true,
+		seenAt(hit, "0xtx", 10, payment.Matched)); err != nil {
+		t.Fatal(err)
+	}
+
+	// A later round over the same finalised blocks no longer carries it.
+	if err := recordingAt(t, s, pool, now.Add(time.Minute), 1, 20, true); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, found, err := s.MatchedTransfer(t.Context(), first, hit.Payment.ID()); err != nil || found {
+		t.Errorf("a transfer that vanished: found %v, %v", found, err)
+	}
+}
+
+func TestRepository_ReadsNoTransferOfAnotherAccountsPayment(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	hit := spent(t, s, first)
+	if err := recordingAt(t, s, pool, now, 1, 20, false,
+		seenAt(hit, "0xtx", 10, payment.Matched)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, found, err := s.MatchedTransfer(t.Context(), other, hit.Payment.ID()); err != nil || found {
+		t.Errorf("another account read the transfer: found %v, %v", found, err)
 	}
 }

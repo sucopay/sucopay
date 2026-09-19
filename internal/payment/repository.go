@@ -80,6 +80,13 @@ type Repository interface {
 	// which includes the case of another account having one.
 	Find(ctx context.Context, account AccountID, id ID) (*Payment, Revision, error)
 
+	// MatchedTransfer reads the transfer that matched a payment, and whether
+	// one has been seen at all. What the row holds is filled in; Scheme is
+	// not, since it belongs to the attempt rather than to the observation.
+	//
+	// A transfer the chain no longer carries is not one of these.
+	MatchedTransfer(ctx context.Context, account AccountID, id ID) (Transfer, bool, error)
+
 	// FindByKey reads the payment that account opened under an idempotency
 	// key, and reports [ErrNotFound] when there is none. Another account's
 	// payment under the same key is not found: a key is a value the merchant
