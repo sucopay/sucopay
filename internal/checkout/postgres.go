@@ -88,6 +88,7 @@ func (s *Postgres) Matched(ctx context.Context, account payment.AccountID, id pa
 		select tx, block_height, block_time, value, final_at
 		  from observations
 		 where account_id = $1 and payment_id = $2 and reason = $3
+		   and attempt_id is not null
 		 order by seen_at desc limit 1`, account, id, payment.Matched).
 		Scan(&r.Tx, &height, &r.BlockTime, &r.Value, &finalAt)
 	if errors.Is(err, pgx.ErrNoRows) {

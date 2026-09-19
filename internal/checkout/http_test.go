@@ -228,7 +228,7 @@ func servingWith(t *testing.T, pool *pgxpool.Pool, clock func() time.Time, watch
 	store := payment.NewPostgres(pool)
 	return checkout.NewHTTP(checkout.Deps{
 		Store: checkout.NewPostgres(pool), Payments: store,
-		Service: payment.NewService(store, store, watched, clock),
+		Service: payment.NewService(store, store, store, watched, clock),
 		Key:     key, KeyID: "k1", ChainIDs: map[string]uint64{"polygon": 137},
 		Chains: reading{"polygon": "observing"}, Watched: watched,
 		Domain: func(payment.Asset) (string, string) { return "JPY Coin", "1" },

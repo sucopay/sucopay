@@ -38,7 +38,7 @@ func paymentAwait(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	account := payment.AccountID(who)
 	store := payment.NewPostgres(o.db.Conns())
-	service := payment.NewService(store, store, observe.NewCursors(o.db.Conns()), time.Now)
+	service := payment.NewService(store, store, store, observe.NewCursors(o.db.Conns()), time.Now)
 	// A payment is made payable once, and this command is run again whenever
 	// the first run stopped before the key was issued: on a network nothing
 	// reads yet, on a deployment whose cursor was not set. Making a payment

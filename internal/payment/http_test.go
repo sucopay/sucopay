@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sucopay/sucopay/internal/checkout"
 	"github.com/sucopay/sucopay/internal/payment"
+	"github.com/sucopay/sucopay/internal/refund"
 )
 
 // example is a body that writes every key a body may hold, with a deadline
@@ -78,7 +79,9 @@ func served(t *testing.T) *handler {
 	svc, store, pool := serving(t)
 	accepted := &accepting{paidTo: map[acceptance]payment.Address{{first, jpyc(t)}: address(t, "c")}}
 	return &handler{
-		h:        payment.NewHTTP(svc, listed{"jpyc": jpyc(t), "usdc": usdc(t)}, accepted, checkout.NewLinks([32]byte{9}, "k1", "https://pay.example")),
+		h: payment.NewHTTP(svc, listed{"jpyc": jpyc(t), "usdc": usdc(t)}, accepted,
+			checkout.NewLinks([32]byte{9}, "k1", "https://pay.example"),
+			refund.NewLinks([32]byte{8}, "k1", "https://pay.example")),
 		accepted: accepted,
 		store:    store,
 		pool:     pool,
@@ -202,6 +205,7 @@ func TestHTTP_CreatesAPaymentFromABodyThatWritesEveryKey(t *testing.T) {
 		"created_at":  "2026-09-01T12:00:00Z",
 		"return_url":  nil,
 		"transfer":    nil,
+		"refunded":    "0",
 	}
 	// The checkout URL is the one thing here not written from the body: a
 	// token derived for the payment. Its own test says what it is.
@@ -927,7 +931,7 @@ func keysOf(t *testing.T, payload []byte) []string {
 	return keys
 }
 
-func TestAnnounceConfirming_CarriesTheTransferOnceAndAfterEverythingElse(t *testing.T) {
+func TestAnnounceConfirming_CarriesTheTransferOnceAndAfterWhatWasThereBefore(t *testing.T) {
 	t.Parallel()
 	p := payable(t)
 	seen := payment.Transfer{
@@ -943,9 +947,14 @@ func TestAnnounceConfirming_CarriesTheTransferOnceAndAfterEverythingElse(t *test
 	if e.Name != "attempt.confirming" {
 		t.Errorf("Name = %q, want attempt.confirming", e.Name)
 	}
+	// Appended rather than put among the keys a payment already had, so that
+	// nothing a merchant reads by position moved under them.
 	keys := keysOf(t, e.Payload)
-	if n := slices.Index(keys, "transfer"); n != len(keys)-1 {
-		t.Errorf("keys = %v, want transfer last and once", keys)
+	if n := slices.Index(keys, "transfer"); n <= slices.Index(keys, "return_url") {
+		t.Errorf("keys = %v, want transfer after the keys that came before it", keys)
+	}
+	if n := slices.Index(keys[slices.Index(keys, "transfer")+1:], "transfer"); n >= 0 {
+		t.Errorf("keys = %v, want one transfer", keys)
 	}
 	if n := bytes.Count(e.Payload, []byte(`"transfer":`)); n != 1 {
 		t.Errorf("the payload writes transfer %d times:\n%s", n, e.Payload)

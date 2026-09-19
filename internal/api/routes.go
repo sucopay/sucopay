@@ -45,6 +45,8 @@ func routes(log *slog.Logger, deps Dependencies) []route {
 		{pattern: "GET /readyz", needs: open, handle: ready(log, deps.Database, deps.Credentials, deps.Chains, deps.Settling, deps.Delivering)},
 		{pattern: "POST /payments", needs: write, handle: forAccount(log, deps.Payments, Payments.Create)},
 		{pattern: "GET /payments/{id}", needs: read, handle: forAccount(log, deps.Payments, Payments.Read)},
+		{pattern: "POST /payments/{id}/refunds", needs: write, handle: forAccount(log, deps.Payments, Payments.Refund)},
+		{pattern: "GET /payments/{id}/refunds/{refund}", needs: read, handle: forAccount(log, deps.Payments, Payments.ReadRefund)},
 		{pattern: "POST /webhook_endpoints", needs: write, handle: forAccount(log, deps.Webhooks, Webhooks.Create)},
 		{pattern: "GET /webhook_endpoints", needs: read, handle: forAccount(log, deps.Webhooks, Webhooks.List)},
 		{pattern: "GET /webhook_endpoints/{id}", needs: read, handle: forAccount(log, deps.Webhooks, Webhooks.Read)},

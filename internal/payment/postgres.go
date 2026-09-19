@@ -181,6 +181,7 @@ func (s *Postgres) MatchedTransfer(ctx context.Context, account AccountID, id ID
 		       tx, position, block_height, block_hash, block_time
 		  from observations
 		 where account_id = $1 and payment_id = $2 and reason = $3
+		   and attempt_id is not null
 		 order by seen_at desc limit 1`, account, id, Matched).
 		Scan(&t.Asset, &t.Key, &t.Authorizer, &t.From, &t.To, &t.Value,
 			&t.Tx, &t.Position, &height, &t.BlockHash, &t.BlockTime)
@@ -1348,6 +1349,12 @@ func (s *Postgres) CreateRefund(ctx context.Context, account AccountID, r *Refun
 		return fmt.Errorf("refund %s: %w", r.ID(), err)
 	}
 	if left.Cmp(r.Amount().Amount()) < 0 {
+		// Nothing left is nothing left. The subtraction cannot go below zero
+		// while this is the only writer of refunds, and the refusal should
+		// not depend on that holding to be able to say so.
+		if left.Sign() < 0 {
+			left = new(big.Int)
+		}
 		rest, err := NewMoney(r.Amount().Asset(), left)
 		if err != nil {
 			return fmt.Errorf("refund %s: %w", r.ID(), err)
@@ -1448,6 +1455,65 @@ func (s *Postgres) FindRefund(ctx context.Context, account AccountID, payment ID
 	}
 	row.stored.PaymentID = payment
 	return row.refund()
+}
+
+// RefundTransfer reads the transfer that matched a refund.
+//
+// The refund's own rows and not the payment's: both stand against the same
+// payment, and a reading that did not tell them apart would answer a refund
+// with the transfer that paid the payment it sends back.
+func (s *Postgres) RefundTransfer(ctx context.Context, account AccountID, payment ID, id RefundID) (Transfer, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	var (
+		t      Transfer
+		height int64
+	)
+	err := s.pool.QueryRow(ctx, `
+		select asset, key, authorizer, sender, recipient, value,
+		       tx, position, block_height, block_hash, block_time
+		  from observations
+		 where account_id = $1 and payment_id = $2 and refund_id = $3 and reason = $4
+		 order by seen_at desc limit 1`, account, payment, id, Matched).
+		Scan(&t.Asset, &t.Key, &t.Authorizer, &t.From, &t.To, &t.Value,
+			&t.Tx, &t.Position, &height, &t.BlockHash, &t.BlockTime)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Transfer{}, false, nil
+	}
+	if err != nil {
+		return Transfer{}, false, fmt.Errorf("refund %s: %w", id, err)
+	}
+	if height < 0 {
+		return Transfer{}, false, fmt.Errorf("refund %s: block height %d is below zero", id, height)
+	}
+	t.BlockHeight = uint64(height)
+	t.BlockTime = t.BlockTime.UTC()
+	return t, true, nil
+}
+
+// FindRefundByKey reads the refund that account opened under an idempotency
+// key.
+func (s *Postgres) FindRefundByKey(ctx context.Context, account AccountID, key string) (*Refund, Revision, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	var payment ID
+	var id RefundID
+	// The key alone would find another account's refund, and a merchant
+	// chooses their own keys.
+	err := s.pool.QueryRow(ctx, `
+		select payment_id, id from refunds
+		 where account_id = $1 and idempotency_key = $2`, account, key).Scan(&payment, &id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, Revision{}, fmt.Errorf("idempotency key: %w", ErrNotFound)
+	}
+	if err != nil {
+		// The message names no key: an error is what a log keeps, and the key
+		// is the merchant's.
+		return nil, Revision{}, fmt.Errorf("reading a refund by its idempotency key: %w", err)
+	}
+	return s.FindRefund(ctx, account, payment, id)
 }
 
 // Refunded is what the payment's refunds hold against what arrived.

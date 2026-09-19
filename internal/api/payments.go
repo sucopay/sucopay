@@ -24,6 +24,8 @@ import (
 type Payments interface {
 	Create(w http.ResponseWriter, r *http.Request, account payment.AccountID) error
 	Read(w http.ResponseWriter, r *http.Request, account payment.AccountID) error
+	Refund(w http.ResponseWriter, r *http.Request, account payment.AccountID) error
+	ReadRefund(w http.ResponseWriter, r *http.Request, account payment.AccountID) error
 }
 
 // forAccount serves one method of p for the account the request was

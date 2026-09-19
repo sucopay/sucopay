@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/big"
 	"time"
 )
 
@@ -14,6 +15,7 @@ import (
 type Service struct {
 	payments  Repository
 	attempts  Attempts
+	refunds   Refunds
 	positions Positions
 	now       func() time.Time
 }
@@ -24,8 +26,8 @@ type Service struct {
 // The clock comes in rather than being read from the package. A payment's
 // deadline is decided against a moment, and whoever cannot choose that moment
 // has to wait for it to arrive.
-func NewService(payments Repository, attempts Attempts, positions Positions, now func() time.Time) *Service {
-	return &Service{payments: payments, attempts: attempts, positions: positions, now: now}
+func NewService(payments Repository, attempts Attempts, refunds Refunds, positions Positions, now func() time.Time) *Service {
+	return &Service{payments: payments, attempts: attempts, refunds: refunds, positions: positions, now: now}
 }
 
 // DefaultExpiry is how long a payment stays payable when the request names no
@@ -172,6 +174,71 @@ func (s *Service) Supersede(ctx context.Context, account AccountID, payment ID, 
 		return fmt.Errorf("%s: %w", payment, err)
 	}
 	return s.attempts.SaveAttempt(ctx, account, live, at)
+}
+
+// OpenRefund sends back what a payment received, to where it came from.
+//
+// The identifier is minted here and the page's token derived from it, the way
+// a payment's checkout token is: the row keeps what the derivation produced.
+// What the payment can still carry is the store's to say, under the lock it
+// takes, so a refund that passes here can still be refused there.
+func (s *Service) OpenRefund(ctx context.Context, account AccountID, p *Payment, id RefundID, r RefundRequest) (*Refund, error) {
+	refund, err := NewRefund(p, id, r, s.now())
+	if err != nil {
+		return nil, err
+	}
+	if err := s.refunds.CreateRefund(ctx, account, refund); err != nil {
+		return nil, err
+	}
+	return refund, nil
+}
+
+// Refund reads one refund of one payment.
+func (s *Service) Refund(ctx context.Context, account AccountID, payment ID, id RefundID) (*Refund, error) {
+	r, _, err := s.refunds.FindRefund(ctx, account, payment, id)
+	return r, err
+}
+
+// RefundByKey is the refund an idempotency key opened.
+func (s *Service) RefundByKey(ctx context.Context, account AccountID, key string) (*Refund, error) {
+	r, _, err := s.refunds.FindRefundByKey(ctx, account, key)
+	return r, err
+}
+
+// RefundTransfer is the transfer seen for a refund, and whether one has been.
+func (s *Service) RefundTransfer(ctx context.Context, account AccountID, payment ID, id RefundID) (Transfer, bool, error) {
+	return s.refunds.RefundTransfer(ctx, account, payment, id)
+}
+
+// Refunded is what a payment's refunds hold of what arrived, in the asset's
+// units, and "0" where none do.
+func (s *Service) Refunded(ctx context.Context, account AccountID, p *Payment) (string, error) {
+	held, err := s.refunds.Refunded(ctx, account, p.ID())
+	if err != nil {
+		return "", err
+	}
+	money, err := ParseMoney(p.Asset(), held)
+	if err != nil {
+		return "", err
+	}
+	return money.Units(), nil
+}
+
+// Refundable is what a payment has left to send back: what arrived, less what
+// its refunds hold.
+func (s *Service) Refundable(ctx context.Context, account AccountID, p *Payment) (Money, error) {
+	held, err := s.refunds.Refunded(ctx, account, p.ID())
+	if err != nil {
+		return Money{}, err
+	}
+	left, err := remaining(p.Received().Amount().String(), held)
+	if err != nil {
+		return Money{}, err
+	}
+	if left.Sign() < 0 {
+		left = new(big.Int)
+	}
+	return NewMoney(p.Asset(), left)
 }
 
 // MatchedTransfer is the transfer seen for a payment, and whether one has

@@ -321,6 +321,15 @@ type Accepted interface {
 // as a payment may hold fits in a quarter of it.
 const MaxBodyBytes = 64 << 10
 
+// RefundLinks makes what a refund's signing page is reached by. Declared
+// here, where it is called; the refund package is one.
+type RefundLinks interface {
+	// Token is what the row keeps of the page's token.
+	Token(id RefundID) PageToken
+	// URL is where the merchant signs the refund.
+	URL(id RefundID) string
+}
+
 // Links makes what a payment's checkout page is reached by. Declared here,
 // where it is called; the checkout package is one.
 type Links interface {
@@ -338,13 +347,14 @@ type HTTP struct {
 	assets   Assets
 	accepted Accepted
 	links    Links
+	refunds  RefundLinks
 }
 
 // NewHTTP serves the payments of service, naming assets from assets, paying
 // them to where accepted says, and giving each a checkout page through
 // links.
-func NewHTTP(service *Service, assets Assets, accepted Accepted, links Links) *HTTP {
-	return &HTTP{service: service, assets: assets, accepted: accepted, links: links}
+func NewHTTP(service *Service, assets Assets, accepted Accepted, links Links, refunds RefundLinks) *HTTP {
+	return &HTTP{service: service, assets: assets, accepted: accepted, links: links, refunds: refunds}
 }
 
 // Create opens a payment for account from the body of r and answers with it,
@@ -487,7 +497,13 @@ func (h *HTTP) Read(w http.ResponseWriter, r *http.Request, account AccountID) e
 	if err != nil {
 		return err
 	}
-	problem.JSON(w, http.StatusOK, h.body(p, transfer))
+	body := h.body(p, transfer)
+	held, err := h.service.Refunded(r.Context(), account, p)
+	if err != nil {
+		return err
+	}
+	body.Refunded = held
+	problem.JSON(w, http.StatusOK, body)
 	return nil
 }
 
@@ -510,6 +526,9 @@ type paymentJSON struct {
 	// Transfer is the transfer seen for the payment, and null until one
 	// has been. It is what a merchant checks against a node of their own.
 	Transfer *transferJSON `json:"transfer"`
+	// Refunded is what the payment's refunds hold of what arrived, in the
+	// asset's units. What can still be refunded is received less this.
+	Refunded string `json:"refunded"`
 }
 
 // assetJSON is an asset as a response writes it.
@@ -555,6 +574,11 @@ func bodyJSON(p *Payment) paymentJSON {
 		ExpiresAt:   p.ExpiresAt(),
 		CreatedAt:   p.CreatedAt(),
 		ReturnURL:   returnURL,
+		// Nothing has been refunded of a payment an event is about: only a
+		// succeeded payment can be refunded, and nothing follows succeeded,
+		// so no event is written after a refund could exist. A read is where
+		// the count is taken.
+		Refunded: "0",
 	}
 }
 

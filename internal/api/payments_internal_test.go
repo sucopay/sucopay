@@ -42,6 +42,14 @@ func (s *stub) Read(w http.ResponseWriter, r *http.Request, account payment.Acco
 	return s.serve(w, r, "Read", account)
 }
 
+func (s *stub) Refund(w http.ResponseWriter, r *http.Request, account payment.AccountID) error {
+	return s.serve(w, r, "Refund", account)
+}
+
+func (s *stub) ReadRefund(w http.ResponseWriter, r *http.Request, account payment.AccountID) error {
+	return s.serve(w, r, "ReadRefund", account)
+}
+
 func (s *stub) serve(w http.ResponseWriter, r *http.Request, method string, account payment.AccountID) error {
 	s.calls = append(s.calls, call{method, account, r.PathValue("id")})
 	if s.err != nil {

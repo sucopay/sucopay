@@ -71,7 +71,7 @@ func paid(t *testing.T, pool *pgxpool.Pool, account payment.AccountID, returnURL
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := payment.NewService(payment.NewPostgres(pool), payment.NewPostgres(pool), watching{}, func() time.Time { return now })
+	svc := payment.NewService(payment.NewPostgres(pool), payment.NewPostgres(pool), payment.NewPostgres(pool), watching{}, func() time.Time { return now })
 	p, _, err := svc.OpenAs(t.Context(), account, id, payment.Request{
 		Amount: amount, Destination: destination, Metadata: map[string]string{"order": "A-1"},
 		ExpiresAt: now.Add(15 * time.Minute), ReturnURL: returnURL, Checkout: links.Checkout(id),

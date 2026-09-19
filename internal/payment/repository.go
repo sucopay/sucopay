@@ -119,6 +119,15 @@ type Refunds interface {
 	// read at. It reports [ErrNotFound] when that account has no such refund.
 	FindRefund(ctx context.Context, account AccountID, payment ID, id RefundID) (*Refund, Revision, error)
 
+	// FindRefundByKey reads the refund that account opened under an
+	// idempotency key, and reports [ErrNotFound] when there is none.
+	FindRefundByKey(ctx context.Context, account AccountID, key string) (*Refund, Revision, error)
+
+	// RefundTransfer is the transfer that matched a refund, and whether one
+	// has been seen at all. What [Repository.MatchedTransfer] is for a
+	// payment.
+	RefundTransfer(ctx context.Context, account AccountID, payment ID, id RefundID) (Transfer, bool, error)
+
 	// Refunded is what the payment's refunds hold against what arrived: the
 	// sum of every refund but the expired ones, in the asset's smallest unit,
 	// as decimal digits. Zero is "0".

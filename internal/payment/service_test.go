@@ -26,7 +26,7 @@ func (unwatched) Has(context.Context, payment.Network) (bool, error) { return fa
 func serving(t *testing.T) (*payment.Service, *payment.Postgres, *pgxpool.Pool) {
 	t.Helper()
 	s, pool := store(t)
-	return payment.NewService(s, s, watching{}, func() time.Time { return now }), s, pool
+	return payment.NewService(s, s, s, watching{}, func() time.Time { return now }), s, pool
 }
 
 func TestService_OpensAPaymentNothingCanPayYet(t *testing.T) {
@@ -56,7 +56,7 @@ func TestService_ReadsTheClockItWasGiven(t *testing.T) {
 	t.Parallel()
 	at := now.Add(72 * time.Hour)
 	s, _ := store(t)
-	svc := payment.NewService(s, s, watching{}, func() time.Time { return at })
+	svc := payment.NewService(s, s, s, watching{}, func() time.Time { return at })
 	r := request(t)
 	r.ExpiresAt = at.Add(time.Hour)
 
@@ -153,12 +153,12 @@ func TestService_PassesOnAPaymentThatMovedUnderneathIt(t *testing.T) {
 	// Reported in a form errors.Is reads, so that a caller can tell this from a
 	// move the aggregate refused and from a payment that was never there.
 	s, _ := store(t)
-	svc := payment.NewService(s, s, watching{}, func() time.Time { return now })
+	svc := payment.NewService(s, s, s, watching{}, func() time.Time { return now })
 	opened, err := svc.Open(t.Context(), first, request(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	losing := payment.NewService(staleOnSave{s}, s, watching{}, func() time.Time { return now })
+	losing := payment.NewService(staleOnSave{s}, s, s, watching{}, func() time.Time { return now })
 
 	_, err = losing.Await(t.Context(), first, opened.ID())
 
@@ -461,7 +461,7 @@ func (alwaysLive) Live(context.Context, payment.AccountID, payment.ID) (*payment
 func TestService_AsksWhetherAnAttemptIsLiveBeforeItMintsAKey(t *testing.T) {
 	t.Parallel()
 	s, pool := store(t)
-	svc := payment.NewService(s, alwaysLive{s}, watching{}, func() time.Time { return now })
+	svc := payment.NewService(s, alwaysLive{s}, s, watching{}, func() time.Time { return now })
 	opened := payableFor(t, svc)
 
 	if _, _, err := svc.Issue(t.Context(), first, opened.ID()); !errors.Is(err, payment.ErrAttemptLive) {
@@ -479,7 +479,7 @@ func TestService_AsksWhetherAnAttemptIsLiveBeforeItMintsAKey(t *testing.T) {
 func TestService_IssuesNothingOnANetworkNothingIsReading(t *testing.T) {
 	t.Parallel()
 	s, _ := store(t)
-	svc := payment.NewService(s, s, unwatched{}, func() time.Time { return now })
+	svc := payment.NewService(s, s, s, unwatched{}, func() time.Time { return now })
 	opened := payableFor(t, svc)
 
 	_, _, err := svc.Issue(t.Context(), first, opened.ID())
