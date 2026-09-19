@@ -14,6 +14,10 @@ import "slices"
 // to write down how far it has read.
 type Chains interface {
 	Words() (networks, assets map[string]string)
+	// Paused is whether each asset has been stopped by its issuer, for the
+	// assets that were read lately. An asset not here was not read, and the
+	// answer says so by leaving it out rather than by a value.
+	Paused() map[string]bool
 }
 
 // The words that say nobody here can do anything about a network: a provider
@@ -55,6 +59,15 @@ func words(chains Chains) (networks, assets map[string]string) {
 		return nil, nil
 	}
 	return chains.Words()
+}
+
+// paused is which assets have been stopped by their issuer, and nothing where
+// nothing reads a chain.
+func paused(chains Chains) map[string]bool {
+	if chains == nil {
+		return nil
+	}
+	return chains.Paused()
 }
 
 // Settling is what each network's settling has come to, in the one word apiece

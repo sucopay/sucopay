@@ -77,6 +77,13 @@ const Stale = 2 * LeaseTTL
 // another chain. A minute comes to 1440 calls a day, each.
 const ReadImplementationEvery = time.Minute
 
+// HoldPausedFor is how long a reading of whether an asset is paused is
+// answered for. Twice the interval it is read at, so that one reading missed
+// does not take the asset out of the answer and a second does. An instance
+// that has stopped reading, or never started, then says nothing about it
+// rather than what it read once.
+const HoldPausedFor = 2 * ReadImplementationEvery
+
 // minWidth is the narrowest span a round asks for. Narrower than this and a
 // round stops keeping up with a chain that makes a block every two seconds,
 // whatever the provider will answer. It is the narrowest a document may set as
@@ -240,6 +247,15 @@ type Observer struct {
 	mu     sync.Mutex
 	word   string
 	assets map[string]string
+	// paused is whether each asset's issuer has stopped it, by the name the
+	// document gives the asset, with the moment it was read.
+	paused map[string]readFlag
+}
+
+// readFlag is a flag as it was read: the value, and when.
+type readFlag struct {
+	value bool
+	at    time.Time
 }
 
 // New returns an observer of one network, reading and writing through pool.
@@ -265,7 +281,27 @@ func New(n Network, pool *pgxpool.Pool, store *payment.Postgres, log *slog.Logge
 		now:     now,
 		named:   named,
 		assets:  assets,
+		paused:  map[string]readFlag{},
 	}
+}
+
+// Paused is whether each asset's issuer has stopped it, by the name the
+// document gives the asset, for the assets read within [HoldPausedFor]. An
+// asset missing here was not read in that time, whichever way: the contract
+// did not answer, the provider did not, or nothing here has been reading. The
+// three are one absence, and a probe is told nothing rather than something
+// old.
+func (o *Observer) Paused() map[string]bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	now := o.now()
+	paused := make(map[string]bool, len(o.paused))
+	for name, read := range o.paused {
+		if now.Sub(read.at) <= HoldPausedFor {
+			paused[name] = read.value
+		}
+	}
+	return paused
 }
 
 // Words are what this network and its assets have come to, in the one word
@@ -292,6 +328,17 @@ func (s Observers) Words() (networks, assets map[string]string) {
 		maps.Copy(assets, own)
 	}
 	return networks, assets
+}
+
+// Paused is whether each asset of every network has been stopped by its
+// issuer, for the assets read lately, as [Observer.Paused] answers for one
+// network.
+func (s Observers) Paused() map[string]bool {
+	paused := map[string]bool{}
+	for _, o := range s {
+		maps.Copy(paused, o.Paused())
+	}
+	return paused
 }
 
 // says puts the word a round came to where it can be read.
@@ -360,6 +407,11 @@ type Report struct {
 	// Behind is the code behind each asset, by the name the document gives
 	// it. It is empty for a chain whose assets cannot be replaced.
 	Behind map[string]string
+	// Paused is whether each asset's issuer has stopped it, for the assets
+	// whose contract answered. One that did not answer is missing, and is not
+	// what fails the report: the report is about the network, and an asset
+	// that cannot be asked this is a line in it rather than the end of it.
+	Paused map[string]bool
 }
 
 // Probe reads what a network says about itself. It writes nothing, so whoever
@@ -378,7 +430,10 @@ func Probe(ctx context.Context, n Network, cursors *Cursors) (_ Report, err erro
 		}
 	}()
 
-	report := Report{Behind: make(map[string]string, len(n.Assets))}
+	report := Report{
+		Behind: make(map[string]string, len(n.Assets)),
+		Paused: make(map[string]bool, len(n.Assets)),
+	}
 	if report.Identity, err = n.Chain.Identity(ctx); err != nil {
 		return Report{}, err
 	}
@@ -396,6 +451,9 @@ func Probe(ctx context.Context, n Network, cursors *Cursors) (_ Report, err erro
 			return Report{}, err
 		}
 		report.Behind[name] = behind
+		if paused, err := n.Chain.Paused(ctx, asset.Reference()); err == nil {
+			report.Paused[name] = paused
+		}
 	}
 	return report, nil
 }
@@ -442,6 +500,11 @@ func (o *Observer) start(ctx context.Context) {
 	}
 	o.identified, o.looked = o.now(), o.now()
 	o.started = report.Behind
+	o.mu.Lock()
+	for name, paused := range report.Paused {
+		o.paused[name] = readFlag{value: paused, at: o.now()}
+	}
+	o.mu.Unlock()
 	if o.network.Want != "" && report.Identity != o.network.Want {
 		o.says(chainMismatch)
 		return
@@ -511,8 +574,18 @@ func (o *Observer) waiting(ctx context.Context) {
 	}
 }
 
-// looking reads what is behind each asset where it is time to look again. A
-// proxy upgraded without saying so in a block is what this catches.
+// looking reads what is behind each asset, and whether its issuer has stopped
+// it, where it is time to look again. A proxy upgraded without saying so in a
+// block is what the first catches; a token paused in the night is what the
+// second does.
+//
+// The two fail differently, and on purpose. A slot that cannot be read is
+// the provider refusing a kind of read, which it refuses for every asset,
+// so the first stops at the first failure. A flag is each contract's own
+// answer, and one contract not answering says nothing about the next, so the
+// second goes on. The cost is a warning per asset per minute from a provider
+// that answers the chain and refuses calls to its contracts, which is a
+// provider to hear about.
 func (o *Observer) looking(ctx context.Context) {
 	if o.now().Sub(o.looked) < ReadImplementationEvery {
 		return
@@ -521,6 +594,13 @@ func (o *Observer) looking(ctx context.Context) {
 	// asset whose slot cannot be read would otherwise put every asset back on
 	// every round, which is the opposite of what asking once a minute is for.
 	o.looked = o.now()
+	o.upgraded(ctx)
+	o.stopped(ctx)
+}
+
+// upgraded reads the code behind each asset, and stops at the first that
+// cannot be read.
+func (o *Observer) upgraded(ctx context.Context) {
 	for name, asset := range o.network.Assets {
 		if err := o.keep(ctx); err != nil {
 			return
@@ -536,6 +616,34 @@ func (o *Observer) looking(ctx context.Context) {
 			o.log.Warn("the code behind an asset is not the code that was behind it",
 				"network", o.network.Name, "asset", name)
 		}
+	}
+}
+
+// stopped reads whether each asset's issuer has stopped it, and writes down
+// what it read with the moment it read it. An asset that could not be read is
+// taken out rather than left at what it said last: what a probe is answered
+// with is what was read, not what was once read.
+//
+// One asset failing does not stop the others being read. The reading is
+// about each asset on its own, and the next asset's flag is worth as much
+// after a failure as before one. In the order of the names, so that what a
+// log says was read after what is the same from one round to the next.
+func (o *Observer) stopped(ctx context.Context) {
+	for _, name := range slices.Sorted(maps.Keys(o.network.Assets)) {
+		if err := o.keep(ctx); err != nil {
+			return
+		}
+		paused, err := o.network.Chain.Paused(ctx, o.network.Assets[name].Reference())
+		o.mu.Lock()
+		if err != nil {
+			delete(o.paused, name)
+			o.mu.Unlock()
+			o.log.Warn("whether an asset is paused could not be read",
+				"network", o.network.Name, "asset", name, "error", shown(err))
+			continue
+		}
+		o.paused[name] = readFlag{value: paused, at: o.now()}
+		o.mu.Unlock()
 	}
 }
 

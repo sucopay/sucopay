@@ -68,6 +68,7 @@ type readyJSON struct {
 	Credentials string            `json:"credentials,omitempty"`
 	Networks    map[string]string `json:"networks,omitempty"`
 	Assets      map[string]string `json:"assets,omitempty"`
+	Paused      map[string]bool   `json:"paused,omitempty"`
 	Finality    map[string]string `json:"finality,omitempty"`
 	Webhooks    string            `json:"webhooks,omitempty"`
 }
@@ -105,6 +106,7 @@ func ready(log *slog.Logger, database Ready, credentials Credentials, chains Cha
 			return
 		}
 		body.Networks, body.Assets = words(chains)
+		body.Paused = paused(chains)
 		// Said and not acted on, for the reason [Settling] gives.
 		body.Finality = settling(decides)
 		body.Webhooks = delivering(delivers)
