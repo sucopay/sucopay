@@ -162,7 +162,7 @@ func (h *HTTP) Refund(w http.ResponseWriter, r *http.Request, account AccountID)
 	var refused Problems
 	switch {
 	case errors.Is(err, ErrIdempotencyKeyUsed):
-		return h.opened(w, r, account, key, idempotency.BodyHash)
+		return h.opened(w, r, account, id, key, idempotency.BodyHash)
 	case errors.As(err, &refused):
 		problem.Refuse(w, http.StatusBadRequest, "invalid", asFields(refused))
 		return nil
@@ -175,12 +175,25 @@ func (h *HTTP) Refund(w http.ResponseWriter, r *http.Request, account AccountID)
 }
 
 // opened answers a request under an idempotency key this account has used
-// with the refund that key opened, and refuses a body that is not the one it
-// was opened with.
-func (h *HTTP) opened(w http.ResponseWriter, r *http.Request, account AccountID, key string, body []byte) error {
+// with the refund that key opened, and refuses one that is not the request
+// that opened it.
+//
+// The payment is checked as well as the body, because the payment is named by
+// the path and the body carries no trace of it. A key sent to another payment
+// with the same body would otherwise be answered with a refund of the first,
+// which a merchant reading the status would take for a refund of the one they
+// asked about.
+func (h *HTTP) opened(w http.ResponseWriter, r *http.Request, account AccountID, payment ID,
+	key string, body []byte) error {
 	first, err := h.service.RefundByKey(r.Context(), account, key)
 	if err != nil {
 		return err
+	}
+	if first.PaymentID() != payment {
+		problem.Refuse(w, http.StatusBadRequest, "invalid", []problem.Field{{
+			Field:   IdempotencyKeyHeader,
+			Message: "already used to refund another payment. Send a key nothing has used"}})
+		return nil
 	}
 	if !bytes.Equal(first.Idempotency().BodyHash, body) {
 		problem.Refuse(w, http.StatusBadRequest, "invalid", []problem.Field{{

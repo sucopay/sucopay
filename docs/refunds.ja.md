@@ -47,9 +47,10 @@ Refund を作れるのは `succeeded` の Payment だけです。チェーンか
 }
 ```
 
-`Idempotency-Key` は `POST /payments` と同じ規則で読みます（[api.ja.md](api.ja.md)）。Refund ごと
-に新しい鍵を作ってください。その account が使ったことのある鍵は、それ以上の Refund を作りません。
-ほかの規則を全て通った要求は、どの Payment を指していても、その鍵が作った Refund を答えます。
+`Idempotency-Key` は `POST /payments` と同じ規則で読みます（[api.ja.md](api.ja.md)）。鍵は 1 つ
+の要求を指し、Payment もその要求の一部です。本文ではなく経路が持っていても同じで、その account
+がほかの Payment に使った鍵は断り、header を名指す problem を返します。同じ Payment へ同じ鍵と
+同じ本文をもう一度送ると、その鍵が作った Refund を答えます。
 
 `GET /payments/{id}/refunds/{refund}` が 1 つ読み返し、同じ本文を答えます。一覧の経路はありま
 せん。応答が返す識別子を控えるか、Webhook の event から読んでください。
@@ -191,7 +192,7 @@ Refund の使う鍵で、資産はそれを 1 度だけ受け付けます。
 
 | 状態 | `error` | いつ |
 |---|---|---|
-| 400 | `invalid` | Payment が `succeeded` でない、何も見つかっていない、額が残りより多い。`problems` がどれかを言う |
+| 400 | `invalid` | Payment が `succeeded` でない、何も見つかっていない、額が残りより多い、`Idempotency-Key` をほかの Payment の Refund に使った。`problems` がどれかを言う |
 | 404 | `not_found` | その識別子の Payment も Refund も account に無い |
 | 413 | `too_large` | 本文が 64 KiB を越えた |
 | 503 | `unavailable` | suco がデータベースに届かない |

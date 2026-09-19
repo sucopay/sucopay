@@ -237,3 +237,33 @@ func (f *handler) refunds(t *testing.T) int {
 	}
 	return n
 }
+
+// A key names one request, and the payment a refund is against is in the path
+// rather than in the body. Sending a used key to another payment would
+// otherwise be answered with a refund of the first one, leaving the payment
+// the merchant named with nothing and the merchant with a 201.
+func TestRefund_RefusesAKeyAlreadyUsedToRefundAnotherPayment(t *testing.T) {
+	t.Parallel()
+	f := served(t)
+	one, other := refundable(t, f), refundable(t, f)
+
+	opened, err := f.refund(t, first, one, "one-key", `{"amount": "100"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opened.Code != http.StatusCreated {
+		t.Fatalf("the first answered %d:\n%s", opened.Code, opened.Body)
+	}
+
+	again, err := f.refund(t, first, other, "one-key", `{"amount": "100"}`)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fields := refused(t, again); len(fields) != 1 || fields[0] != payment.IdempotencyKeyHeader {
+		t.Errorf("problems = %v, want one naming the header", fields)
+	}
+	if n := f.refunds(t); n != 1 {
+		t.Errorf("%d refunds, want the one the key opened", n)
+	}
+}

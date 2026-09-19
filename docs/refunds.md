@@ -50,9 +50,10 @@ The answer is `201`, with `Location` at the refund and the refund as the body:
 ```
 
 `Idempotency-Key` is read here as it is on `POST /payments`, and under the same rules
-([api.md](api.md)). Make a new one for every refund you open. A key this account has used
-already opens nothing more: a request that passes every other rule is answered with the refund
-that key opened, whichever payment it named.
+([api.md](api.md)). A key names one request, and the payment is part of that request even
+though the path rather than the body carries it: a key this account used on another payment is
+refused, with a problem naming the header. The same key and body sent to the same payment again
+are answered with the refund that key opened.
 
 `GET /payments/{id}/refunds/{refund}` reads one back, and answers the same body. There is no
 route that lists them. Keep the identifier the answer gives, or read it off the webhook event.
@@ -199,7 +200,7 @@ refund adds to them:
 
 | Status | `error` | When |
 |---|---|---|
-| 400 | `invalid` | The payment is not `succeeded`, nothing has been seen for it, or the amount is more than it has left. `problems` says which |
+| 400 | `invalid` | The payment is not `succeeded`, nothing has been seen for it, the amount is more than it has left, or `Idempotency-Key` was used to refund another payment. `problems` says which |
 | 404 | `not_found` | No payment or refund of the account under that identifier |
 | 413 | `too_large` | The body is over 64 KiB |
 | 503 | `unavailable` | suco could not reach its database |
