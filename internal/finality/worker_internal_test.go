@@ -239,7 +239,7 @@ func (d *decider) recorded(t *testing.T, transfers ...chain.Transfer) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := d.store.Record(t.Context(), tx, local, height, height, true, seen, d.at); err != nil {
+	if err := d.store.Record(t.Context(), tx, local, height, height, true, seen, nil, d.at); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(t.Context()); err != nil {

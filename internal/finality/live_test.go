@@ -189,7 +189,7 @@ func recordedOnPolygon(t *testing.T, reading chain.Chain, store *payment.Postgre
 		t.Fatal(err)
 	}
 	if err := store.Record(t.Context(), tx, "polygon", transfer.Block.Height, transfer.Block.Height,
-		true, []payment.Seen{{Hit: hits[0], Transfer: read, Reason: reason}}, time.Now()); err != nil {
+		true, []payment.Seen{{Hit: hits[0], Transfer: read, Reason: reason}}, nil, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(t.Context()); err != nil {

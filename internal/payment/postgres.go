@@ -591,7 +591,66 @@ func (s *Postgres) Attempted(ctx context.Context, account AccountID, payment ID)
 const observationColumns = `account_id, payment_id, attempt_id, network, key, tx,
                             position, block_height, block_hash, block_time, asset,
                             authorizer, sender, recipient, value, reason,
-                            implementation, seen_at, final_at`
+                            implementation, seen_at, final_at, refund_id`
+
+// RefundsConsumed reads the refunds on a network whose keys were consumed,
+// each with the payment it sends back and the revision both were read at.
+//
+// What [Postgres.Consumed] is on the paying side. Keyed by network and key,
+// and not by account: a transfer names those two and nothing else.
+func (s *Postgres) RefundsConsumed(ctx context.Context, network Network, keys []string) ([]RefundHit, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx, `
+		select r.account_id, r.payment_id, `+refundColumns+`,
+		       p.amount, p.received, p.destination, p.status, p.metadata,
+		       p.created_at, p.expires_at, p.version
+		  from refunds r
+		  join payments p on p.account_id = r.account_id and p.id = r.payment_id
+		 where r.network = $1 and r.key = any($2)`, network, keys)
+	if err != nil {
+		return nil, fmt.Errorf("refunds on %s: %w", network, err)
+	}
+	defer rows.Close()
+
+	var hits []RefundHit
+	for rows.Next() {
+		var (
+			hit    RefundHit
+			refund refunder
+			row    payer
+		)
+		if err := rows.Scan(&hit.Account, &refund.stored.PaymentID,
+			&refund.stored.ID, &refund.amount, &refund.stored.Destination, &refund.stored.Scheme,
+			&refund.stored.Network, &refund.stored.Key, &refund.stored.ExpiresAt, &refund.stored.Status,
+			&refund.stored.Token.Hash, &refund.stored.Token.KeyID, &refund.idempotencyKey,
+			&refund.stored.Idempotency.BodyHash, &refund.stored.CreatedAt, &refund.closedAt,
+			&refund.version, &refund.network, &refund.reference, &refund.symbol, &refund.decimals,
+			&row.amount, &row.received, &row.stored.Destination, &row.stored.Status, &row.metadata,
+			&row.stored.CreatedAt, &row.stored.ExpiresAt, &row.version); err != nil {
+			return nil, fmt.Errorf("refunds on %s: %w", network, err)
+		}
+		row.stored.ID = refund.stored.PaymentID
+		row.network, row.reference = refund.network, refund.reference
+		row.symbol, row.decimals = refund.symbol, refund.decimals
+		p, at, err := row.payment()
+		if err != nil {
+			return nil, err
+		}
+		r, ratt, err := refund.refund()
+		if err != nil {
+			return nil, err
+		}
+		hit.Refund, hit.RefundAt = r, ratt
+		hit.Payment, hit.PaymentAt = p, at
+		hits = append(hits, hit)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("refunds on %s: %w", network, err)
+	}
+	return hits, nil
+}
 
 // Consumed reads the attempts on a network whose keys were consumed, each with
 // the payment it is against and the revision both were read at.
@@ -937,10 +996,19 @@ func scanDue(rows pgx.Rows, network Network) ([]Due, error) {
 //
 // Every move is conditioned on the revision the caller read, so a round that
 // lost a race reports [ErrStale] and writes nothing.
-func (s *Postgres) Record(ctx context.Context, tx pgx.Tx, network Network, first, last uint64, final bool, seen []Seen, now time.Time) error {
-	txs := make([]string, 0, len(seen))
+func (s *Postgres) Record(ctx context.Context, tx pgx.Tx, network Network, first, last uint64, final bool, seen []Seen, sent []SeenRefund, now time.Time) error {
+	txs := make([]string, 0, len(seen)+len(sent))
 	for _, one := range seen {
-		if err := recordOne(ctx, tx, network, one, final, now); err != nil {
+		if err := recordOne(ctx, tx, network, seenAgainstAttempt(one), final, now); err != nil {
+			return err
+		}
+		txs = append(txs, one.Transfer.Tx)
+	}
+	// A refund's transfer is a row of the same shape against the refund, and
+	// nothing else moves for it here. What a refund reaches is decided by
+	// finality, as what a payment reaches is.
+	for _, one := range sent {
+		if err := recordOne(ctx, tx, network, seenAgainstRefund(one), final, now); err != nil {
 			return err
 		}
 		txs = append(txs, one.Transfer.Tx)
@@ -997,8 +1065,39 @@ func (s *Postgres) Record(ctx context.Context, tx pgx.Tx, network Network, first
 // cannot hold fails the round rather than being read into something else: what
 // an asset's smallest unit means is the asset's, and a row here carries the
 // digits of whichever asset the transfer was of.
-func recordOne(ctx context.Context, q queries, network Network, one Seen, final bool, now time.Time) error {
-	t := one.Transfer
+// observation is one row of what a chain was seen to carry, against an
+// attempt or against a refund. Exactly one of the two is set, which is what
+// the schema requires of the row.
+type observation struct {
+	account        AccountID
+	payment        ID
+	attempt        *AttemptID
+	refund         *RefundID
+	transfer       Transfer
+	reason         Reason
+	implementation string
+}
+
+// seenAgainstAttempt is what a judged transfer of an attempt's key writes.
+func seenAgainstAttempt(one Seen) observation {
+	id := one.Attempt.ID()
+	return observation{
+		account: one.Account, payment: one.Payment.ID(), attempt: &id,
+		transfer: one.Transfer, reason: one.Reason, implementation: one.Implementation,
+	}
+}
+
+// seenAgainstRefund is what a judged transfer of a refund's key writes.
+func seenAgainstRefund(one SeenRefund) observation {
+	id := one.Refund.ID()
+	return observation{
+		account: one.Account, payment: one.Refund.PaymentID(), refund: &id,
+		transfer: one.Transfer, reason: one.Reason, implementation: one.Implementation,
+	}
+}
+
+func recordOne(ctx context.Context, q queries, network Network, one observation, final bool, now time.Time) error {
+	t := one.transfer
 	if err := screen(t); err != nil {
 		return err
 	}
@@ -1013,16 +1112,16 @@ func recordOne(ctx context.Context, q queries, network Network, one Seen, final 
 	if _, err := q.Exec(ctx, `
 		insert into observations (`+observationColumns+`)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-		        $16, $17, $18, $19)
+		        $16, $17, $18, $19, $20)
 		on conflict (network, key, tx) do update
 		   set position = $7, block_height = $8, block_hash = $9, block_time = $10,
 		       asset = $11, authorizer = $12, sender = $13, recipient = $14,
 		       value = $15, reason = $16, implementation = $17, seen_at = $18,
 		       final_at = coalesce(observations.final_at, $19)`,
-		one.Account, one.Payment.ID(), one.Attempt.ID(), network, t.Key, t.Tx,
+		one.account, one.payment, one.attempt, network, t.Key, t.Tx,
 		t.Position, height, t.BlockHash, t.BlockTime, t.Asset,
-		t.Authorizer, t.From, t.To, t.Value, one.Reason,
-		one.Implementation, now, finalAt); err != nil {
+		t.Authorizer, t.From, t.To, t.Value, one.reason,
+		one.implementation, now, finalAt, one.refund); err != nil {
 		return fmt.Errorf("transfer %s: %w", t.Tx, err)
 	}
 	return nil
@@ -1055,11 +1154,22 @@ func vanish(ctx context.Context, q queries, network Network, first, last uint64,
 	}
 	var lost []gone
 	for rows.Next() {
-		var one gone
-		if err := rows.Scan(&one.account, &one.payment, &one.attempt); err != nil {
+		var (
+			one     gone
+			attempt *AttemptID
+		)
+		if err := rows.Scan(&one.account, &one.payment, &attempt); err != nil {
 			rows.Close()
 			return fmt.Errorf("observations on %s: %w", network, err)
 		}
+		// A row against a refund has no attempt, and nothing to take back
+		// either: a refund reaches a status when the chain settles its
+		// transfer and at no other moment, so a transfer that is no longer
+		// there leaves the refund where it was.
+		if attempt == nil {
+			continue
+		}
+		one.attempt = *attempt
 		lost = append(lost, one)
 	}
 	rows.Close()
@@ -1182,23 +1292,32 @@ func (s *Postgres) Vanish(ctx context.Context, network Network, key, tx string, 
 	}
 	defer func() { err = unwind(ctx, t, what, err) }()
 
-	var one gone
+	var (
+		one     gone
+		attempt *AttemptID
+	)
 	if err := t.QueryRow(ctx, `
 		select account_id, payment_id, attempt_id
 		  from observations
 		 where network = $1 and key = $2 and tx = $3 and reason <> $4
 		   for update`,
-		network, key, tx, Vanished).Scan(&one.account, &one.payment, &one.attempt); err != nil {
+		network, key, tx, Vanished).Scan(&one.account, &one.payment, &attempt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		return fmt.Errorf("%s: %w", what, err)
 	}
-	if _, err := t.Exec(ctx, `
-		select 1 from attempts
-		 where account_id = $1 and payment_id = $2
-		   for update`, one.account, one.payment); err != nil {
-		return fmt.Errorf("%s: %w", what, err)
+	// A row against a refund is marked and nothing else: there is no attempt
+	// to put back, and the refund's own status was never moved by the
+	// transfer being seen.
+	if attempt != nil {
+		one.attempt = *attempt
+		if _, err := t.Exec(ctx, `
+			select 1 from attempts
+			 where account_id = $1 and payment_id = $2
+			   for update`, one.account, one.payment); err != nil {
+			return fmt.Errorf("%s: %w", what, err)
+		}
 	}
 	if _, err := t.Exec(ctx, `
 		update observations
@@ -1207,8 +1326,10 @@ func (s *Postgres) Vanish(ctx context.Context, network Network, key, tx string, 
 		network, key, tx, Vanished, now); err != nil {
 		return fmt.Errorf("%s: %w", what, err)
 	}
-	if err := taken(ctx, t, one); err != nil {
-		return err
+	if attempt != nil {
+		if err := taken(ctx, t, one); err != nil {
+			return err
+		}
 	}
 	if err := t.Commit(ctx); err != nil {
 		return fmt.Errorf("%s: %w", what, err)

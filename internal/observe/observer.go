@@ -693,7 +693,7 @@ func (o *Observer) settled(ctx context.Context, network payment.Network, from Po
 	if reach := from.Height + o.blocks(); last > reach {
 		last = reach
 	}
-	seen, err := o.seen(ctx, network, first, last, behind)
+	seen, sent, err := o.seen(ctx, network, first, last, behind)
 	if err != nil {
 		return err
 	}
@@ -701,7 +701,7 @@ func (o *Observer) settled(ctx context.Context, network payment.Network, from Po
 	if err != nil {
 		return err
 	}
-	if err := o.write(ctx, network, first, last, from, to, seen); err != nil {
+	if err := o.write(ctx, network, first, last, from, to, seen, sent); err != nil {
 		return err
 	}
 	o.wrote(seen, true)
@@ -737,14 +737,14 @@ func (o *Observer) ahead(ctx context.Context, network payment.Network, head chai
 	if width := o.blocks(); last-first+1 > width {
 		first = last - width + 1
 	}
-	seen, err := o.seen(ctx, network, first, last, behind)
+	seen, sent, err := o.seen(ctx, network, first, last, behind)
 	if err != nil {
 		return err
 	}
-	if len(seen) == 0 {
+	if len(seen) == 0 && len(sent) == 0 {
 		return nil
 	}
-	if err := o.record(ctx, network, first, last, seen); err != nil {
+	if err := o.record(ctx, network, first, last, seen, sent); err != nil {
 		return err
 	}
 	o.wrote(seen, false)
@@ -752,79 +752,113 @@ func (o *Observer) ahead(ctx context.Context, network payment.Network, head chai
 }
 
 // record writes what a round found ahead of finality, which moves no position.
-func (o *Observer) record(ctx context.Context, network payment.Network, first, last uint64, seen []payment.Seen) (err error) {
+func (o *Observer) record(ctx context.Context, network payment.Network, first, last uint64, seen []payment.Seen, sent []payment.SeenRefund) (err error) {
 	tx, err := o.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { err = unwind(ctx, tx, err) }()
 
-	if err := o.store.Record(ctx, tx, network, first, last, false, seen, o.now()); err != nil {
+	if err := o.store.Record(ctx, tx, network, first, last, false, seen, sent, o.now()); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
 }
 
-// seen is what a range of blocks holds against the attempts of this network:
-// every transfer that spent a key some attempt holds, with what the rules made
-// of it.
-func (o *Observer) seen(ctx context.Context, network payment.Network, first, last uint64, behind map[string]string) ([]payment.Seen, error) {
+// seen is what a range of blocks holds against the attempts and the refunds
+// of this network: every transfer that spent a key one of them holds, with
+// what the rules made of it.
+func (o *Observer) seen(ctx context.Context, network payment.Network, first, last uint64, behind map[string]string) ([]payment.Seen, []payment.SeenRefund, error) {
 	if err := o.keep(ctx); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	scan, err := o.network.Chain.Keys(ctx, first, last, o.references())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	o.replaced(scan.Changed)
 	if len(scan.Consumed) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
-	hits, err := o.store.Consumed(ctx, network, keys(scan.Consumed))
+	spent := keys(scan.Consumed)
+	hits, err := o.store.Consumed(ctx, network, spent)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	against := make(map[string]payment.Hit, len(hits))
 	for _, hit := range hits {
 		against[hit.Attempt.Key()] = hit
 	}
+	refunds, err := o.store.RefundsConsumed(ctx, network, spent)
+	if err != nil {
+		return nil, nil, err
+	}
+	back := make(map[string]payment.RefundHit, len(refunds))
+	for _, hit := range refunds {
+		key := hit.Refund.Key()
+		// A row of the observations stands against one thing, and a key that
+		// two of them hold would say which by a guess. Nothing is written for
+		// it: 32 bytes of randomness do not collide, and a round that meets
+		// one says so rather than choosing.
+		if _, both := against[key]; both {
+			o.log.Error("a key is held by an attempt and by a refund",
+				"network", o.network.Name, "payment", hit.Refund.PaymentID(), "refund", hit.Refund.ID())
+			delete(against, key)
+			continue
+		}
+		back[key] = hit
+	}
 	// A key nothing here issued is a payment somebody else is taking. Its
 	// receipt is not read, so what it moved and who moved it is not looked at.
 	var out []payment.Seen
-	for _, tx := range transactions(scan.Consumed, against) {
+	var sent []payment.SeenRefund
+	for _, tx := range transactions(scan.Consumed, against, back) {
 		if err := o.keep(ctx); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		transfers, err := o.network.Chain.Receipt(ctx, tx)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, carried := range transfers {
-			hit, ok := against[carried.Key]
-			if !ok {
+			hit, paying := against[carried.Key]
+			refund, sending := back[carried.Key]
+			if !paying && !sending {
 				continue
 			}
 			transfer := transferred(carried)
-			reason, judged := payment.Judge(transfer, hit.Attempt, hit.Payment)
+			var reason payment.Reason
+			var judged bool
+			if paying {
+				reason, judged = payment.Judge(transfer, hit.Attempt, hit.Payment)
+			} else {
+				reason, judged = payment.JudgeRefund(transfer, refund.Refund, refund.Payment)
+			}
 			if !judged {
 				continue
 			}
 			code, err := o.behind(ctx, carried.Asset, behind)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
-			out = append(out, payment.Seen{
-				Hit: hit, Transfer: transfer, Reason: reason, Implementation: code,
+			if paying {
+				out = append(out, payment.Seen{
+					Hit: hit, Transfer: transfer, Reason: reason, Implementation: code,
+				})
+				continue
+			}
+			sent = append(sent, payment.SeenRefund{
+				RefundHit: refund, Transfer: transfer, Reason: reason, Implementation: code,
 			})
 		}
 	}
-	return out, nil
+	return out, sent, nil
 }
 
 // write puts what a round found and the position it read to into one
 // transaction, so that a position that moved was written with everything found
 // below it.
-func (o *Observer) write(ctx context.Context, network payment.Network, first, last uint64, from, to Position, seen []payment.Seen) (err error) {
+func (o *Observer) write(ctx context.Context, network payment.Network, first, last uint64, from, to Position, seen []payment.Seen, sent []payment.SeenRefund) (err error) {
 	tx, err := o.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -832,7 +866,7 @@ func (o *Observer) write(ctx context.Context, network payment.Network, first, la
 	defer func() { err = unwind(ctx, tx, err) }()
 
 	now := o.now()
-	if err := o.store.Record(ctx, tx, network, first, last, true, seen, now); err != nil {
+	if err := o.store.Record(ctx, tx, network, first, last, true, seen, sent, now); err != nil {
 		return err
 	}
 	if err := o.cursors.Advance(ctx, tx, network, from, to, now); err != nil {
@@ -922,18 +956,21 @@ func keys(consumed []chain.Consumed) []string {
 }
 
 // transactions are the transactions a scan found that spent a key some attempt
-// holds: one to a key, each once, and in the order the scan found them.
+// or some refund holds: one to a key, each once, and in the order the scan
+// found them.
 //
 // A key is spent once, so a scan naming one in two transactions is naming a
 // transaction that is not on the chain, and reading it costs a receipt and a
 // row: the rows are kept by key and transaction together, so a scan of ten
 // thousand of them would leave ten thousand rows against one key.
-func transactions(consumed []chain.Consumed, against map[string]payment.Hit) []string {
+func transactions(consumed []chain.Consumed, against map[string]payment.Hit, back map[string]payment.RefundHit) []string {
 	spent := make(map[string]bool, len(consumed))
 	read := make(map[string]bool, len(consumed))
 	var out []string
 	for _, one := range consumed {
-		if _, ok := against[one.Key]; !ok || spent[one.Key] {
+		_, paying := against[one.Key]
+		_, sending := back[one.Key]
+		if !paying && !sending || spent[one.Key] {
 			continue
 		}
 		spent[one.Key] = true

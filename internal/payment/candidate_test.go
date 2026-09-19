@@ -19,7 +19,7 @@ func recordingOn(t *testing.T, s *payment.Postgres, pool *pgxpool.Pool, on payme
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Record(t.Context(), tx, on, first, last, final, seen, now); err != nil {
+	if err := s.Record(t.Context(), tx, on, first, last, final, seen, nil, now); err != nil {
 		if rollback := tx.Rollback(t.Context()); rollback != nil {
 			t.Fatal(rollback)
 		}

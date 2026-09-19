@@ -61,6 +61,15 @@ const (
 	// Vanished is a transfer that was recorded and is no longer on the chain
 	// where it was seen.
 	Vanished Reason = "vanished"
+	// WrongFrom is a transfer that left somewhere other than where the
+	// payment was paid. Only a refund has this: a payer may pay from
+	// wherever they hold the money, and a refund can only come back out of
+	// the wallet the money went to.
+	WrongFrom Reason = "wrong_from"
+	// Over is a transfer of more than what was asked for. Only a refund has
+	// this: a payment takes more than it asked for and calls it paid, and a
+	// refund sends back an amount somebody signed for.
+	Over Reason = "over"
 )
 
 // String returns the reason as written.
@@ -128,6 +137,79 @@ func Judge(t Transfer, a *Attempt, p *Payment) (Reason, bool) {
 		return Late, true
 	}
 	return Matched, true
+}
+
+// JudgeRefund says what a transfer is worth against one refund of one
+// payment, and whether the transfer is that refund's at all.
+//
+// The rules are the mirror of [Judge], read in the same order, and two of them
+// differ. Where the money left is checked, because only the wallet a payment
+// was paid to can sign a refund of it, and the amount has to be the amount:
+// a payment may take more than it asked for, and a refund sends back what the
+// merchant signed for and no more.
+//
+// The false is a transfer of a key this refund does not hold, which is a
+// mistake in the pairing rather than evidence about a refund.
+func JudgeRefund(t Transfer, r *Refund, p *Payment) (Reason, bool) {
+	if r == nil || p == nil {
+		return "", false
+	}
+	if t.Key != r.Key() || t.Scheme != r.Scheme() || r.Network() != p.Network() {
+		return "", false
+	}
+	if t.Asset != p.Asset().Reference() {
+		return WrongAsset, true
+	}
+	if t.To != string(r.Destination()) {
+		return WrongTo, true
+	}
+	if t.From != string(p.Destination()) {
+		return WrongFrom, true
+	}
+	sent, err := ParseMoney(p.Asset(), t.Value)
+	if err != nil {
+		return Short, true
+	}
+	switch against, err := sent.Cmp(r.Amount()); {
+	case err != nil, against < 0:
+		return Short, true
+	case against > 0:
+		return Over, true
+	}
+	// The merchant signs the authorisation, so when it dies is theirs to set
+	// the way the destination and the amount are. The moment compared is the
+	// one the chain stamped on the block the transfer was carried in.
+	if !t.BlockTime.Before(r.ExpiresAt()) {
+		return Late, true
+	}
+	return Matched, true
+}
+
+// RefundHit is a refund a transfer's key belongs to, with the payment it
+// sends back, each with the revision it was read at. What [Hit] is on the
+// paying side.
+type RefundHit struct {
+	// Account owns the payment and the refund.
+	Account AccountID
+	// Refund is the refund whose key was consumed, at RefundAt.
+	Refund   *Refund
+	RefundAt Revision
+	// Payment is what the refund is against, at PaymentAt.
+	Payment   *Payment
+	PaymentAt Revision
+}
+
+// SeenRefund is a transfer of a refund's key, judged. What [Seen] is on the
+// paying side.
+type SeenRefund struct {
+	RefundHit
+	// Transfer is what the chain said.
+	Transfer Transfer
+	// Reason is what [JudgeRefund] made of it.
+	Reason Reason
+	// Implementation identifies the code behind the asset when the transfer
+	// was seen.
+	Implementation string
 }
 
 // Hit is an attempt a transfer's key belongs to, with the payment it is

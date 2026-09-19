@@ -35,16 +35,18 @@ func opening(t *testing.T, p *payment.Payment, units string) (*payment.Refund, e
 	}, now)
 }
 
-// paidFor stores a payment the chain settled, which is the only kind a refund
-// can be made against.
-func paidFor(t *testing.T, s *payment.Postgres, account payment.AccountID) *payment.Payment {
+// paidFor stores a payment a transfer paid and the chain settled, which is the
+// only kind a refund can be made against.
+func paidFor(t *testing.T, s *payment.Postgres, pool *pgxpool.Pool, account payment.AccountID) *payment.Payment {
 	t.Helper()
-	p := payableKept(t, s, account)
-	_, at, err := s.Find(t.Context(), account, p.ID())
-	if err != nil {
+	hit := spent(t, s, account)
+	if err := recordingAt(t, s, pool, now, 1, 20, false,
+		seenAt(hit, "0xpaid", 10, payment.Matched)); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.Receive(p.Amount()); err != nil {
+	// What arrived is on the payment; what is left is the chain settling it.
+	p, at, err := s.Find(t.Context(), account, hit.Payment.ID())
+	if err != nil {
 		t.Fatal(err)
 	}
 	if err := p.Succeed(); err != nil {
@@ -71,12 +73,12 @@ func refunding(t *testing.T, s *payment.Postgres, account payment.AccountID, p *
 
 func TestRefund_IsOnlyOpenedAgainstAPaymentTheChainSettled(t *testing.T) {
 	t.Parallel()
-	s, _ := store(t)
+	s, pool := store(t)
 
 	for name, p := range map[string]*payment.Payment{
 		"created": kept(t, s, first),
 		"payable": payableKept(t, s, first),
-		"settled": paidFor(t, s, first),
+		"settled": paidFor(t, s, pool, first),
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, err := opening(t, p, "1")
@@ -105,8 +107,8 @@ func TestRefund_IsOnlyOpenedAgainstAPaymentTheChainSettled(t *testing.T) {
 
 func TestRefund_TheStoreRefusesAPaymentThatIsNotSettled(t *testing.T) {
 	t.Parallel()
-	s, _ := store(t)
-	settledPayment := paidFor(t, s, first)
+	s, pool := store(t)
+	settledPayment := paidFor(t, s, pool, first)
 	unsettled := payableKept(t, s, first)
 	r, err := opening(t, settledPayment, "1")
 	if err != nil {
@@ -132,8 +134,8 @@ func TestRefund_TheStoreRefusesAPaymentThatIsNotSettled(t *testing.T) {
 
 func TestRefund_HoldsWhatIsLeftOfWhatArrived(t *testing.T) {
 	t.Parallel()
-	s, _ := store(t)
-	p := paidFor(t, s, first)
+	s, pool := store(t)
+	p := paidFor(t, s, pool, first)
 
 	refunding(t, s, first, p, "0.4")
 	held, err := s.Refunded(t.Context(), first, p.ID())
@@ -165,8 +167,8 @@ func TestRefund_HoldsWhatIsLeftOfWhatArrived(t *testing.T) {
 
 func TestRefund_ReadsBackWhatItWasOpenedWith(t *testing.T) {
 	t.Parallel()
-	s, _ := store(t)
-	p := paidFor(t, s, first)
+	s, pool := store(t)
+	p := paidFor(t, s, pool, first)
 	r := refunding(t, s, first, p, "0.25")
 
 	back, _, err := s.FindRefund(t.Context(), first, p.ID(), r.ID())
@@ -191,7 +193,7 @@ func TestRefund_ReadsBackWhatItWasOpenedWith(t *testing.T) {
 func TestRefund_KeepsTheAmountOffTheCeilingUntilItExpires(t *testing.T) {
 	t.Parallel()
 	s, pool := store(t)
-	p := paidFor(t, s, first)
+	p := paidFor(t, s, pool, first)
 	r := refunding(t, s, first, p, "1")
 
 	// What the sweep of the clock will do, before there is one to do it.
@@ -212,8 +214,8 @@ func TestRefund_KeepsTheAmountOffTheCeilingUntilItExpires(t *testing.T) {
 
 func TestRefund_IsNotOpenedAgainstAnotherAccountsPayment(t *testing.T) {
 	t.Parallel()
-	s, _ := store(t)
-	p := paidFor(t, s, first)
+	s, pool := store(t)
+	p := paidFor(t, s, pool, first)
 	r, err := opening(t, p, "1")
 	if err != nil {
 		t.Fatal(err)
@@ -244,7 +246,7 @@ func rebound(t *testing.T, r *payment.Refund, id payment.ID) *payment.Refund {
 func TestRefund_LetsNoTwoRequestsMeasureAgainstTheSameRemainder(t *testing.T) {
 	t.Parallel()
 	s, pool := store(t)
-	p := paidFor(t, s, first)
+	p := paidFor(t, s, pool, first)
 	const racing = 3
 
 	// The payment is held here so that every request reaches the ceiling
@@ -313,5 +315,154 @@ func blocking(t *testing.T, pool *pgxpool.Pool, n int) {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// sending is a refund of p with a transfer of it seen on the chain, judged.
+func sending(t *testing.T, s *payment.Postgres, account payment.AccountID, p *payment.Payment,
+	r *payment.Refund, tx string, value string, to, from payment.Address, at time.Time) payment.SeenRefund {
+	t.Helper()
+	hits, err := s.RefundsConsumed(t.Context(), p.Network(), []string{r.Key()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("RefundsConsumed found %d refunds for one key", len(hits))
+	}
+	transfer := payment.Transfer{
+		Scheme: r.Scheme(), Asset: p.Asset().Reference(), Key: r.Key(),
+		Authorizer: string(from), From: string(from), To: string(to), Value: value,
+		Tx: tx, BlockHeight: 10, BlockHash: "block" + tx, BlockTime: at,
+	}
+	reason, judged := payment.JudgeRefund(transfer, hits[0].Refund, hits[0].Payment)
+	if !judged {
+		t.Fatalf("the transfer was not judged against the refund")
+	}
+	return payment.SeenRefund{
+		RefundHit: hits[0], Transfer: transfer, Reason: reason, Implementation: "implementation",
+	}
+}
+
+func TestRefund_JudgesATransferAgainstTheRefundItSpends(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	p := paidFor(t, s, pool, first)
+	r := refunding(t, s, first, p, "0.5")
+	half := r.Amount().Amount().String()
+	to, from := r.Destination(), p.Destination()
+
+	for name, c := range map[string]struct {
+		value    string
+		to, from payment.Address
+		at       time.Time
+		want     payment.Reason
+	}{
+		"what the refund says":  {half, to, from, now, payment.Matched},
+		"somewhere else":        {half, address(t, "d"), from, now, payment.WrongTo},
+		"out of another wallet": {half, to, address(t, "e"), now, payment.WrongFrom},
+		"less than it says":     {"1", to, from, now, payment.Short},
+		"more than it says":     {half + "0", to, from, now, payment.Over},
+		"after the deadline":    {half, to, from, r.ExpiresAt(), payment.Late},
+	} {
+		t.Run(name, func(t *testing.T) {
+			seen := sending(t, s, first, p, r, "0x"+name, c.value, c.to, c.from, c.at)
+			if seen.Reason != c.want {
+				t.Errorf("the transfer is %s, want %s", seen.Reason, c.want)
+			}
+		})
+	}
+}
+
+// recordingRefund hands Record what a round found for a refund, and rolls the
+// transaction back rather than leaving it open when the write is refused.
+func recordingRefund(t *testing.T, s *payment.Postgres, pool *pgxpool.Pool, at time.Time,
+	first, last uint64, final bool, sent ...payment.SeenRefund) error {
+	t.Helper()
+	tx, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Record(t.Context(), tx, network, first, last, final, nil, sent, at); err != nil {
+		if rollback := tx.Rollback(t.Context()); rollback != nil {
+			t.Fatal(rollback)
+		}
+		return err
+	}
+	if err := tx.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	return nil
+}
+
+func TestRefund_RecordsATransferAgainstTheRefundAndNotThePayment(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	p := paidFor(t, s, pool, first)
+	r := refunding(t, s, first, p, "0.5")
+	seen := sending(t, s, first, p, r, "0xback", r.Amount().Amount().String(),
+		r.Destination(), p.Destination(), now)
+
+	if err := recordingRefund(t, s, pool, now, 1, 20, false, seen); err != nil {
+		t.Fatal(err)
+	}
+
+	// The row stands against the refund, and against no attempt.
+	var attempt, refund *string
+	if err := pool.QueryRow(t.Context(),
+		`select attempt_id, refund_id from observations where tx = $1`, "0xback").
+		Scan(&attempt, &refund); err != nil {
+		t.Fatal(err)
+	}
+	if attempt != nil || refund == nil || *refund != r.ID().String() {
+		t.Errorf("the row stands against attempt %v and refund %v", attempt, refund)
+	}
+	// What the payment was paid is what the payment says it was paid: the
+	// refund's transfer is not an arrival, and does not become the payment's.
+	back, _, err := s.Find(t.Context(), first, p.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := back.Received(); got.Units() != p.Amount().Units() {
+		t.Errorf("the payment received %s, want %s", got.Units(), p.Amount().Units())
+	}
+	paid, found, err := s.MatchedTransfer(t.Context(), first, p.ID())
+	if err != nil || !found {
+		t.Fatalf("MatchedTransfer found %v, %v", found, err)
+	}
+	if paid.Tx == "0xback" {
+		t.Error("the payment's transfer is the refund's")
+	}
+	// And the refund's own reading finds it.
+	sent, found, err := s.RefundTransfer(t.Context(), first, p.ID(), r.ID())
+	if err != nil || !found || sent.Tx != "0xback" {
+		t.Errorf("RefundTransfer = %v, %v, %v", sent.Tx, found, err)
+	}
+}
+
+func TestRefund_LeavesARefundWhereItIsWhenItsTransferVanishes(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	p := paidFor(t, s, pool, first)
+	r := refunding(t, s, first, p, "0.5")
+	seen := sending(t, s, first, p, r, "0xback", r.Amount().Amount().String(),
+		r.Destination(), p.Destination(), now)
+	if err := recordingRefund(t, s, pool, now, 1, 20, true, seen); err != nil {
+		t.Fatal(err)
+	}
+
+	// A later round over the same finalised blocks no longer carries it.
+	if err := recordingRefund(t, s, pool, now.Add(time.Minute), 1, 20, true); err != nil {
+		t.Fatal(err)
+	}
+
+	back, _, err := s.FindRefund(t.Context(), first, p.ID(), r.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.Status() != payment.RefundCreated {
+		t.Errorf("the refund is %s, want it left where it was", back.Status())
+	}
+	if _, found, err := s.RefundTransfer(t.Context(), first, p.ID(), r.ID()); err != nil || found {
+		t.Errorf("the transfer that vanished is still answered: %v, %v", found, err)
 	}
 }

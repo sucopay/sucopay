@@ -269,7 +269,7 @@ func recordingAt(t *testing.T, s *payment.Postgres, pool *pgxpool.Pool, at time.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Record(t.Context(), tx, network, first, last, final, seen, at); err != nil {
+	if err := s.Record(t.Context(), tx, network, first, last, final, seen, nil, at); err != nil {
 		if rollback := tx.Rollback(t.Context()); rollback != nil {
 			t.Fatal(rollback)
 		}
