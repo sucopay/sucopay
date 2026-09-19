@@ -101,9 +101,50 @@ opened before the instance served pages has none, and the key is left out.
 
 A payment is opened with `status` `created`.
 
-Opening a payment twice opens two payments. There is no idempotency key yet: a request that
-was sent and not answered has to be looked up on the merchant's side, by whatever the merchant
-put in `metadata`, before it is sent again.
+### Idempotency-Key
+
+Opening a payment twice opens two payments, unless the second says it is the first one again:
+
+```http
+Idempotency-Key: 8e03978e-40d5-43e8-bc93-6894a57f9324
+```
+
+Make the key random, and make a new one for every payment you open. A UUID is what most clients
+send. A value in quotes is read too, and the quotes are not part of the key. A key is at most
+255 bytes of printable ASCII, is not empty, and carries no quote or backslash. Send the field
+once; two of them name two requests, and are refused.
+
+A request under a key this account has already used is answered with the payment that key
+opened: `201`, the same `Location`, and `Idempotent-Replayed: true` on the answer. The body is
+the payment as it stands rather than a copy of the first answer, so a payment that has become
+payable since says so.
+
+The two requests have to carry the same body, byte for byte. Reordering the keys of the JSON is
+enough to make it another body, and a key that arrives with another body is answered `400`, with
+a problem naming `Idempotency-Key`. Send the body you sent the first time, or a key nothing has
+used. The IETF draft this field comes from suggests `422` here; suco answers `400`, as it does
+for anything else wrong with a request.
+
+```json
+{
+  "error": "invalid",
+  "problems": [
+    {
+      "field": "Idempotency-Key",
+      "message": "already used for another body. Send that body, or a key nothing has used"
+    }
+  ]
+}
+```
+
+A key is kept as long as the payment it opened. A request suco refused keeps no key, so the same
+key can be sent again with a body that is right. Two requests under one key that arrive together
+are no trouble either: the second waits for the first, and is answered with its payment.
+
+The key is read on `POST /payments` and nowhere else.
+
+Without a key, a request that was sent and not answered has to be looked up on the merchant's
+side, by whatever the merchant put in `metadata`, before it is sent again.
 
 ## GET /payments/{id}
 
@@ -193,7 +234,7 @@ A success is the payment. A failure is one shape, on every route.
 
 | Status | `error` | When |
 |---|---|---|
-| 400 | `invalid` | The body is not a JSON object, holds a key the API does not read, gives a value of another type, or gives a value outside its rules. `problems` says which. |
+| 400 | `invalid` | The body is not a JSON object, holds a key the API does not read, gives a value of another type, or gives a value outside its rules. Or `Idempotency-Key` is not a key, or arrived with another body. `problems` says which. |
 | 401 | `unauthorized` | No credential, or one not in force. |
 | 403 | `forbidden` | The credential may not do what the route does. |
 | 404 | `not_found` | No payment, or no webhook endpoint, of the account under that identifier. |
@@ -205,8 +246,9 @@ Only `400` carries `problems`.
 
 ### Problems
 
-Each problem names the request key it is about in `field`, and says in `message` which rule the
-value broke. A problem with the body as a whole has no `field`:
+Each problem names the part of the request it is about in `field`, and says in `message` which
+rule the value broke. That is a key of the body, or the name of a header where a header is what
+was wrong. A problem with the body as a whole has no `field`:
 
 ```json
 {
@@ -223,9 +265,11 @@ A value a message repeats is cut to 128 bytes. A field, which may be a key the r
 a message are each cut to 512 bytes, and quoted, with the characters written as escapes, when they
 hold a control or an invisible character.
 
-Problems come in stages, and a body is answered for the first stage it fails. First everything
-wrong with the body's shape: unknown keys, values of another type, an asset `suco.yaml` does not
-list, an amount or a time that does not read as one, a required key left out. Then whether the
+Problems come in stages, and a body is answered for the first stage it fails. A key that is not
+one is answered with the first stage, so a bad header and a bad body come back together. First
+everything wrong with the body's shape: unknown keys, values of another type, an asset
+`suco.yaml` does not list, an amount or a time that does not read as one, a required key left
+out. Then whether the
 account accepts the asset. Then everything wrong with the values: an amount of zero, an expiry
 outside its range, metadata over its limits. A body wrong at one stage lists every problem of
 that stage, so that a client fixes them in one round.
