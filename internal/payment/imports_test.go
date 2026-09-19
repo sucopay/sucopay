@@ -18,7 +18,7 @@ import (
 // how the shape of a database gets into everything that stores a payment.
 var domainFiles = []string{
 	"asset.go", "attempt.go", "evidence.go", "money.go", "payment.go",
-	"repository.go", "service.go", "status.go",
+	"refund.go", "repository.go", "service.go", "status.go",
 }
 
 // allowed is everything those files may import. An allow list rather than a

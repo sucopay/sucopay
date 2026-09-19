@@ -99,6 +99,32 @@ type Repository interface {
 	Save(ctx context.Context, account AccountID, p *Payment, at Revision, e Event) error
 }
 
+// Refunds stores refunds, which are the payments' own aggregate the other way
+// round: one merchant's decision to send back what a payer sent.
+//
+// A refund is stored under the account of the payment it is against, as an
+// attempt is, and every method here takes that account.
+type Refunds interface {
+	// CreateRefund stores a refund nothing has stored before, and refuses one
+	// the payment cannot carry: a payment the chain has not settled, and an
+	// amount beyond what is left of what arrived. It reports [Problems] for
+	// both, since both are answers to what the caller asked for.
+	//
+	// The reading of the ceiling and the writing of the row are one
+	// transaction, over a locked payment, so that two requests arriving
+	// together cannot both measure against the same remainder.
+	CreateRefund(ctx context.Context, account AccountID, r *Refund) error
+
+	// FindRefund reads one refund of one payment, and the revision it was
+	// read at. It reports [ErrNotFound] when that account has no such refund.
+	FindRefund(ctx context.Context, account AccountID, payment ID, id RefundID) (*Refund, Revision, error)
+
+	// Refunded is what the payment's refunds hold against what arrived: the
+	// sum of every refund but the expired ones, in the asset's smallest unit,
+	// as decimal digits. Zero is "0".
+	Refunded(ctx context.Context, account AccountID, payment ID) (string, error)
+}
+
 // Attempts stores attempts.
 //
 // An attempt is stored under the account of the payment it is against, and

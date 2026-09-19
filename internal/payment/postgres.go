@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -1283,4 +1284,216 @@ func (r payer) payment() (*Payment, Revision, error) {
 		return nil, Revision{}, fmt.Errorf("payment %s: %w", r.stored.ID, err)
 	}
 	return p, Revision{id: string(r.stored.ID), at: r.version}, nil
+}
+
+// refundColumns are what a row holds of a refund, in the order the reads below
+// scan them. The asset is not among them: a refund is in the asset of the
+// payment it is against, and the reads join it from there rather than keeping
+// a second copy that could come to disagree.
+const refundColumns = `r.id, r.amount, r.destination, r.scheme, r.network, r.key,
+                       r.expires_at, r.status, r.token_hash, r.token_key_id,
+                       r.idempotency_key, r.idempotency_body_hash, r.created_at,
+                       r.closed_at, r.version,
+                       p.asset_network, p.asset_reference, p.asset_symbol, p.asset_decimals`
+
+// CreateRefund stores a refund nothing has stored before.
+//
+// The payment is read under a lock, and the ceiling is measured inside the
+// same transaction as the write. Two requests that arrive together would
+// otherwise both read the same remainder and both write, and the merchant
+// could sign each of them: the money that went out would be more than the
+// money that came in, which is the one thing this check is for.
+func (s *Postgres) CreateRefund(ctx context.Context, account AccountID, r *Refund) (err error) {
+	if r == nil {
+		return errors.New("payment: nothing to refund")
+	}
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("refund %s: %w", r.ID(), err)
+	}
+	defer func() { err = unwind(ctx, tx, fmt.Sprintf("refund %s", r.ID()), err) }()
+
+	var (
+		status   Status
+		received *string
+	)
+	// for update, and the payment before the refunds: whoever takes both
+	// takes them in this order.
+	err = tx.QueryRow(ctx, `
+		select status, received from payments
+		 where account_id = $1 and id = $2 for update`, account, r.PaymentID()).
+		Scan(&status, &received)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%s: %w", r.PaymentID(), ErrNotFound)
+	}
+	if err != nil {
+		return fmt.Errorf("refund %s: %w", r.ID(), err)
+	}
+	if status != Succeeded {
+		return Problems{{Field: "status", Message: fmt.Sprintf(
+			"payment is %s, and only a %s payment can be refunded", status, Succeeded)}}
+	}
+	if received == nil {
+		return Problems{{Field: "status", Message: "nothing arrived for this payment"}}
+	}
+	held, err := refunded(ctx, tx, account, r.PaymentID())
+	if err != nil {
+		return fmt.Errorf("refund %s: %w", r.ID(), err)
+	}
+	left, err := remaining(*received, held)
+	if err != nil {
+		return fmt.Errorf("refund %s: %w", r.ID(), err)
+	}
+	if left.Cmp(r.Amount().Amount()) < 0 {
+		rest, err := NewMoney(r.Amount().Asset(), left)
+		if err != nil {
+			return fmt.Errorf("refund %s: %w", r.ID(), err)
+		}
+		return Problems{{Field: "amount", Message: fmt.Sprintf(
+			"%s is more than the %s this payment has left to refund",
+			r.Amount().Units(), rest.Units())}}
+	}
+	token, idempotency := r.Token(), r.Idempotency()
+	var key *string
+	var bodyHash []byte
+	if idempotency.IsSet() {
+		key, bodyHash = &idempotency.Key, idempotency.BodyHash
+	}
+	_, err = tx.Exec(ctx, `
+		insert into refunds (
+			account_id, payment_id, id, amount, destination, scheme, network, key,
+			expires_at, status, token_hash, token_key_id, idempotency_key,
+			idempotency_body_hash, created_at
+		) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+		account, r.PaymentID(), r.ID(), digits(r.Amount()), r.Destination(), r.Scheme(),
+		r.Network(), r.Key(), r.ExpiresAt(), r.Status(), token.Hash, token.KeyID,
+		key, bodyHash, r.CreatedAt())
+	if err != nil {
+		// Constrained first: what the driver raises holds the values that
+		// clashed, and two of them are keys nothing here publishes.
+		refused := postgres.Constrained(err)
+		var broken postgres.Constraint
+		if errors.As(refused, &broken) {
+			switch broken.Name {
+			case "refunds_by_idempotency_key":
+				return fmt.Errorf("refund %s: %w", r.ID(), ErrIdempotencyKeyUsed)
+			case "refunds_by_key":
+				return fmt.Errorf("refund %s: %w", r.ID(), ErrKeyTaken)
+			}
+		}
+		return fmt.Errorf("refund %s: %w", r.ID(), refused)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("refund %s: %w", r.ID(), err)
+	}
+	return nil
+}
+
+// remaining is what is left of arrived once held is taken off it, both in the
+// asset's smallest unit as decimal digits.
+func remaining(arrived, held string) (*big.Int, error) {
+	in, ok := new(big.Int).SetString(arrived, 10)
+	if !ok {
+		return nil, fmt.Errorf("what arrived is not a number: %q", arrived)
+	}
+	out, ok := new(big.Int).SetString(held, 10)
+	if !ok {
+		return nil, fmt.Errorf("what the refunds hold is not a number: %q", held)
+	}
+	return in.Sub(in, out), nil
+}
+
+// refunded reads what a payment's refunds hold through whatever the caller is
+// holding, so that a round already inside a transaction reads what that
+// transaction can see.
+func refunded(ctx context.Context, q queries, account AccountID, payment ID) (string, error) {
+	var held string
+	err := q.QueryRow(ctx, `
+		select coalesce(sum(amount), 0)::text from refunds
+		 where account_id = $1 and payment_id = $2 and status <> $3`,
+		account, payment, RefundExpired).Scan(&held)
+	if err != nil {
+		return "", err
+	}
+	return held, nil
+}
+
+// FindRefund reads one refund of one payment.
+func (s *Postgres) FindRefund(ctx context.Context, account AccountID, payment ID, id RefundID) (*Refund, Revision, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	var row refunder
+	// Filtered on the account and the payment as well as the identifier: a
+	// refund of somebody else's payment is not found rather than found and
+	// refused.
+	err := s.pool.QueryRow(ctx, `
+		select `+refundColumns+`
+		  from refunds r
+		  join payments p on p.account_id = r.account_id and p.id = r.payment_id
+		 where r.account_id = $1 and r.payment_id = $2 and r.id = $3`, account, payment, id).
+		Scan(&row.stored.ID, &row.amount, &row.stored.Destination, &row.stored.Scheme,
+			&row.stored.Network, &row.stored.Key, &row.stored.ExpiresAt, &row.stored.Status,
+			&row.stored.Token.Hash, &row.stored.Token.KeyID, &row.idempotencyKey,
+			&row.stored.Idempotency.BodyHash, &row.stored.CreatedAt, &row.closedAt,
+			&row.version, &row.network, &row.reference, &row.symbol, &row.decimals)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, Revision{}, fmt.Errorf("%s: %w", id, ErrNotFound)
+	}
+	if err != nil {
+		return nil, Revision{}, fmt.Errorf("refund %s: %w", id, err)
+	}
+	row.stored.PaymentID = payment
+	return row.refund()
+}
+
+// Refunded is what the payment's refunds hold against what arrived.
+func (s *Postgres) Refunded(ctx context.Context, account AccountID, payment ID) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	held, err := refunded(ctx, s.pool, account, payment)
+	if err != nil {
+		return "", fmt.Errorf("payment %s: %w", payment, err)
+	}
+	return held, nil
+}
+
+// refunder is a refund's row as the reads above scan it, with the asset of
+// the payment it is against.
+type refunder struct {
+	stored         RefundStored
+	amount         string
+	network        string
+	reference      string
+	symbol         string
+	decimals       uint8
+	idempotencyKey *string
+	closedAt       *time.Time
+	version        int64
+}
+
+// refund rebuilds what the columns hold, and the revision they were read at.
+func (r refunder) refund() (*Refund, Revision, error) {
+	asset, err := NewAsset(Network(r.network), r.reference, r.symbol, r.decimals)
+	if err != nil {
+		return nil, Revision{}, fmt.Errorf("refund %s: %w", r.stored.ID, err)
+	}
+	if r.stored.Amount, err = ParseMoney(asset, r.amount); err != nil {
+		return nil, Revision{}, fmt.Errorf("refund %s: %w", r.stored.ID, err)
+	}
+	if r.idempotencyKey != nil {
+		r.stored.Idempotency.Key = *r.idempotencyKey
+	}
+	if r.closedAt != nil {
+		r.stored.ClosedAt = *r.closedAt
+	}
+	refund, err := RestoreRefund(r.stored)
+	if err != nil {
+		return nil, Revision{}, fmt.Errorf("refund %s: %w", r.stored.ID, err)
+	}
+	return refund, Revision{id: string(r.stored.ID), at: r.version}, nil
 }
