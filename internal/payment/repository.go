@@ -27,6 +27,13 @@ var (
 	// reapplying the move it was going to make.
 	ErrStale = errors.New("payment: changed since it was read")
 
+	// ErrIdempotencyKeyUsed reports that the account already opened a payment
+	// with that idempotency key. The store reports it for any second payment
+	// under the key; [Service.OpenAs] reports it onwards only when the body
+	// differs from the one the key first arrived with, since a retry of the
+	// same body is answered with the payment the key already opened.
+	ErrIdempotencyKeyUsed = errors.New("payment: the idempotency key opened another payment")
+
 	// ErrKeyTaken reports that an attempt on that network already holds the
 	// key. A transfer names its key and nothing else, so a key held twice
 	// would be a transfer belonging to two payments.
@@ -72,6 +79,12 @@ type Repository interface {
 	// [ErrNotFound] when that account has no payment under that identifier,
 	// which includes the case of another account having one.
 	Find(ctx context.Context, account AccountID, id ID) (*Payment, Revision, error)
+
+	// FindByKey reads the payment that account opened under an idempotency
+	// key, and reports [ErrNotFound] when there is none. Another account's
+	// payment under the same key is not found: a key is a value the merchant
+	// chooses, and two of them may choose the same one.
+	FindByKey(ctx context.Context, account AccountID, key string) (*Payment, Revision, error)
 
 	// Save writes back a payment that was read, and reports [ErrStale] if
 	// anything wrote to it in between. The event the move produced is written

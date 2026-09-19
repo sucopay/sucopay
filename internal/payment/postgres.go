@@ -85,25 +85,44 @@ func (s *Postgres) Create(ctx context.Context, account AccountID, p *Payment) (e
 	defer func() { err = unwind(ctx, tx, fmt.Sprintf("payment %s", p.ID()), err) }()
 
 	asset := p.Asset()
-	var checkoutHash []byte
-	var checkoutKeyID, returnURL *string
+	var checkoutHash, bodyHash []byte
+	var checkoutKeyID, returnURL, key *string
 	if c := p.Checkout(); c.IsSet() {
 		checkoutHash, checkoutKeyID = c.Hash, &c.KeyID
 	}
 	if u := p.ReturnURL(); u != "" {
 		returnURL = &u
 	}
+	switch i := p.Idempotency(); {
+	case i.IsSet():
+		key, bodyHash = &i.Key, i.BodyHash
+	case i.Key != "" || len(i.BodyHash) > 0:
+		// What the schema refuses as well. Half of it is a caller that lost
+		// the other half, and a payment stored without the key it was opened
+		// under would answer a retry by opening a second payment.
+		return fmt.Errorf("payment %s: half an idempotency key", p.ID())
+	}
 	_, err = tx.Exec(ctx, `
 		insert into payments (
 			id, account_id, asset_network, asset_reference, asset_symbol,
 			asset_decimals, amount, destination, status, metadata,
-			created_at, expires_at, checkout_hash, checkout_key_id, return_url
-		) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+			created_at, expires_at, checkout_hash, checkout_key_id, return_url,
+			idempotency_key, idempotency_body_hash
+		) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
 		p.ID(), account, asset.Network(), asset.Reference(), asset.Symbol(),
 		asset.Decimals(), digits(p.Amount()), p.Destination(), p.Status(), metadata,
-		p.CreatedAt(), p.ExpiresAt(), checkoutHash, checkoutKeyID, returnURL)
+		p.CreatedAt(), p.ExpiresAt(), checkoutHash, checkoutKeyID, returnURL,
+		key, bodyHash)
 	if err != nil {
-		return fmt.Errorf("payment %s: %w", p.ID(), err)
+		// Constrained first, and on the way out as well: what the driver
+		// raises holds the values that clashed, one of which is a key the
+		// merchant chose and nothing here publishes.
+		refused := postgres.Constrained(err)
+		var broken postgres.Constraint
+		if errors.As(refused, &broken) && broken.Name == "payments_by_idempotency_key" {
+			return fmt.Errorf("payment %s: %w", p.ID(), ErrIdempotencyKeyUsed)
+		}
+		return fmt.Errorf("payment %s: %w", p.ID(), refused)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("payment %s: %w", p.ID(), err)
@@ -119,6 +138,28 @@ func (s *Postgres) Find(ctx context.Context, account AccountID, id ID) (*Payment
 	return find(ctx, s.pool, account, id)
 }
 
+// FindByKey reads the payment that account opened under an idempotency key.
+func (s *Postgres) FindByKey(ctx context.Context, account AccountID, key string) (*Payment, Revision, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	var id ID
+	// The key alone would find another account's payment, and a merchant
+	// chooses their own keys.
+	err := s.pool.QueryRow(ctx, `
+		select id from payments where account_id = $1 and idempotency_key = $2`, account, key).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, Revision{}, fmt.Errorf("idempotency key: %w", ErrNotFound)
+	}
+	if err != nil {
+		// The message names no key: an error is what a log keeps, and the key
+		// is the merchant's, as the key a payment is paid against is the
+		// payer's.
+		return nil, Revision{}, fmt.Errorf("reading a payment by its idempotency key: %w", err)
+	}
+	return find(ctx, s.pool, account, id)
+}
+
 // find reads one payment through whatever the caller is holding, so that a
 // round already inside a transaction reads what that transaction can see.
 func find(ctx context.Context, q queries, account AccountID, id ID) (*Payment, Revision, error) {
@@ -130,13 +171,15 @@ func find(ctx context.Context, q queries, account AccountID, id ID) (*Payment, R
 		select asset_network, asset_reference, asset_symbol, asset_decimals,
 		       amount, received, destination, status, metadata,
 		       created_at, expires_at, version,
-		       checkout_hash, checkout_key_id, return_url, closed_at
+		       checkout_hash, checkout_key_id, return_url, closed_at,
+		       idempotency_key, idempotency_body_hash
 		  from payments
 		 where account_id = $1 and id = $2`, account, id).
 		Scan(&row.network, &row.reference, &row.symbol, &row.decimals, &row.amount,
 			&row.received, &row.stored.Destination, &row.stored.Status, &row.metadata,
 			&row.stored.CreatedAt, &row.stored.ExpiresAt, &row.version,
-			&row.stored.Checkout.Hash, &row.checkoutKeyID, &row.returnURL, &row.closedAt)
+			&row.stored.Checkout.Hash, &row.checkoutKeyID, &row.returnURL, &row.closedAt,
+			&row.idempotencyKey, &row.stored.Idempotency.BodyHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, Revision{}, fmt.Errorf("%s: %w", id, ErrNotFound)
 	}
@@ -1154,18 +1197,19 @@ func span(first, last uint64) (int64, int64, error) {
 // payer is a payment as its columns come back, before the asset and the
 // amounts are read into the values the aggregate holds.
 type payer struct {
-	stored        Stored
-	network       string
-	reference     string
-	symbol        string
-	decimals      uint8
-	amount        string
-	received      *string
-	metadata      []byte
-	version       int64
-	checkoutKeyID *string
-	returnURL     *string
-	closedAt      *time.Time
+	stored         Stored
+	network        string
+	reference      string
+	symbol         string
+	decimals       uint8
+	amount         string
+	received       *string
+	metadata       []byte
+	version        int64
+	checkoutKeyID  *string
+	returnURL      *string
+	closedAt       *time.Time
+	idempotencyKey *string
 }
 
 // payment rebuilds what the columns hold, and the revision they were read at.
@@ -1187,6 +1231,9 @@ func (r payer) payment() (*Payment, Revision, error) {
 	}
 	if r.checkoutKeyID != nil {
 		r.stored.Checkout.KeyID = *r.checkoutKeyID
+	}
+	if r.idempotencyKey != nil {
+		r.stored.Idempotency.Key = *r.idempotencyKey
 	}
 	if r.returnURL != nil {
 		r.stored.ReturnURL = *r.returnURL

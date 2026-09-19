@@ -2,6 +2,7 @@ package payment_test
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -287,7 +288,7 @@ func TestRepository_EveryFieldOfAPaymentIsAccountedFor(t *testing.T) {
 	fixed := map[string]bool{
 		"id": true, "amount": true, "destination": true,
 		"metadata": true, "createdAt": true, "expiresAt": true,
-		"returnURL": true, "checkout": true,
+		"returnURL": true, "checkout": true, "idempotency": true,
 	}
 
 	fields := reflect.TypeOf(payment.Payment{})
@@ -1052,5 +1053,126 @@ func TestRepository_WritesWhenAPaymentEndedOnceAndLeavesItAlone(t *testing.T) {
 	}
 	if !closedAt.Equal(ended.ClosedAt()) {
 		t.Errorf("closed_at moved to %s on a resave, want %s kept", closedAt, ended.ClosedAt())
+	}
+}
+
+// keyed is a payment opened under an idempotency key, with the hash of the
+// body that key arrived with.
+func keyed(t *testing.T, key, body string) *payment.Payment {
+	t.Helper()
+	r := request(t)
+	hash := sha256.Sum256([]byte(body))
+	r.Idempotency = payment.Idempotency{Key: key, BodyHash: hash[:]}
+	p, err := payment.New(r, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestRepository_ReadsBackTheIdempotencyKeyAPaymentWasOpenedUnder(t *testing.T) {
+	t.Parallel()
+	s, _ := store(t)
+	p := keyed(t, "a-key", `{"amount": "1"}`)
+	if err := s.Create(t.Context(), first, p); err != nil {
+		t.Fatal(err)
+	}
+
+	back, _, err := s.Find(t.Context(), first, p.ID())
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := back.Idempotency(); got.Key != "a-key" || !bytes.Equal(got.BodyHash, p.Idempotency().BodyHash) {
+		t.Errorf("idempotency = %q %x, want %q %x",
+			got.Key, got.BodyHash, "a-key", p.Idempotency().BodyHash)
+	}
+	if got := kept(t, s, first).Idempotency(); got.IsSet() {
+		t.Errorf("a payment opened under no key came back with %q", got.Key)
+	}
+}
+
+func TestRepository_RefusesASecondPaymentUnderOneAccountsKeyWithoutNamingTheKey(t *testing.T) {
+	t.Parallel()
+	s, _ := store(t)
+	const key = "a-merchant-chose-this"
+	if err := s.Create(t.Context(), first, keyed(t, key, `{"amount": "1"}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	err := s.Create(t.Context(), first, keyed(t, key, `{"amount": "2"}`))
+
+	if !errors.Is(err, payment.ErrIdempotencyKeyUsed) {
+		t.Fatalf("the second payment under one key gave %v, want %v", err, payment.ErrIdempotencyKeyUsed)
+	}
+	// The driver's own error carries the values that clashed, and a key is
+	// the merchant's. What a log keeps has to be free of it.
+	if strings.Contains(err.Error(), key) {
+		t.Errorf("the refusal repeats the key: %v", err)
+	}
+}
+
+func TestRepository_LetsTwoAccountsChooseOneKey(t *testing.T) {
+	t.Parallel()
+	s, _ := store(t)
+	const key = "the-same-key"
+	if err := s.Create(t.Context(), first, keyed(t, key, `{"amount": "1"}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Create(t.Context(), other, keyed(t, key, `{"amount": "1"}`)); err != nil {
+		t.Errorf("another account's payment under the same key: %v", err)
+	}
+}
+
+func TestRepository_LetsPaymentsOpenedUnderNoKeyPileUp(t *testing.T) {
+	t.Parallel()
+	s, _ := store(t)
+
+	kept(t, s, first)
+	kept(t, s, first)
+}
+
+func TestRepository_RefusesHalfAnIdempotencyKey(t *testing.T) {
+	t.Parallel()
+	s, _ := store(t)
+	p := keyed(t, "a-key", `{"amount": "1"}`)
+	half := payment.Stored{
+		ID: p.ID(), Amount: p.Amount(), Destination: p.Destination(), Status: p.Status(),
+		CreatedAt: p.CreatedAt(), ExpiresAt: p.ExpiresAt(),
+		Idempotency: payment.Idempotency{Key: "a-key"},
+	}
+	restored, err := payment.Restore(half)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Create(t.Context(), first, restored); err == nil {
+		t.Error("a payment carrying a key and no hash of the body was stored")
+	}
+}
+
+func TestRepository_FindsAPaymentByItsKeyAndNotAnotherAccounts(t *testing.T) {
+	t.Parallel()
+	s, _ := store(t)
+	const key = "a-key"
+	p := keyed(t, key, `{"amount": "1"}`)
+	if err := s.Create(t.Context(), first, p); err != nil {
+		t.Fatal(err)
+	}
+
+	back, _, err := s.FindByKey(t.Context(), first, key)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.ID() != p.ID() {
+		t.Errorf("FindByKey gave %s, want %s", back.ID(), p.ID())
+	}
+	if _, _, err := s.FindByKey(t.Context(), other, key); !errors.Is(err, payment.ErrNotFound) {
+		t.Errorf("another account's key gave %v, want %v", err, payment.ErrNotFound)
+	}
+	if _, _, err := s.FindByKey(t.Context(), first, "no such key"); !errors.Is(err, payment.ErrNotFound) {
+		t.Errorf("a key nobody used gave %v, want %v", err, payment.ErrNotFound)
 	}
 }

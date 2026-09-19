@@ -152,6 +152,7 @@ type Payment struct {
 	expiresAt   time.Time
 	returnURL   string
 	checkout    Checkout
+	idempotency Idempotency
 	closedAt    time.Time
 }
 
@@ -177,7 +178,23 @@ type Request struct {
 	// Checkout is what the row keeps of the checkout page's token. Empty for
 	// a payment made without one, which has no page.
 	Checkout Checkout
+	// Idempotency is the key the request carried, and empty when it carried
+	// none. A key is what makes the same request sent twice open one payment.
+	Idempotency Idempotency
 }
+
+// Idempotency is what a payment's row keeps of the request that opened it:
+// the key the merchant sent, and the SHA-256 of the body it arrived with.
+// The body is not kept. A retry is the same request when its body hashes to
+// the same thing, and anything else under that key is refused.
+type Idempotency struct {
+	Key      string
+	BodyHash []byte
+}
+
+// IsSet says whether a request carried a key. Both halves or neither: a key
+// with nothing to compare against would accept any body as the first one.
+func (i Idempotency) IsSet() bool { return i.Key != "" && len(i.BodyHash) > 0 }
 
 // Checkout is what a payment's row keeps of the token its checkout page is
 // reached by: a hash of the token, and which key derived it. The token
@@ -214,6 +231,7 @@ type Stored struct {
 	ExpiresAt   time.Time
 	ReturnURL   string
 	Checkout    Checkout
+	Idempotency Idempotency
 	// ClosedAt is when the payment reached a final status, and zero while
 	// it has not.
 	ClosedAt time.Time
@@ -237,6 +255,7 @@ func Restore(s Stored) (*Payment, error) {
 		ExpiresAt:   s.ExpiresAt,
 		ReturnURL:   s.ReturnURL,
 		Checkout:    s.Checkout,
+		Idempotency: s.Idempotency,
 	}, s.Status, s.CreatedAt, s.CreatedAt)
 	if err != nil {
 		return nil, err
@@ -305,6 +324,8 @@ func build(id ID, r Request, status Status, createdAt, deadlineAfter time.Time) 
 		expiresAt: r.ExpiresAt.UTC().Truncate(time.Microsecond),
 		returnURL: r.ReturnURL,
 		checkout:  Checkout{Hash: slices.Clone(r.Checkout.Hash), KeyID: r.Checkout.KeyID},
+		idempotency: Idempotency{
+			Key: r.Idempotency.Key, BodyHash: slices.Clone(r.Idempotency.BodyHash)},
 	}, nil
 }
 
@@ -389,6 +410,13 @@ func (p *Payment) ReturnURL() string { return p.returnURL }
 // Checkout is what the row keeps of the checkout page's token.
 func (p *Payment) Checkout() Checkout {
 	return Checkout{Hash: slices.Clone(p.checkout.Hash), KeyID: p.checkout.KeyID}
+}
+
+// Idempotency is the key the request that opened the payment carried, and
+// the hash of the body it arrived with. Empty for a payment opened without
+// one.
+func (p *Payment) Idempotency() Idempotency {
+	return Idempotency{Key: p.idempotency.Key, BodyHash: slices.Clone(p.idempotency.BodyHash)}
 }
 
 // ClosedAt is when the payment reached a final status, in UTC, and zero
