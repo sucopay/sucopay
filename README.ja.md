@@ -81,6 +81,8 @@ assets:
 
 `asset accept` には EIP-712 の typed data に署名できるウォレットを渡してください。Refund には
 payment の宛先のウォレットが署名するので、誰も署名できないアドレスは受け取れますが返せません。
+登録は asset の契約にそのアドレスへの送金を拒むかを訊き、拒むアドレスは断ります。残りは
+[docs/operating.ja.md](docs/operating.ja.md) にあります。
 
 加盟店のサーバは API で payment を作り、読み戻します。`suco serve` はチェーンを周ごとに読み、
 それに応える送金を記録します。

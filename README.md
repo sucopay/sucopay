@@ -82,7 +82,9 @@ Then, with a database configured:
 
 Give `asset accept` a wallet that can sign EIP-712 typed data. A refund is signed out of the
 wallet the payment was paid to, so an address nobody can sign for takes payments and returns
-none.
+none. Registration asks the asset's contract whether it refuses transfers to the address, and
+an address the contract refuses is not registered; [docs/operating.md](docs/operating.md) has
+the rest.
 
 Your server opens payments and reads them back over the API. `suco serve` reads the chain round
 after round and records the transfers that answer them.

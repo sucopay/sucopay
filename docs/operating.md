@@ -17,13 +17,13 @@ instance that is working, which does not bring the database back.
 
 ```json
 {"status":"ok","database":"reachable","credentials":"read-write",
- "networks":{"polygon":"observing"},"assets":{"jpyc":"unchanged"},
+ "networks":{"polygon":"observing"},"assets":{"jpyc":"unchanged"},"paused":{"jpyc":false},
  "finality":{"polygon":"deciding"},"webhooks":"delivering"}
 ```
 
-`networks`, `assets`, `finality` and `webhooks` are left out by an instance configured without
-a database, which reads no chain, settles nothing and delivers nothing. `credentials` is left
-out where there is no store to ask.
+`networks`, `assets`, `paused`, `finality` and `webhooks` are left out by an instance configured
+without a database, which reads no chain, settles nothing and delivers nothing. `credentials` is
+left out where there is no store to ask.
 
 One word for each network:
 
@@ -59,6 +59,15 @@ slow round does not take a working deployment out of its word.
 One word for each asset, `unchanged` or `changed`. It is `changed` once the code the chain runs
 for that asset is not the code it ran when the instance started, which is what an upgrade of a
 proxy does.
+
+`paused` says, for each asset, whether its issuer has stopped every transfer of it, as the
+asset's contract answers. It is read once a minute. An asset missing from it was not read in the
+last two minutes, whichever way: the contract did not answer, the provider did not carry the
+call, or this instance has not been reading. Absence is never "not paused". A paused asset
+leaves `status` where it is: the API is up, and the one who can act is the issuer.
+
+The probe is public. `paused` moves as the issuer acts, so whoever watches it can tell which
+contract's state this deployment follows, as the asset names already tell them.
 
 `status` is `unavailable`, and the response `503`, when the database cannot be reached, or when
 every configured network is `unreachable`, `stalled`, `chain-mismatch` or `no-finalized`. The
@@ -137,11 +146,34 @@ disagreement and it does not resolve itself, so the count is the operator's to a
 a round reads. A network that could not be read says so in place of the numbers, with the
 provider's own code and words, cut short and with nothing of the endpoint in them.
 
+Each asset's line says `paused` when its issuer has stopped it, and `paused not read` when the
+contract would not say; an asset that is not paused adds nothing. Where the deployment's one
+account is paid for that asset, the report asks the contract whether it refuses transfers to
+that address, and says `paid to 0x…, which is blocklisted, the provider says` when it does. It
+asks nothing of an address on a network it could not read, and nothing where the database holds
+two accounts: naming one is not implemented. The address goes to the network's endpoint in the
+asking, the operator's own node or the first of the others.
+
 It reads the chains through the same adapters a start reads through, so what it says is what an
 instance would meet. It writes nothing.
 
 A deployment with no database, or one nothing has applied the schema to, still has its chains
 read. What it cannot say is how far each has been read.
+
+## suco asset accept
+
+```bash
+suco asset accept <name> <address>
+```
+
+Records that the account takes the asset the document lists under that name, paid to the
+address, and asks the asset's contract two things first: what it signs under, so that a payer's
+wallet signs under the same, and whether it refuses transfers to the address, which an issuer
+does to one account at a time. A domain that is not the document's refuses the registration,
+and so does an address the contract refuses. So does no answer to either question: an address
+is not registered on the strength of a provider that would not carry it.
+The provider asked is the network's endpoint, the operator's own node or the first of the
+others, and the address goes to it in the asking. It is public the moment a payment reaches it.
 
 ## Allowing a webhook endpoint inside the deployment
 
