@@ -19,7 +19,9 @@ event は 1 つの `POST` で、本文は 1 つの形の JSON です。
 `type` は何が起きたか、`timestamp` はいつ起きたか、`account` は誰の payment か、`data` は
 `GET /payments/{id}` が返すのと同じ形の payment で、`metadata` も入ります。`checkout_url` だけは
 入りません。payment の結果を読める鍵で、受け取り側のログに残すものではないからです。それを除け
-ば、知らされるものと読めるものは同じです。
+ば、知らされるものと読めるものは同じです。`refund.` の event が持つのは Refund で、
+`GET /payments/{id}/refunds/{refund}` が返すのと同じ形から `refund_url` を除いたものです。あれも
+同じ意味の鍵だからです。項目は [refunds.ja.md](refunds.ja.md) にあります。
 
 | `type` | いつ | `data` |
 |---|---|---|
@@ -28,6 +30,8 @@ event は 1 つの `POST` で、本文は 1 つの形の JSON です。
 | `payment.succeeded` | 確定した | payment |
 | `payment.expired` | 期限までに何も届かなかった | payment |
 | `payment.failed` | 確定しないことが決まった | payment |
+| `refund.succeeded` | Refund が確定し、金が払った人に戻った | Refund |
+| `refund.expired` | Refund の期限が過ぎ、何も確定しなかった | Refund |
 | `endpoint.test` | `POST /webhook_endpoints/{id}/test` を呼んだ | `{}` |
 
 payment は、送金が見つかると `transfer` を持ちます。`tx`、`block_height`、`block_hash`、

@@ -86,14 +86,17 @@ Content-Type: application/json
   "created_at": "2026-09-05T23:08:53.514971Z",
   "return_url": "https://shop.example/orders/A-1",
   "checkout_url": "http://localhost:7826/checkout/2c2f…",
-  "transfer": null
+  "transfer": null,
+  "refunded": "0"
 }
 ```
 
 `asset` はトークンをネットワークと reference で識別し、記述します。`suco.yaml` で付けた名前は
 返しません。運用者は名前を後で変えられ、Payment は作ったときのトークンのままです。`destination` は
-その Payment の支払いを受け取るアドレスで、`suco asset accept` がその資産に記録したものです。`amount` と
-`received` は資産の単位です。`received` は何かが届くまで `null` です。時刻は UTC です。
+その Payment の支払いを受け取るアドレスで、`suco asset accept` がその資産に記録したものです。
+`amount`、`received`、`refunded` は資産の単位です。`received` は何かが届くまで `null` です。
+`refunded` はその Payment の Refund が押さえている額で、1 つも作っていなければ `"0"` です。
+時刻は UTC です。
 `return_url` は省いたとき `null` です。`checkout_url` は加盟店が支払者を送る先で、Payment の結果を
 読める鍵です。ログに残さないでください。suco も自分のログと Webhook の event には載せません。
 インスタンスがページを配信する前に作った Payment には無く、キーごと省きます。
@@ -166,7 +169,7 @@ draft はここに `422` を挙げていますが、suco は要求の他の誤�
 正しい本文を送り直せます。同じ鍵の 2 つの要求が同時に届いても構いません。2 つ目は 1 つ目を
 待ち、その Payment を返します。
 
-鍵を読むのは `POST /payments` だけです。
+鍵を読むのは `POST /payments` と `POST /payments/{id}/refunds` だけです。
 
 鍵を送らない場合、送ったのに応答の無かった要求は、送り直す前に、加盟店の側で `metadata` に
 入れたものを手がかりに探すことになります。
@@ -178,6 +181,32 @@ draft はここに `422` を挙げていますが、suco は要求の他の誤�
 
 他の account の Payment、誰も作っていない Payment、識別子の形をしていないものは、どれも同じ本文の
 `404` です。応答は何が存在するかを言いません。
+
+## Refund
+
+Refund は、Payment が受け取ったものを、届いた元のアドレスへ送り返します。Payment の宛先の
+ウォレットから出る送金に加盟店が署名し、suco はそれを記録してチェーンを見ます。全体は
+[refunds.ja.md](refunds.ja.md) にあります。
+
+| 経路 | 資格情報 | |
+|---|---|---|
+| `POST /payments/{id}/refunds` | read-write | `succeeded` の Payment に 1 つ作る |
+| `GET /payments/{id}/refunds/{refund}` | read-only | 1 つ読み返す |
+
+本文は資産の単位の `amount` を持ちます。Payment の残り全部を送り返すなら、何も持たせません。
+送り先は呼ぶ側が選ぶものではなく、Payment を払った送金から suco が読み取ります。
+`Idempotency-Key` はここでも上の規則で読みます。
+
+応答は `refund_url` を持ちます。加盟店が署名する先で、`checkout_url` が Payment の鍵であるのと
+同じく、この Refund の鍵です。ログに残さないでください。suco も自分のログと Webhook の event には
+載せません。そのページが呼ぶ経路は、この URL の token で通し、資格情報は要りません。
+
+| 経路 | |
+|---|---|
+| `GET /refund/{token}` | ページの HTML |
+| `GET /refund/{token}/state` | ページが見せるものと、加盟店が署名するもの。JSON |
+
+ページ自身の script と style は、それを持つ配備では `/refund-assets/` の下にあります。
 
 ## Checkout
 
@@ -259,7 +288,7 @@ Payment が支払い可能になるのは、ページが支払者の署名する
 | 400 | `invalid` | 本文が JSON のオブジェクトでない、API が読まないキーがある、型が違う、値が規則の外にあるときです。`Idempotency-Key` が鍵の形でないときと、別の本文で届いたときもです。どれかは `problems` が言います |
 | 401 | `unauthorized` | 資格情報が無いか、効力を失っているときです |
 | 403 | `forbidden` | 経路のすることをその資格情報がしてよくないときです |
-| 404 | `not_found` | その識別子の Payment か Webhook の宛先がこの account に無いときです |
+| 404 | `not_found` | その識別子の Payment、Refund、Webhook の宛先がこの account に無いときです |
 | 409 | 理由の語 | その Payment に署名するものを発行できないときです。返すのは `POST /checkout/{token}/attempts` だけで、語は [checkout.ja.md](checkout.ja.md) にあります |
 | 413 | `too_large` | 本文が 64 KiB を越えたときです |
 | 503 | `unavailable` | suco がデータベースに届かなかったときです。理由は suco の記録にあり、本文にはありません |

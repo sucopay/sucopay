@@ -80,6 +80,10 @@ Then, with a database configured:
 ./suco payment await <id>                   # prints what a payer signs, until suco Checkout exists
 ```
 
+Give `asset accept` a wallet that can sign EIP-712 typed data. A refund is signed out of the
+wallet the payment was paid to, so an address nobody can sign for takes payments and returns
+none.
+
 Your server opens payments and reads them back over the API. `suco serve` reads the chain round
 after round and records the transfers that answer them.
 
@@ -90,6 +94,7 @@ after round and records the transfers that answer them.
 | [docs/api.md](docs/api.md) | The HTTP API a merchant's server calls |
 | [docs/webhooks.md](docs/webhooks.md) | What suco sends a merchant's server, and how to receive it |
 | [docs/checkout.md](docs/checkout.md) | The page a payer pays on, and where to send them |
+| [docs/refunds.md](docs/refunds.md) | Sending a payment back, and the page a merchant signs on |
 | [docs/configuration.md](docs/configuration.md) | Every setting `suco.yaml` takes |
 | [docs/operating.md](docs/operating.md) | `/readyz`, `suco doctor`, and putting a stopped instance right |
 | [ROADMAP.md](ROADMAP.md) | What works today and what does not |

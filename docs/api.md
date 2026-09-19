@@ -87,18 +87,20 @@ Content-Type: application/json
   "created_at": "2026-09-05T23:08:53.514971Z",
   "return_url": "https://shop.example/orders/A-1",
   "checkout_url": "http://localhost:7826/checkout/2c2f…",
-  "transfer": null
+  "transfer": null,
+  "refunded": "0"
 }
 ```
 
 `asset` identifies the token by its network and reference, and describes it. The name
 `suco.yaml` lists it under is not returned: an operator may rename it, and a payment stays in
 the token it was opened in. `destination` is the address the payment is paid to, the one
-`suco asset accept` recorded for the asset. `amount` and `received` are in the asset's units;
-`received` is `null` until something arrives. Times are UTC. `return_url` is `null` when it was
-left out. `checkout_url` is where the merchant sends the payer, and is a key to the payment's
-outcome: keep it out of logs, as suco keeps it out of its own and out of webhook events. A payment
-opened before the instance served pages has none, and the key is left out.
+`suco asset accept` recorded for the asset. `amount`, `received` and `refunded` are in the
+asset's units; `received` is `null` until something arrives, and `refunded` is what the
+payment's refunds hold of it, `"0"` until one is opened. Times are UTC. `return_url` is `null`
+when it was left out. `checkout_url` is where the merchant sends the payer, and is a key to the
+payment's outcome: keep it out of logs, as suco keeps it out of its own and out of webhook
+events. A payment opened before the instance served pages has none, and the key is left out.
 
 A payment is opened with `status` `created`.
 
@@ -173,7 +175,7 @@ A key is kept as long as the payment it opened. A request suco refused keeps no 
 key can be sent again with a body that is right. Two requests under one key that arrive together
 are no trouble either: the second waits for the first, and is answered with its payment.
 
-The key is read on `POST /payments` and nowhere else.
+The key is read on `POST /payments` and on `POST /payments/{id}/refunds`, and nowhere else.
 
 Without a key, a request that was sent and not answered has to be looked up on the merchant's
 side, by whatever the merchant put in `metadata`, before it is sent again.
@@ -185,6 +187,33 @@ Reads one payment of the account the credential names, and answers `200` with th
 
 A payment of another account, a payment nobody opened, and an identifier of no shape are all
 answered `404`, with one body. The answer says nothing about what exists.
+
+## Refunds
+
+A refund sends back what a payment received, to the address it came from. The merchant signs the
+transfer out of the wallet the payment was paid to; suco records it and watches the chain for
+it. [refunds.md](refunds.md) has the whole of it.
+
+| Route | Credential | |
+|---|---|---|
+| `POST /payments/{id}/refunds` | read-write | Open one against a `succeeded` payment |
+| `GET /payments/{id}/refunds/{refund}` | read-only | Read one back |
+
+The body carries `amount` in the asset's units, or nothing at all to send back everything the
+payment has left. Where the money goes is not the caller's to choose: suco reads it off the
+transfer that paid the payment. `Idempotency-Key` is read here too, under the rules above.
+
+The answer carries `refund_url`, where the merchant signs, and it is a key to the refund the way
+`checkout_url` is a key to the payment. Keep it out of logs, as suco keeps it out of its own and
+out of webhook events. The routes that page calls are admitted by the token in it and by no
+credential.
+
+| Route | |
+|---|---|
+| `GET /refund/{token}` | The page, as HTML |
+| `GET /refund/{token}/state` | What the page shows, and what the merchant signs, as JSON |
+
+The page's own script and style, in a deployment that has them, are under `/refund-assets/`.
 
 ## Checkout
 
@@ -269,7 +298,7 @@ A success is the payment. A failure is one shape, on every route.
 | 400 | `invalid` | The body is not a JSON object, holds a key the API does not read, gives a value of another type, or gives a value outside its rules. Or `Idempotency-Key` is not a key, or arrived with another body. `problems` says which. |
 | 401 | `unauthorized` | No credential, or one not in force. |
 | 403 | `forbidden` | The credential may not do what the route does. |
-| 404 | `not_found` | No payment, or no webhook endpoint, of the account under that identifier. |
+| 404 | `not_found` | No payment, refund, or webhook endpoint of the account under that identifier. |
 | 409 | a reason | Nothing can be signed for the payment. Only `POST /checkout/{token}/attempts` answers it, and [checkout.md](checkout.md) lists the reasons. |
 | 413 | `too_large` | The body is over 64 KiB. |
 | 503 | `unavailable` | suco could not reach its database. The reason is in its log and not in the body. |

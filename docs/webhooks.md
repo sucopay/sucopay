@@ -20,7 +20,9 @@ Every event is one `POST` with a JSON body of one shape:
 `type` is what happened, `timestamp` when it happened, `account` whose payment it is, and
 `data` the payment as `GET /payments/{id}` answers it, `metadata` included and `checkout_url`
 left out, since that is a key to the payment's outcome and a receiver's log is not where one
-belongs. What you are told and what you can read are otherwise the same thing.
+belongs. A `refund.` event carries the refund instead, as `GET /payments/{id}/refunds/{refund}`
+answers it and without `refund_url`, which is a key the same way; [refunds.md](refunds.md) has
+its fields. What you are told and what you can read are otherwise the same thing.
 
 | `type` | When | `data` |
 |---|---|---|
@@ -29,6 +31,8 @@ belongs. What you are told and what you can read are otherwise the same thing.
 | `payment.succeeded` | The payment settled | the payment |
 | `payment.expired` | Nothing arrived before the deadline | the payment |
 | `payment.failed` | It will not settle | the payment |
+| `refund.succeeded` | A refund settled, and the money is back with whoever paid | the refund |
+| `refund.expired` | A refund's deadline passed and nothing settled | the refund |
 | `endpoint.test` | You called `POST /webhook_endpoints/{id}/test` | `{}` |
 
 The payment carries `transfer` once a transfer has been seen for it: `tx`, `block_height`,

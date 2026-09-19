@@ -14,6 +14,7 @@ find out by running it.
 - Issues the key a payer signs against a payment, as an EIP-3009 authorisation.
 - Reads an EVM chain round after round, matches transfers against the keys it issued, and records
   each with what the rules made of it.
+- Opens a refund of a settled payment, and issues what the merchant signs to send the money back.
 - Answers what it can reach and what each network it watches has come to.
 
 ## What it does not do yet
@@ -29,7 +30,7 @@ chain inside the process, and one step at a time against Polygon on a payment so
 - [ ] suco Link: a fixed URL that buys one specific item
 - [ ] Frontend SDK: what a merchant's page embeds suco Component with
 - [x] Webhooks: signed, retried, with delivery history
-- [ ] Refunds: records and transfer intents
+- [x] Refunds: records and transfer intents
 - [ ] Reconciliation: periodic diff between internal state and the chain
 - [ ] Console: payments, transactions, refunds, webhook deliveries
 - [ ] Backend SDKs: PHP, Java and Go, from a description of the API

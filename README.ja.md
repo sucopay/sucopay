@@ -79,6 +79,9 @@ assets:
 ./suco payment await <id>                   # suco Checkout ができるまでの、署名する値の印字
 ```
 
+`asset accept` には EIP-712 の typed data に署名できるウォレットを渡してください。Refund には
+payment の宛先のウォレットが署名するので、誰も署名できないアドレスは受け取れますが返せません。
+
 加盟店のサーバは API で payment を作り、読み戻します。`suco serve` はチェーンを周ごとに読み、
 それに応える送金を記録します。
 
@@ -89,6 +92,7 @@ assets:
 | [docs/api.ja.md](docs/api.ja.md) | 加盟店のサーバが呼ぶ HTTP API |
 | [docs/webhooks.ja.md](docs/webhooks.ja.md) | suco が加盟店のサーバに送るものと、その受け取り方 |
 | [docs/checkout.ja.md](docs/checkout.ja.md) | 支払者が払うページと、支払者をどこへ送るか |
+| [docs/refunds.ja.md](docs/refunds.ja.md) | payment を送り返すことと、加盟店が署名するページ |
 | [docs/configuration.ja.md](docs/configuration.ja.md) | `suco.yaml` が取る設定の全て |
 | [docs/operating.ja.md](docs/operating.ja.md) | `/readyz`、`suco doctor`、止まったインスタンスの直し方 |
 | [ROADMAP.ja.md](ROADMAP.ja.md) | 今できることとできないこと |
