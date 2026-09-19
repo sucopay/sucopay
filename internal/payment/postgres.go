@@ -878,6 +878,27 @@ func (s *Postgres) Open(ctx context.Context, network Network) (int, error) {
 	return open, nil
 }
 
+// OpenRefunds counts the refunds on a network that are still open: signable,
+// or past their deadline and waiting to learn whether what was signed
+// arrives. What [Postgres.Open] counts on the paying side, and asked before
+// the same thing: a range of the chain nobody will read may hold the transfer
+// that sends one of them back, and a refund that expires with its transfer
+// unread hands its amount back to what the payment can still refund.
+func (s *Postgres) OpenRefunds(ctx context.Context, network Network) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	var open int
+	if err := s.pool.QueryRow(ctx, `
+		select count(*)
+		  from refunds
+		 where network = $1 and status = any($2)`,
+		network, []RefundStatus{RefundCreated, RefundAwaitingFinality}).Scan(&open); err != nil {
+		return 0, fmt.Errorf("refunds on %s: %w", network, err)
+	}
+	return open, nil
+}
+
 // Overdue are the payments on a network that are still open for payment and
 // have reached the moment they stop being open. Reaching the deadline is
 // passing it: it is the moment payment closes, not the last moment it is open.

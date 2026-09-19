@@ -183,10 +183,13 @@ this writes does not commit its advance, and the round after it reads from where
 **Nothing reads the blocks it skips.** Putting the cursor forward past blocks no round has read
 means every transfer in them goes unseen, and there is no later pass that finds them. A payment
 still open on the network may have been paid in one of those blocks, and once the cursor is past
-its deadline it expires as unpaid. So the command refuses to move forward while the network has a
-payment that is `awaiting_payment` or `awaiting_finality`, and says how many. `--force` moves it
-anyway, and the log line says how many payments were skipped. Moving the cursor back is never
-refused: nothing is skipped, and the rounds read the range again.
+its deadline it expires as unpaid. A refund still open may have been sent in one of them, and
+expires with its amount refundable again while the money is already gone, which lets the same
+money go out twice. So the command refuses to move forward while the network has a payment that
+is `awaiting_payment` or `awaiting_finality`, or a refund that is `created` or
+`awaiting_finality`, and says how many of each. `--force` moves it anyway, and the log line says
+how many of each were skipped. Moving the cursor back is never refused: nothing is skipped, and
+the rounds read the range again.
 
 A provider that has dropped its history is exactly the case this exists for, and there the only
 way on is forward; `--force` is for that, once the operator has counted what it costs.

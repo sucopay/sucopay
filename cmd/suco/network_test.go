@@ -177,6 +177,72 @@ func open(t *testing.T, d deployment) *payment.Payment {
 	return kept
 }
 
+// openRefund is a refund still open on the network, against a payment the
+// chain has already settled. Nothing the paying side counts is open, so what
+// a forward move of the cursor would skip here is the sending back.
+func openRefund(t *testing.T, d deployment) *payment.Refund {
+	t.Helper()
+	p := awaiting(t, d)
+	store := payment.NewPostgres(d.pool.Conns())
+	account := theAccount(t, d)
+	kept, at, err := store.Find(t.Context(), account, p.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := kept.Await(); err != nil {
+		t.Fatal(err)
+	}
+	if err := kept.Receive(kept.Amount()); err != nil {
+		t.Fatal(err)
+	}
+	if err := kept.Succeed(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(t.Context(), account, kept, at, payment.Event{}); err != nil {
+		t.Fatal(err)
+	}
+
+	id, err := payment.NewRefundID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := payment.NewRefund(kept, id, payment.RefundRequest{
+		Amount:      kept.Amount(),
+		Destination: theAddress,
+		Token:       payment.PageToken{Hash: []byte("a hash"), KeyID: "a key"},
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateRefund(t.Context(), account, r); err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// A refund still open on the network may have been sent in a block the cursor
+// is about to skip. Unread, it expires with its amount refundable again while
+// the money is already gone, so the same money can go out twice. Moving
+// forward over one is refused even though no payment is open.
+func TestRun_NetworkCursorRefusesToSkipALiveRefund(t *testing.T) {
+	d := deployed(t)
+	document(t, namingADatabase()+aReadableNetwork())
+	openRefund(t, d)
+	if _, _, err := observe.NewCursors(d.pool.Conns()).Set(t.Context(), "local",
+		observe.Position{Height: 0, Hash: "block0"}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := runArgs(t, "network", "cursor", "local", "1")
+
+	if err == nil {
+		t.Fatal("the cursor moved forward over a refund still open on the network")
+	}
+	if !strings.Contains(err.Error(), "0 payment") || !strings.Contains(err.Error(), "1 refund") {
+		t.Errorf("err = %q, want it to count the refund and say no payment is open", err)
+	}
+}
+
 // A payment still open on the network may have been paid in a block the
 // cursor is about to skip, and once the cursor is past its deadline it expires
 // as unpaid. Moving forward over such a payment is refused, and the refusal

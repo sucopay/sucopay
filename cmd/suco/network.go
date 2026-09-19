@@ -71,30 +71,36 @@ func networkCursor(ctx context.Context, args []string, stdout io.Writer) error {
 		return fmt.Errorf("%s declares no network under that name that an asset settles on. "+
 			"Run `suco doctor` for the ones it does", o.document)
 	}
-	// Forward skips blocks nobody reads, and a payment still open on the
-	// network may have been paid in one of them: once the cursor is past its
-	// deadline it expires as unpaid. So forward over an open payment is
-	// refused unless the operator, having counted, forces it. Back skips
+	// Forward skips blocks nobody reads, and what is still open on the
+	// network may have been settled in one of them. A payment paid there
+	// expires as unpaid once the cursor is past its deadline; a refund sent
+	// there expires with its amount handed back to what the payment can still
+	// refund, which lets the same money go out twice. So forward over either
+	// is refused unless the operator, having counted, forces it. Back skips
 	// nothing, and is never refused. A network with no cursor yet has had
 	// nothing read, so putting one anywhere skips every block below it. The
-	// check comes before the chain is asked, so that the answer is about the
-	// payments and not about the block.
+	// check comes before the chain is asked, so that the answer is about what
+	// is open and not about the block.
 	network := payment.Network(read.Name)
 	cursors := observe.NewCursors(o.db.Conns())
 	current, had, err := cursors.Get(ctx, network)
 	if err != nil {
 		return err
 	}
-	skipped := 0
+	payments, refunds := 0, 0
 	if !had || height > current.Height {
-		skipped, err = payment.NewPostgres(o.db.Conns()).Open(ctx, network)
-		if err != nil {
+		store := payment.NewPostgres(o.db.Conns())
+		if payments, err = store.Open(ctx, network); err != nil {
 			return err
 		}
-		if skipped > 0 && !force {
-			return fmt.Errorf("%s has %d payment(s) still open that may have been paid in the blocks "+
-				"this would skip; they expire as unpaid once the cursor is past their deadline. "+
-				"Add --force to skip them anyway", read.Name, skipped)
+		if refunds, err = store.OpenRefunds(ctx, network); err != nil {
+			return err
+		}
+		if payments+refunds > 0 && !force {
+			return fmt.Errorf("%s has %d payment(s) and %d refund(s) still open that may have been "+
+				"settled in the blocks this would skip; a payment expires as unpaid and a refund "+
+				"expires with its amount refundable again, whatever the chain carried. "+
+				"Add --force to skip them anyway", read.Name, payments, refunds)
 		}
 	}
 
@@ -130,8 +136,11 @@ func networkCursor(ctx context.Context, args []string, stdout io.Writer) error {
 			slog.Uint64("from_height", before.Height),
 			slog.String("from_hash", invisible.Shown(before.Hash, payment.MaxTransferField)))
 	}
-	if skipped > 0 {
-		moved = append(moved, slog.Int("payments_skipped", skipped))
+	if payments > 0 {
+		moved = append(moved, slog.Int("payments_skipped", payments))
+	}
+	if refunds > 0 {
+		moved = append(moved, slog.Int("refunds_skipped", refunds))
 	}
 	log.InfoContext(ctx, "the cursor was put where it was asked for", moved...)
 	return nil
