@@ -1,0 +1,12 @@
+-- The refunds the worker reads, on one network.
+--
+-- The same shape as payments_by_clock, and read by the same two sweeps
+-- reversed: one moves a refund past its deadline to waiting, the other expires
+-- the ones the chain has been read past with nothing sent. The count the
+-- cursor command asks before it skips a range reads it too.
+--
+-- refunds_by_payment begins with the account, which is what a merchant's read
+-- wants and what the ceiling counts from. None of the three here names an
+-- account, so they read the whole table without this and two of them run every
+-- round.
+create index refunds_by_clock on refunds (network, status, expires_at);
