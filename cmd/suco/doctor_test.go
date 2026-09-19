@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -8,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/sucopay/sucopay/internal/adapter/chain/evm"
 )
 
 func TestDescribeVersion_BoundsAndQuotesWhatTheServerSent(t *testing.T) {
@@ -53,13 +56,28 @@ func answering(t *testing.T, answers map[string]any) string {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var asked struct {
 			Method string `json:"method"`
+			Params []any  `json:"params"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&asked); err != nil {
 			t.Errorf("the provider was asked something that is not JSON-RPC: %v", err)
 			return
 		}
 		w.Header().Set("content-type", "application/json")
-		answer, known := answers[asked.Method]
+		// A call to a contract is told apart by what it calls: the whole
+		// data, then the selector alone, then the method as every call is.
+		answer, known := any(nil), false
+		if len(asked.Params) > 0 {
+			if call, ok := asked.Params[0].(map[string]any); ok {
+				if data, ok := call["data"].(string); ok {
+					if answer, known = answers[asked.Method+" "+data]; !known && len(data) >= 10 {
+						answer, known = answers[asked.Method+" "+data[:10]]
+					}
+				}
+			}
+		}
+		if !known {
+			answer, known = answers[asked.Method]
+		}
 		if !known {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"jsonrpc": "2.0", "id": 1,
@@ -126,6 +144,9 @@ func TestRun_DoctorSaysWhereEachNetworkStands(t *testing.T) {
 		// and the code that chain runs for it, which is what an upgrade of a
 		// proxy changes under a deployment that is not watching for it.
 		"implementation 0x" + strings.Repeat("00", 20),
+		// and that the contract was not asked whether it is paused, since this
+		// provider answers no call to it: silence is not "not paused".
+		"paused not read",
 	} {
 		if !strings.Contains(networks, want) {
 			t.Errorf("the report does not say %q of the network:\n%s", want, networks)
@@ -460,5 +481,120 @@ func TestRun_DoctorSaysNothingIsPendingOrFailedWhereNothingIs(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "webhooks: nothing pending, nothing failed\n") {
 		t.Errorf("the report does not say the deliveries stand clear:\n%s", stdout)
+	}
+}
+
+// An issuer stopping a token is a fact about the token the report says of
+// each asset, and a contract that will not say is said to have not said:
+// nothing here reads silence as not paused.
+func TestRun_DoctorSaysWhichAssetsTheIssuerHasPaused(t *testing.T) {
+	deployed(t)
+	endpoint := answering(t, map[string]any{
+		"eth_chainId":          "0x89",
+		"eth_getBlockByNumber": block("0x10"),
+		"eth_getStorageAt":     "0x" + strings.Repeat("00", 32),
+		"eth_call 0x5c975abb":  set,
+	})
+	document(t, fmt.Sprintf("%snetworks:\n  local:\n    kind: evm\n    chain_id: 137\n"+
+		"    rpc:\n      own: %s\n%s", namingADatabase(), endpoint, anAsset("local")))
+
+	stdout, _, err := runArgs(t, "doctor")
+
+	if err != nil {
+		t.Fatalf("err = %v, want none", err)
+	}
+	networks := networksIn(t, stdout)
+	if !strings.Contains(networks, ", paused") || strings.Contains(networks, "paused not read") {
+		t.Errorf("the report does not say the asset is paused:\n%s", networks)
+	}
+}
+
+// Where the one account is paid is read off the contract with the rest of the
+// report, and an address the contract refuses is said so. Two accounts have
+// no one address to ask about, and the report says nothing rather than
+// choosing one.
+func TestRun_DoctorSaysWhenTheAcceptedAddressIsBlocklisted(t *testing.T) {
+	d := deployed(t)
+	onChain, err := evm.Domain("JPY Coin", "1", 137, "0x0000000000000000000000000000000000000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	given := "    eip712:\n      name: JPY Coin\n      version: \"1\"\n"
+	clearing := answering(t, map[string]any{
+		"eth_call": "0x" + hex.EncodeToString(onChain[:]), "eth_call 0x8e204c43": clear,
+	})
+	document(t, evmDocument(clearing, 137, given))
+	if _, _, err := runArgs(t, "asset", "accept", "jpyc", theAddress); err != nil {
+		t.Fatal(err)
+	}
+	// The issuer then blocklists the address.
+	listing := answering(t, map[string]any{
+		"eth_chainId":          "0x89",
+		"eth_getBlockByNumber": block("0x10"),
+		"eth_getStorageAt":     "0x" + strings.Repeat("00", 32),
+		"eth_call 0x5c975abb":  clear,
+		"eth_call 0x8e204c43":  set,
+	})
+	document(t, evmDocument(listing, 137, given))
+
+	stdout, _, err := runArgs(t, "doctor")
+
+	if err != nil {
+		t.Fatalf("err = %v, want none", err)
+	}
+	if networks := networksIn(t, stdout); !strings.Contains(networks, "paid to "+theAddress+", which is blocklisted") {
+		t.Errorf("the report does not say the address is blocklisted:\n%s", networks)
+	}
+
+	if _, err := d.pool.Conns().Exec(t.Context(),
+		`insert into accounts (id, name) values ('00000000-0000-0000-0000-000000000002', 'second')`); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, err = runArgs(t, "doctor")
+	if err != nil {
+		t.Fatalf("with two accounts, err = %v, want none", err)
+	}
+	if networks := networksIn(t, stdout); strings.Contains(networks, "blocklisted") {
+		t.Errorf("with two accounts, the report chose one to say whose address is blocklisted:\n%s", networks)
+	}
+}
+
+// A network that cannot be read says so on its own line, and its assets say
+// nothing more: not whether they are paused, and not whether the address they
+// are paid to is refused. The second would be asked of the same connection,
+// once per asset, and a provider that times out would make the report wait
+// that many times over to say the same thing.
+func TestRun_DoctorAsksNothingMoreOfANetworkItCouldNotRead(t *testing.T) {
+	d := deployed(t)
+	onChain, err := evm.Domain("JPY Coin", "1", 137, "0x0000000000000000000000000000000000000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	given := "    eip712:\n      name: JPY Coin\n      version: \"1\"\n"
+	document(t, evmDocument(answering(t, map[string]any{
+		"eth_call": "0x" + hex.EncodeToString(onChain[:]), "eth_call 0x8e204c43": clear,
+	}), 137, given))
+	if _, _, err := runArgs(t, "asset", "accept", "jpyc", theAddress); err != nil {
+		t.Fatal(err)
+	}
+	if n := rowsAccepted(t, d); n != 1 {
+		t.Fatalf("%d addresses accepted, want one", n)
+	}
+	// A provider that answers no call at all: the network cannot be read.
+	document(t, evmDocument(answering(t, map[string]any{}), 137, given))
+
+	stdout, _, err := runArgs(t, "doctor")
+
+	if err != nil {
+		t.Fatalf("err = %v, want none", err)
+	}
+	networks := networksIn(t, stdout)
+	if !strings.Contains(networks, "not read") {
+		t.Errorf("the report does not say the network could not be read:\n%s", networks)
+	}
+	for _, more := range []string{"paused", "refuses transfers", "blocklisted"} {
+		if strings.Contains(networks, more) {
+			t.Errorf("the report says %q of an asset on a network it could not read:\n%s", more, networks)
+		}
 	}
 }

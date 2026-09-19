@@ -234,6 +234,6 @@ func evmDocumentOnChainOne(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	endpoint := answering(t, map[string]any{"eth_call": "0x" + hex.EncodeToString(onChain[:])})
+	endpoint := answering(t, map[string]any{"eth_call": "0x" + hex.EncodeToString(onChain[:]), "eth_call 0x8e204c43": clear})
 	return evmDocument(endpoint, 1, "    eip712:\n      name: JPY Coin\n      version: \"1\"\n")
 }

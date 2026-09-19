@@ -55,8 +55,17 @@ func assetAccept(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	destination = payment.Address(written)
 	// What a payer's wallet will be asked to sign under has to be what the
-	// contract signs under, and the contract is asked once, here.
-	if err := checkDomain(ctx, o, args[0], asset); err != nil {
+	// contract signs under, and the contract is asked once, here. Whether the
+	// contract would refuse transfers to the address is asked of the same
+	// contract, over the same connection.
+	read, err := openNetwork(o, asset)
+	if err != nil {
+		return err
+	}
+	if err := checkDomain(ctx, o, read, args[0], asset); err != nil {
+		return err
+	}
+	if err := checkBlocklist(ctx, read, asset, destination); err != nil {
 		return err
 	}
 	account, err := oneAccount(ctx, o.credentials)
@@ -130,16 +139,8 @@ func assetList(ctx context.Context, args []string, stdout io.Writer) error {
 // chain whose assets sign under no domain has nothing to compare, and a
 // document that gives none for an asset whose contract has one is refused
 // too.
-func checkDomain(ctx context.Context, o opened, name string, asset payment.Asset) error {
+func checkDomain(ctx context.Context, o opened, read chain.Chain, name string, asset payment.Asset) error {
 	n := o.networks[string(asset.Network())]
-	kind, known := kinds.Lookup(n.Kind)
-	if !known {
-		return fmt.Errorf("network %s is of kind %s, which this build cannot open", asset.Network(), n.Kind)
-	}
-	read, err := kind.Open(chain.Settings{Name: string(asset.Network()), ChainID: identity(n), RPC: endpoint(n).Expose()})
-	if err != nil {
-		return fmt.Errorf("network %s: %w", asset.Network(), err)
-	}
 	onChain, err := read.DomainSeparator(ctx, asset.Reference())
 	if errors.Is(err, chain.ErrNoDomain) {
 		return nil
@@ -158,6 +159,42 @@ func checkDomain(ctx context.Context, o opened, name string, asset payment.Asset
 	if expected != onChain {
 		return fmt.Errorf("assets.%s.eip712 names %q version %q, which is not what the contract at %s signs under; check them, and the network's chain_id, against the contract",
 			name, given.Name, given.Version, asset.Reference())
+	}
+	return nil
+}
+
+// openNetwork opens the chain an asset settles on, at the endpoint a round
+// would read it through.
+func openNetwork(o opened, asset payment.Asset) (chain.Chain, error) {
+	n := o.networks[string(asset.Network())]
+	kind, known := kinds.Lookup(n.Kind)
+	if !known {
+		return nil, fmt.Errorf("network %s is of kind %s, which this build cannot open", asset.Network(), n.Kind)
+	}
+	read, err := kind.Open(chain.Settings{Name: string(asset.Network()), ChainID: identity(n), RPC: endpoint(n).Expose()})
+	if err != nil {
+		return nil, fmt.Errorf("network %s: %w", asset.Network(), err)
+	}
+	return read, nil
+}
+
+// checkBlocklist asks the asset's contract whether it refuses transfers to
+// the destination, and refuses a registration it does: every payment to that
+// address would be refused by the contract, and the merchant would take
+// nothing. What cannot be read refuses the registration too. The answer is
+// the contract's to give, and an address is not registered on the strength
+// of a provider that would not carry it, for the reason the domain is not
+// taken on trust.
+//
+// The address goes to the provider in the asking, which is the first time one
+// does. It is public the moment a payment reaches it.
+func checkBlocklist(ctx context.Context, read chain.Chain, asset payment.Asset, destination payment.Address) error {
+	listed, err := read.Blocklisted(ctx, asset.Reference(), string(destination))
+	if err != nil {
+		return fmt.Errorf("asking whether %s refuses transfers to %s: %w", asset, destination, err)
+	}
+	if listed {
+		return fmt.Errorf("the contract of %s refuses transfers to %s, the provider says, so nothing paid there would arrive; give another address, or another provider if this one is wrong", asset, destination)
 	}
 	return nil
 }
