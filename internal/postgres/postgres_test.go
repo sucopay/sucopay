@@ -154,3 +154,43 @@ func TestClose_ReleasesTheConnections(t *testing.T) {
 		t.Errorf("the server still has %d connection(s) after Close", open)
 	}
 }
+
+// TestOpen_OpensEveryTransactionAtReadCommitted holds the level the store is
+// written against. Several of its checks read what the transaction beside
+// them has just committed, and a level that holds one snapshot for the whole
+// transaction turns those reads into reads of the state before the
+// neighbour's write.
+//
+// The url asks for another level, which is the way an operator would set one:
+// the driver passes a query parameter it does not recognise to the server as
+// a session setting.
+func TestOpen_OpensEveryTransactionAtReadCommitted(t *testing.T) {
+	t.Parallel()
+	u, err := url.Parse(postgrestest.URL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := u.Query()
+	q.Set("default_transaction_isolation", "repeatable read")
+	u.RawQuery = q.Encode()
+
+	pool, err := postgres.Open(t.Context(), u.String())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer pool.Close()
+
+	tx, err := pool.Conns().Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(t.Context()) }()
+
+	var level string
+	if err := tx.QueryRow(t.Context(), "show transaction_isolation").Scan(&level); err != nil {
+		t.Fatal(err)
+	}
+	if level != "read committed" {
+		t.Errorf("transactions open at %q, want read committed: the url decided the level", level)
+	}
+}

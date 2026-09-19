@@ -1425,6 +1425,11 @@ const refundColumns = `r.id, r.amount, r.destination, r.scheme, r.network, r.key
 // otherwise both read the same remainder and both write, and the merchant
 // could sign each of them: the money that went out would be more than the
 // money that came in, which is the one thing this check is for.
+//
+// What the second of them measures against is the first one's row, which it
+// reads because every connection opens its transactions at read committed.
+// The pool says so rather than this transaction, so that the next check
+// written this way inherits it.
 func (s *Postgres) CreateRefund(ctx context.Context, account AccountID, r *Refund) (err error) {
 	if r == nil {
 		return errors.New("payment: nothing to refund")

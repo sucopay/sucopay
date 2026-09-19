@@ -73,6 +73,19 @@ func configure(url string) (*pgxpool.Config, error) {
 	// Without this the constant governs only the connection Ping asks for, and
 	// every later one falls to the driver's own two minutes.
 	cfg.ConnConfig.ConnectTimeout = connectTimeout
+	// Every transaction this process opens reads what the transaction beside
+	// it has just committed, and several of them are only correct because of
+	// it: a refund measures what a payment has left after locking the payment
+	// row, and reads the refunds of whoever committed first. Under a level
+	// that holds one snapshot for the whole transaction, that read is of the
+	// state before the neighbour's write, and the check passes twice.
+	//
+	// Set here rather than on each transaction so that the next one written
+	// cannot be the one that forgets. The driver hands an unrecognised query
+	// parameter of the url to the server as a session setting, so a url
+	// asking for another level would otherwise decide this; written after the
+	// url is read, this is what the server is told.
+	cfg.ConnConfig.RuntimeParams["default_transaction_isolation"] = "read committed"
 	return cfg, nil
 }
 
