@@ -404,6 +404,14 @@ func TestRound_PaysAPaymentWhoseTransferTheEndpointCallsFinal(t *testing.T) {
 			t.Errorf("the payload says %s is %v, want %v", field, told[field], want)
 		}
 	}
+	// And the transfer that settled it, which is what a merchant checks
+	// against a chain of their own. Its value is what the chain moved, in the
+	// asset's smallest unit, where amount and received are in the asset's.
+	transfer, _ := told["transfer"].(map[string]any)
+	if transfer["tx"] != "tx1" || transfer["block_time"] == nil ||
+		transfer["value"] != "20000"+strings.Repeat("0", 18) {
+		t.Errorf("the payload carries %v, want the transfer that settled the payment", told["transfer"])
+	}
 }
 
 // A payment past its deadline is still paid by a transfer that was on its
@@ -886,6 +894,11 @@ func TestRound_MovesAPaymentThatReachedItsDeadlineToWaitingForFinality(t *testin
 	if told["status"] != "awaiting_finality" {
 		t.Errorf("the payload says the status is %v, want awaiting_finality", told["status"])
 	}
+	// The transfer is on its way and matched, so the payment carries it here
+	// too. What a merchant is told is what a read of the payment answers.
+	if transfer, _ := told["transfer"].(map[string]any); transfer["tx"] != "tx1" {
+		t.Errorf("the payload carries %v, want the transfer that matched", told["transfer"])
+	}
 }
 
 // A payment past its deadline expires once the network has been read
@@ -913,7 +926,17 @@ func TestRound_ExpiresAPaymentOnceTheNetworkIsReadPastTheDeadlineWithNothingMatc
 	}
 	events := d.events(t, held, unpaid)
 	if len(events) != 2 || events[1].Name != "payment.expired" {
-		t.Errorf("the outbox holds %+v, want payment.awaiting_finality then payment.expired", events)
+		t.Fatalf("the outbox holds %+v, want payment.awaiting_finality then payment.expired", events)
+	}
+	// Nothing matched this payment, so there is no transfer to carry. A
+	// payment that has one does not expire: the read that expires payments
+	// leaves those out.
+	var told map[string]any
+	if err := json.Unmarshal([]byte(events[1].Payload), &told); err != nil {
+		t.Fatalf("the payload is not a JSON object: %v:\n%s", err, events[1].Payload)
+	}
+	if got, has := told["transfer"]; !has || got != nil {
+		t.Errorf("the payload carries %v, want transfer written as null", got)
 	}
 }
 

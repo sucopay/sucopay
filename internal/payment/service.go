@@ -127,7 +127,10 @@ func (s *Service) Await(ctx context.Context, account AccountID, id ID) (*Payment
 	// An event, although whoever asked for this move holds the answer:
 	// the one asking is the operator's command, and later the payer's page,
 	// and the merchant is told that the payment can now be paid.
-	event, err := Announce(p)
+	//
+	// No transfer: this is the move that makes a payment payable, and
+	// nothing arrives for a payment nobody could pay yet.
+	event, err := Announce(p, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -169,6 +172,13 @@ func (s *Service) Supersede(ctx context.Context, account AccountID, payment ID, 
 		return fmt.Errorf("%s: %w", payment, err)
 	}
 	return s.attempts.SaveAttempt(ctx, account, live, at)
+}
+
+// MatchedTransfer is the transfer seen for a payment, and whether one has
+// been. What a read of the payment answers beside it, and what every event
+// about it carries.
+func (s *Service) MatchedTransfer(ctx context.Context, account AccountID, id ID) (Transfer, bool, error) {
+	return s.payments.MatchedTransfer(ctx, account, id)
 }
 
 // Find reads one payment back, for whatever shows it. The revision stays

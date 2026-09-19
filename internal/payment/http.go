@@ -426,8 +426,18 @@ func (h *HTTP) Create(w http.ResponseWriter, r *http.Request, account AccountID)
 		// it is.
 		w.Header().Set("Idempotent-Replayed", "true")
 	}
+	// A replayed answer is a read of a payment that may have been paid since,
+	// and it says what a read of it says. A payment opened by this request is
+	// not asked about: nothing arrives for a payment that did not exist a
+	// moment ago.
+	var transfer *Transfer
+	if replayed {
+		if transfer, err = h.seen(r.Context(), account, p.ID()); err != nil {
+			return err
+		}
+	}
 	w.Header().Set("Location", "/payments/"+p.ID().String())
-	problem.JSON(w, http.StatusCreated, h.body(p))
+	problem.JSON(w, http.StatusCreated, h.body(p, transfer))
 	return nil
 }
 
@@ -435,13 +445,24 @@ func (h *HTTP) Create(w http.ResponseWriter, r *http.Request, account AccountID)
 // the checkout URL, which an event does not. The URL carries the page's
 // token, which is a key to the payment's outcome, and a receiver's log is
 // not where one belongs.
-func (h *HTTP) body(p *Payment) paymentJSON {
+func (h *HTTP) body(p *Payment, t *Transfer) paymentJSON {
 	body := bodyJSON(p)
+	body.Transfer = t.shown()
 	if p.Checkout().IsSet() {
 		u := h.links.CheckoutURL(p.ID())
 		body.CheckoutURL = &u
 	}
 	return body
+}
+
+// seen is the transfer a read of the payment answers with, and nil where none
+// has been seen for it.
+func (h *HTTP) seen(ctx context.Context, account AccountID, id ID) (*Transfer, error) {
+	t, found, err := h.service.MatchedTransfer(ctx, account, id)
+	if err != nil || !found {
+		return nil, err
+	}
+	return &t, nil
 }
 
 // Read answers with the payment of account the path's id names, or that
@@ -462,7 +483,11 @@ func (h *HTTP) Read(w http.ResponseWriter, r *http.Request, account AccountID) e
 	case err != nil:
 		return err
 	}
-	problem.JSON(w, http.StatusOK, h.body(p))
+	transfer, err := h.seen(r.Context(), account, id)
+	if err != nil {
+		return err
+	}
+	problem.JSON(w, http.StatusOK, h.body(p, transfer))
 	return nil
 }
 
@@ -482,6 +507,9 @@ type paymentJSON struct {
 	CreatedAt   time.Time         `json:"created_at"`
 	ReturnURL   *string           `json:"return_url"`
 	CheckoutURL *string           `json:"checkout_url,omitempty"`
+	// Transfer is the transfer seen for the payment, and null until one
+	// has been. It is what a merchant checks against a node of their own.
+	Transfer *transferJSON `json:"transfer"`
 }
 
 // assetJSON is an asset as a response writes it.
@@ -530,50 +558,78 @@ func bodyJSON(p *Payment) paymentJSON {
 	}
 }
 
-// transferJSON is a transfer as an event carries it: what a merchant can
+// transferJSON is a transfer as a payment carries it: what a merchant can
 // check against a node of their own, and nothing that says it is final.
+//
+// The network and where the money went are not repeated. The payment already
+// answers both, and a transfer that matched went to the payment's
+// destination or it would not have matched.
+//
+// Value is in the asset's smallest unit, which is what the chain moved and
+// not what amount and received are written in.
 type transferJSON struct {
-	Tx          string `json:"tx"`
-	BlockHeight uint64 `json:"block_height"`
-	BlockHash   string `json:"block_hash"`
-	From        string `json:"from"`
-	Value       string `json:"value"`
+	Tx          string    `json:"tx"`
+	BlockHeight uint64    `json:"block_height"`
+	BlockHash   string    `json:"block_hash"`
+	BlockTime   time.Time `json:"block_time"`
+	From        string    `json:"from"`
+	Value       string    `json:"value"`
+}
+
+// shown is a transfer as a body carries it, and nil for a payment nothing has
+// been seen for.
+func (t *Transfer) shown() *transferJSON {
+	if t == nil {
+		return nil
+	}
+	return &transferJSON{
+		Tx: t.Tx, BlockHeight: t.BlockHeight, BlockHash: t.BlockHash,
+		BlockTime: t.BlockTime.UTC(), From: t.From, Value: t.Value,
+	}
 }
 
 // AnnounceConfirming is the event a payment produces when a transfer for it
 // is seen, ahead of finality: the payment as a read of it would answer,
 // with the transfer beside it.
 func AnnounceConfirming(p *Payment, t Transfer) (Event, error) {
-	var payload bytes.Buffer
-	writer := json.NewEncoder(&payload)
-	writer.SetEscapeHTML(false)
-	if err := writer.Encode(struct {
-		paymentJSON
-		Transfer transferJSON `json:"transfer"`
-	}{bodyJSON(p), transferJSON{Tx: t.Tx, BlockHeight: t.BlockHeight, BlockHash: t.BlockHash, From: t.From, Value: t.Value}}); err != nil {
-		return Event{}, fmt.Errorf("payment %s: %w", p.ID(), err)
+	payload, err := told(p, &t)
+	if err != nil {
+		return Event{}, err
 	}
-	return Event{Name: "attempt.confirming", Payload: bytes.TrimRight(payload.Bytes(), "\n")}, nil
+	return Event{Name: "attempt.confirming", Payload: payload}, nil
 }
 
-// Announce is the event a payment produces on reaching the status it is in,
-// carrying the payment as a read of it would answer. What a merchant is told
-// and what a merchant can ask for are then the same thing.
+// told is a payment as an event carries it, with the transfer seen for it or
+// nil. One shape for every event, so that what a merchant is told and what a
+// merchant can read stay the same thing.
 //
 // The payload is written without escaping the characters that have a meaning
 // in a page, because it is not one: it goes to a merchant's endpoint. Escaping
 // them spends six bytes where the value had one, and a payment carrying
 // metadata at every bound this package allows would come to more than an event
 // is allowed to be.
-func Announce(p *Payment) (Event, error) {
+func told(p *Payment, t *Transfer) ([]byte, error) {
+	body := bodyJSON(p)
+	body.Transfer = t.shown()
 	var payload bytes.Buffer
 	writer := json.NewEncoder(&payload)
 	writer.SetEscapeHTML(false)
-	if err := writer.Encode(bodyJSON(p)); err != nil {
-		return Event{}, fmt.Errorf("payment %s: %w", p.ID(), err)
+	if err := writer.Encode(body); err != nil {
+		return nil, fmt.Errorf("payment %s: %w", p.ID(), err)
 	}
-	return Event{
-		Name:    "payment." + p.Status().String(),
-		Payload: bytes.TrimRight(payload.Bytes(), "\n"),
-	}, nil
+	return bytes.TrimRight(payload.Bytes(), "\n"), nil
+}
+
+// Announce is the event a payment produces on reaching the status it is in,
+// carrying the payment as a read of it would answer. What a merchant is told
+// and what a merchant can ask for are then the same thing.
+//
+// The transfer is the one seen for the payment, and nil where none has been:
+// a caller that moves a payment reads it, as a read of the payment does.
+func Announce(p *Payment, t *Transfer) (Event, error) {
+	payload, err := told(p, t)
+	if err != nil {
+		return Event{}, err
+	}
+	return Event{Name: "payment." + p.Status().String(), Payload: payload}, nil
 }

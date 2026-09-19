@@ -426,7 +426,18 @@ func (w *Worker) swept(ctx context.Context) error {
 // made of it.
 func (w *Worker) told(ctx context.Context, account payment.AccountID, p *payment.Payment,
 	at payment.Revision, said string, fields ...any) error {
-	event, err := payment.Announce(p)
+	// Read rather than carried down from the round: what settles a payment
+	// is one of several transfers the round read, and a merchant is told the
+	// one a read of the payment answers with.
+	transfer, found, err := w.store.MatchedTransfer(ctx, account, p.ID())
+	if err != nil {
+		return err
+	}
+	var seen *payment.Transfer
+	if found {
+		seen = &transfer
+	}
+	event, err := payment.Announce(p, seen)
 	if err != nil {
 		return err
 	}

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -200,6 +201,7 @@ func TestHTTP_CreatesAPaymentFromABodyThatWritesEveryKey(t *testing.T) {
 		"expires_at":  "2026-09-01T14:00:00Z",
 		"created_at":  "2026-09-01T12:00:00Z",
 		"return_url":  nil,
+		"transfer":    nil,
 	}
 	// The checkout URL is the one thing here not written from the body: a
 	// token derived for the payment. Its own test says what it is.
@@ -516,7 +518,7 @@ func TestAnnounce_NamesTheStatusAndCarriesWhatReadAnswers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	e, err := payment.Announce(p)
+	e, err := payment.Announce(p, nil)
 
 	if err != nil {
 		t.Fatalf("Announce = %v, want none", err)
@@ -541,6 +543,35 @@ func TestAnnounce_NamesTheStatusAndCarriesWhatReadAnswers(t *testing.T) {
 	if _, has := told["checkout_url"]; has || !reflect.DeepEqual(told, asked) {
 		t.Errorf("Payload:\n%s\nwant what read answered, less checkout_url:\n%s", e.Payload, read.Body)
 	}
+
+	// And once a transfer has been seen for it, the event carries what the
+	// read answers there too.
+	transferred(t, f, payment.ID(id))
+	p, _, err = f.store.Find(t.Context(), first, payment.ID(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen, found, err := f.store.MatchedTransfer(t.Context(), first, payment.ID(id))
+	if err != nil || !found {
+		t.Fatalf("MatchedTransfer found %v, %v", found, err)
+	}
+	if e, err = payment.Announce(p, &seen); err != nil {
+		t.Fatal(err)
+	}
+	if read, err = f.read(t, first, id); err != nil {
+		t.Fatal(err)
+	}
+	told, asked = map[string]any{}, decoded(t, read)
+	if err := json.Unmarshal(e.Payload, &told); err != nil {
+		t.Fatal(err)
+	}
+	delete(asked, "checkout_url")
+	if !reflect.DeepEqual(told["transfer"], asked["transfer"]) || told["transfer"] == nil {
+		t.Errorf("the event carries %v, want what the read answers: %v", told["transfer"], asked["transfer"])
+	}
+	if !reflect.DeepEqual(told, asked) {
+		t.Errorf("Payload:\n%s\nwant what read answered, less checkout_url:\n%s", e.Payload, read.Body)
+	}
 }
 
 func TestAnnounce_NamesTheStatusThePaymentHasNow(t *testing.T) {
@@ -553,7 +584,7 @@ func TestAnnounce_NamesTheStatusThePaymentHasNow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	e, err := payment.Announce(p)
+	e, err := payment.Announce(p, nil)
 
 	if err != nil {
 		t.Fatalf("Announce = %v, want none", err)
@@ -589,7 +620,7 @@ func TestAnnounce_IsWithinTheEventBoundForAPaymentAtItsOwn(t *testing.T) {
 	if err := p.Await(); err != nil {
 		t.Fatal(err)
 	}
-	e, err := payment.Announce(p)
+	e, err := payment.Announce(p, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -870,5 +901,172 @@ func TestCreate_AnswersRequestsThatRaceUnderOneKeyWithOnePayment(t *testing.T) {
 	}
 	if n := f.rows(t); n != 1 {
 		t.Errorf("%d payments, want one", n)
+	}
+}
+
+// keysOf reads the keys of a JSON object in the order they were written, so
+// that a test can say where a new one went.
+func keysOf(t *testing.T, payload []byte) []string {
+	t.Helper()
+	dec := json.NewDecoder(bytes.NewReader(payload))
+	if _, err := dec.Token(); err != nil {
+		t.Fatalf("payload is not a JSON object: %v:\n%s", err, payload)
+	}
+	var keys []string
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, key.(string))
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return keys
+}
+
+func TestAnnounceConfirming_CarriesTheTransferOnceAndAfterEverythingElse(t *testing.T) {
+	t.Parallel()
+	p := payable(t)
+	seen := payment.Transfer{
+		Tx: "0xtx", BlockHeight: 12, BlockHash: "0xblock", BlockTime: now,
+		From: "0xpayer", To: string(p.Destination()), Value: "1000", Asset: "jpyc-contract",
+	}
+
+	e, err := payment.AnnounceConfirming(p, seen)
+
+	if err != nil {
+		t.Fatalf("AnnounceConfirming = %v, want none", err)
+	}
+	if e.Name != "attempt.confirming" {
+		t.Errorf("Name = %q, want attempt.confirming", e.Name)
+	}
+	keys := keysOf(t, e.Payload)
+	if n := slices.Index(keys, "transfer"); n != len(keys)-1 {
+		t.Errorf("keys = %v, want transfer last and once", keys)
+	}
+	if n := bytes.Count(e.Payload, []byte(`"transfer":`)); n != 1 {
+		t.Errorf("the payload writes transfer %d times:\n%s", n, e.Payload)
+	}
+	var told struct {
+		Transfer map[string]any `json:"transfer"`
+	}
+	if err := json.Unmarshal(e.Payload, &told); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{
+		"tx": "0xtx", "block_height": float64(12), "block_hash": "0xblock",
+		"block_time": "2026-09-01T12:00:00Z", "from": "0xpayer", "value": "1000",
+	}
+	if !reflect.DeepEqual(told.Transfer, want) {
+		t.Errorf("transfer = %v, want %v", told.Transfer, want)
+	}
+}
+
+func TestAnnounce_CarriesNoTransferForAPaymentNothingWasSeenFor(t *testing.T) {
+	t.Parallel()
+	p := payable(t)
+
+	e, err := payment.Announce(p, nil)
+
+	if err != nil {
+		t.Fatalf("Announce = %v, want none", err)
+	}
+	var told map[string]any
+	if err := json.Unmarshal(e.Payload, &told); err != nil {
+		t.Fatal(err)
+	}
+	if got, has := told["transfer"]; !has || got != nil {
+		t.Errorf("transfer = %v, has = %v, want it written as null", got, has)
+	}
+}
+
+func TestRead_AnswersWithTheTransferThatMatchedThePayment(t *testing.T) {
+	t.Parallel()
+	f := served(t)
+	id := f.created(t, example)
+	transferred(t, f, payment.ID(id))
+
+	w, err := f.read(t, first, id)
+
+	if err != nil || w.Code != http.StatusOK {
+		t.Fatalf("read answered %d, %v:\n%s", w.Code, err, w.Body)
+	}
+	transfer, _ := decoded(t, w)["transfer"].(map[string]any)
+	if transfer["tx"] != "0xtx" || transfer["block_height"] != float64(10) ||
+		transfer["from"] != theSigner || transfer["block_hash"] != "block0xtx" {
+		t.Errorf("transfer = %v, want the transfer that matched", transfer)
+	}
+	if _, has := transfer["network"]; has {
+		t.Errorf("transfer = %v, want no network: the asset names it", transfer)
+	}
+	if _, has := transfer["to"]; has {
+		t.Errorf("transfer = %v, want no destination: the payment names it", transfer)
+	}
+}
+
+func TestCreate_AnswersWithTheTransferOnARetryOfAPaymentThatWasPaid(t *testing.T) {
+	t.Parallel()
+	f := served(t)
+	opened, err := f.keyed(t, first, "a-key", example)
+	if err != nil || opened.Code != http.StatusCreated {
+		t.Fatalf("create answered %d, %v", opened.Code, err)
+	}
+	if got, has := decoded(t, opened)["transfer"]; !has || got != nil {
+		t.Errorf("a payment just opened carries %v, want transfer null", got)
+	}
+	id := decoded(t, opened)["id"].(string)
+	transferred(t, f, payment.ID(id))
+
+	again, err := f.keyed(t, first, "a-key", example)
+	read, readErr := f.read(t, first, id)
+
+	if err != nil || again.Code != http.StatusCreated {
+		t.Fatalf("the retry answered %d, %v:\n%s", again.Code, err, again.Body)
+	}
+	if readErr != nil || read.Code != http.StatusOK {
+		t.Fatalf("read answered %d, %v", read.Code, readErr)
+	}
+	// The retry answers the payment the key opened as a read of it answers,
+	// and a payment that has been paid since carries its transfer.
+	was, is := decoded(t, read)["transfer"], decoded(t, again)["transfer"]
+	if is == nil {
+		t.Fatalf("the retry carries no transfer:\n%s", again.Body)
+	}
+	if !reflect.DeepEqual(was, is) {
+		t.Errorf("the retry carries %v, want what the read answers: %v", is, was)
+	}
+}
+
+// transferred makes a payment payable and puts a matched transfer on it, the
+// way a round of the chain would.
+func transferred(t *testing.T, f *handler, id payment.ID) {
+	t.Helper()
+	p, at, err := f.store.Find(t.Context(), first, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Await(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.Save(t.Context(), first, p, at, payment.Event{}); err != nil {
+		t.Fatal(err)
+	}
+	a, err := payment.NewAttempt(p, p.CreatedAt())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.Issue(t.Context(), first, a); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := f.store.Consumed(t.Context(), p.Network(), []string{a.Key()})
+	if err != nil || len(hits) != 1 {
+		t.Fatalf("Consumed found %d attempts: %v", len(hits), err)
+	}
+	if err := recordingAt(t, f.store, f.pool, now, 1, 20, false,
+		seenAt(hits[0], "0xtx", 10, payment.Matched)); err != nil {
+		t.Fatal(err)
 	}
 }
