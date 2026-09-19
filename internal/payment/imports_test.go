@@ -26,7 +26,7 @@ var domainFiles = []string{
 // forbid: a driver, an HTTP handler, or whatever the next dependency is
 // called. A Payment shaped by what a database returns is no longer a Payment.
 var allowed = []string{
-	"context", "crypto/rand", "encoding/hex", "errors", "fmt", "maps",
+	"bytes", "context", "crypto/rand", "encoding/hex", "errors", "fmt", "maps",
 	"math/big", "slices", "strings", "time",
 	// invisible decides which characters metadata may carry. It reads
 	// nothing and reaches nothing; it is a list of runes.

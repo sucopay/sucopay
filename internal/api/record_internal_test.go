@@ -33,3 +33,32 @@ func TestRecord_WritesThePatternAndNotThePathOfARouteReachedByAToken(t *testing.
 		t.Errorf("a route with no token lost its path:\n%s", got)
 	}
 }
+
+// Headers are what a merchant chooses, and two of them are keys: the
+// credential, and the idempotency key a retry is recognised by. A line that
+// outlives the request holds neither.
+func TestRecord_WritesNoHeaderOfTheRequest(t *testing.T) {
+	t.Parallel()
+	log, lines := logged()
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /payments", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusCreated) })
+	const (
+		key   = "8e03978e-40d5-43e8-bc93-6894a57f9324"
+		token = "sk_a_credential_nobody_should_read_here"
+	)
+
+	r := httptest.NewRequest(http.MethodPost, "/payments", nil)
+	r.Header.Set("Idempotency-Key", key)
+	r.Header.Set("Authorization", "Bearer "+token)
+	record(log, mux).ServeHTTP(httptest.NewRecorder(), r)
+
+	got := lines.String()
+	for _, secret := range []string{key, token} {
+		if strings.Contains(got, secret) {
+			t.Errorf("the log carries a header the merchant sent:\n%s", got)
+		}
+	}
+	if !strings.Contains(got, "/payments") {
+		t.Errorf("the log lost the route:\n%s", got)
+	}
+}

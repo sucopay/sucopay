@@ -1,6 +1,7 @@
 package payment
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -55,13 +56,14 @@ func (s *Service) Open(ctx context.Context, account AccountID, r Request) (*Paym
 	if err != nil {
 		return nil, err
 	}
-	return s.OpenAs(ctx, account, id, r)
+	p, _, err := s.OpenAs(ctx, account, id, r)
+	return p, err
 }
 
 // OpenAs is Open under an identifier the caller minted with [NewID]. For a
 // caller that has to know the identifier before the payment exists, which
 // one deriving the checkout page's token from it is.
-func (s *Service) OpenAs(ctx context.Context, account AccountID, id ID, r Request) (*Payment, error) {
+func (s *Service) OpenAs(ctx context.Context, account AccountID, id ID, r Request) (*Payment, bool, error) {
 	now := s.now()
 	if r.ExpiresAt.IsZero() {
 		r.ExpiresAt = now.Add(DefaultExpiry)
@@ -69,7 +71,7 @@ func (s *Service) OpenAs(ctx context.Context, account AccountID, id ID, r Reques
 	p, err := build(id, r, Created, now, now)
 	var problems Problems
 	if err != nil && !errors.As(err, &problems) {
-		return nil, err
+		return nil, false, err
 	}
 	if latest := now.Add(MaxExpiry); r.ExpiresAt.After(latest) {
 		problems = append(problems, Problem{Field: "expires_at", Message: fmt.Sprintf(
@@ -77,12 +79,36 @@ func (s *Service) OpenAs(ctx context.Context, account AccountID, id ID, r Reques
 			r.ExpiresAt.UTC().Format(time.RFC3339), latest.UTC().Format(time.RFC3339))})
 	}
 	if len(problems) > 0 {
-		return nil, problems
+		return nil, false, problems
 	}
 	if err := s.payments.Create(ctx, account, p); err != nil {
-		return nil, err
+		if errors.Is(err, ErrIdempotencyKeyUsed) {
+			return s.opened(ctx, account, r.Idempotency)
+		}
+		return nil, false, err
 	}
-	return p, nil
+	return p, false, nil
+}
+
+// opened is the payment an idempotency key already opened, for a request
+// that arrived under a key this account has used.
+//
+// The same body is the same request, and is answered with that payment. A
+// body that hashes to anything else is refused as [ErrIdempotencyKeyUsed]:
+// the key names one request, and handing back a payment opened for another
+// would tell the merchant that a payment they did not ask for is the one
+// they asked for.
+func (s *Service) opened(ctx context.Context, account AccountID, i Idempotency) (*Payment, bool, error) {
+	first, _, err := s.payments.FindByKey(ctx, account, i.Key)
+	if err != nil {
+		return nil, false, err
+	}
+	// Plain equality: the hash stands for a body whose parts the same row
+	// already holds in the clear, so there is nothing here to keep secret.
+	if !bytes.Equal(first.Idempotency().BodyHash, i.BodyHash) {
+		return nil, false, ErrIdempotencyKeyUsed
+	}
+	return first, true, nil
 }
 
 // Await makes a payment payable.

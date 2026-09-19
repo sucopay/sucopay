@@ -13,7 +13,7 @@ FUZZ = ./internal/adapter/chain/evm:FuzzNormalize \
        ./internal/invisible:FuzzQuote ./internal/invisible:FuzzShown \
        ./internal/payment:FuzzParseMoney ./internal/payment:FuzzParseUnits \
        ./internal/payment:FuzzMetadata ./internal/payment:FuzzParseAddress \
-       ./internal/payment:FuzzReadRequest
+       ./internal/payment:FuzzReadRequest ./internal/payment:FuzzIdempotencyKey
 FUZZTIME ?= 60s
 
 .PHONY: help

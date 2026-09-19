@@ -3,12 +3,14 @@ package payment
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"slices"
 	"time"
@@ -52,6 +54,54 @@ var requestKeys = []string{"amount", "asset", "expires_at", "metadata", "return_
 
 // MaxReturnURLBytes bounds where a payer is sent back to.
 const MaxReturnURLBytes = 2048
+
+// IdempotencyKeyHeader carries the key a merchant sends so that a retry of
+// one request opens one payment.
+const IdempotencyKeyHeader = "Idempotency-Key"
+
+// MaxIdempotencyKeyBytes bounds that key, as the implementations merchants
+// have already met do.
+const MaxIdempotencyKeyBytes = 255
+
+// readIdempotencyKey reads the key out of the headers, and reports what is
+// wrong with it instead.
+//
+// The draft that defines the field writes the value as a structured field
+// string, in quotes; the clients merchants use send it bare. Both are read,
+// and the quotes are syntax rather than part of the key. A key is printable
+// ASCII without the two characters that spelling would have to escape, so
+// that two keys that look the same are the same key.
+//
+// No key at all is not a problem: the field is optional, and a request
+// without one opens a payment as it always did.
+func readIdempotencyKey(h http.Header) (string, Problems) {
+	given, ok := h[textproto.CanonicalMIMEHeaderKey(IdempotencyKeyHeader)]
+	refuse := func(message string) (string, Problems) {
+		return "", Problems{{Field: IdempotencyKeyHeader, Message: message}}
+	}
+	switch {
+	case !ok:
+		return "", nil
+	case len(given) > 1:
+		return refuse("given more than once, and two keys name two requests")
+	}
+	key := given[0]
+	if len(key) >= 2 && key[0] == '"' && key[len(key)-1] == '"' {
+		key = key[1 : len(key)-1]
+	}
+	switch {
+	case key == "":
+		return refuse("empty")
+	case len(key) > MaxIdempotencyKeyBytes:
+		return refuse(fmt.Sprintf("longer than %d bytes", MaxIdempotencyKeyBytes))
+	}
+	for i := range len(key) {
+		if c := key[i]; c < 0x20 || c > 0x7e || c == '"' || c == '\\' {
+			return refuse("carries a character a key may not: printable ASCII, and no quote or backslash")
+		}
+	}
+	return key, nil
+}
 
 // checkReturnURL says what is wrong with where a merchant wants the payer
 // sent back to, and nothing when it is a place the checkout page may send
@@ -302,6 +352,7 @@ func NewHTTP(service *Service, assets Assets, accepted Accepted, links Links) *H
 // reached, with nothing written: the caller answers for that, in the one way
 // it answers for every dependency.
 func (h *HTTP) Create(w http.ResponseWriter, r *http.Request, account AccountID) error {
+	key, problems := readIdempotencyKey(r.Header)
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
 	var tooLarge *http.MaxBytesError
 	switch {
@@ -309,11 +360,17 @@ func (h *HTTP) Create(w http.ResponseWriter, r *http.Request, account AccountID)
 		problem.Refuse(w, http.StatusRequestEntityTooLarge, "too_large", nil)
 		return nil
 	case err != nil:
-		problem.Refuse(w, http.StatusBadRequest, "invalid", asFields(
-			Problems{{Message: "the body ended before the request said it would"}}))
+		// With whatever was wrong with the key, so that a request wrong in
+		// both is answered once. A body over the limit is answered by the
+		// limit alone: there is nothing else to say about it.
+		problems = append(problems, Problem{Message: "the body ended before the request said it would"})
+		problem.Refuse(w, http.StatusBadRequest, "invalid", asFields(problems))
 		return nil
 	}
-	req, problems := readRequest(body, h.assets)
+	req, found := readRequest(body, h.assets)
+	// Everything wrong with the request in one answer, the field among the
+	// keys of the body, so that a merchant fixes it in one round.
+	problems = append(problems, found...)
 	if problems != nil {
 		problem.Refuse(w, http.StatusBadRequest, "invalid", asFields(problems))
 		return nil
@@ -334,21 +391,40 @@ func (h *HTTP) Create(w http.ResponseWriter, r *http.Request, account AccountID)
 	if err != nil {
 		return err
 	}
-	p, err := h.service.OpenAs(r.Context(), account, id, Request{
+	var idempotency Idempotency
+	if key != "" {
+		// The bytes that were read, rather than the request rebuilt from
+		// them: what a retry has to match is what it sent.
+		sum := sha256.Sum256(body)
+		idempotency = Idempotency{Key: key, BodyHash: sum[:]}
+	}
+	p, replayed, err := h.service.OpenAs(r.Context(), account, id, Request{
 		Amount:      req.amount,
 		Destination: destination,
 		Metadata:    req.metadata,
 		ExpiresAt:   req.expiresAt,
 		ReturnURL:   req.returnURL,
 		Checkout:    h.links.Checkout(id),
+		Idempotency: idempotency,
 	})
-	var found Problems
-	if errors.As(err, &found) {
-		problem.Refuse(w, http.StatusBadRequest, "invalid", asFields(found))
+	var refused Problems
+	switch {
+	case errors.Is(err, ErrIdempotencyKeyUsed):
+		problem.Refuse(w, http.StatusBadRequest, "invalid", []problem.Field{{
+			Field:   IdempotencyKeyHeader,
+			Message: "already used for another body. Send that body, or a key nothing has used"}})
 		return nil
-	}
-	if err != nil {
+	case errors.As(err, &refused):
+		problem.Refuse(w, http.StatusBadRequest, "invalid", asFields(refused))
+		return nil
+	case err != nil:
 		return err
+	}
+	if replayed {
+		// The answer is the payment the key opened, read now rather than a
+		// copy of what the first answer said, so a merchant is told which
+		// it is.
+		w.Header().Set("Idempotent-Replayed", "true")
 	}
 	w.Header().Set("Location", "/payments/"+p.ID().String())
 	problem.JSON(w, http.StatusCreated, h.body(p))

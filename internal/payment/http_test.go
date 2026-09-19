@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"testing/iotest"
 
@@ -87,6 +88,16 @@ func (f *handler) create(t *testing.T, account payment.AccountID, body io.Reader
 	t.Helper()
 	w := httptest.NewRecorder()
 	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/payments", body)
+	return w, f.h.Create(w, r, account)
+}
+
+// keyed posts body under an idempotency key, which is the header a merchant
+// sends so that a retry opens one payment.
+func (f *handler) keyed(t *testing.T, account payment.AccountID, key, body string) (*httptest.ResponseRecorder, error) {
+	t.Helper()
+	w := httptest.NewRecorder()
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/payments", strings.NewReader(body))
+	r.Header.Set(payment.IdempotencyKeyHeader, key)
 	return w, f.h.Create(w, r, account)
 }
 
@@ -371,6 +382,18 @@ func TestHTTP_RefusesABodyThatEndsEarly(t *testing.T) {
 	if fields := refused(t, w); strings.Join(fields, " ") != "-" {
 		t.Errorf("problems under %q, want one about the body as a whole", fields)
 	}
+	// And a key that is not one is answered with it, rather than waiting for
+	// the merchant to fix the body and send again.
+	w = httptest.NewRecorder()
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/payments",
+		io.MultiReader(strings.NewReader(`{"asset": "jpyc"`), iotest.ErrReader(errors.New("connection reset"))))
+	r.Header.Set(payment.IdempotencyKeyHeader, "")
+	if err := f.h.Create(w, r, first); err != nil {
+		t.Fatal(err)
+	}
+	if fields := refused(t, w); strings.Join(fields, " ") != payment.IdempotencyKeyHeader+" -" {
+		t.Errorf("problems under %q, want the header and the body", fields)
+	}
 }
 
 func TestHTTP_ReadsBackThePaymentItCreated(t *testing.T) {
@@ -644,5 +667,208 @@ func TestHTTP_KeepsAReturnURLAndRefusesOneThePageMayNotSendAPayerTo(t *testing.T
 	w, _ := f.create(t, first, strings.NewReader(example))
 	if got, has := decoded(t, w)["return_url"]; !has || got != nil {
 		t.Errorf("return_url left out = %v (present %t), want null", got, has)
+	}
+}
+
+// another is the example body with a different amount: the same request as
+// far as the account and the asset go, and not the same request.
+const another = `{"asset": "jpyc", "amount": "2000", "expires_at": "2026-09-01T14:00:00Z", "metadata": {"order": "A-1"}}`
+
+func TestCreate_AnswersARetryUnderOneKeyWithThePaymentItOpened(t *testing.T) {
+	t.Parallel()
+	f := served(t)
+
+	opened, err := f.keyed(t, first, "a-key", example)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := f.keyed(t, first, "a-key", example)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if opened.Code != http.StatusCreated || again.Code != http.StatusCreated {
+		t.Fatalf("answered %d then %d, want 201 twice:\n%s", opened.Code, again.Code, again.Body)
+	}
+	if was, is := decoded(t, opened)["id"], decoded(t, again)["id"]; was != is {
+		t.Errorf("the retry opened %v, want the payment %v the key opened", is, was)
+	}
+	if got := f.rows(t); got != 1 {
+		t.Errorf("%d payments, want the one the key opened", got)
+	}
+	if got := again.Header().Get("Idempotent-Replayed"); got != "true" {
+		t.Errorf("the retry is marked %q, want true", got)
+	}
+	if got := opened.Header().Get("Idempotent-Replayed"); got != "" {
+		t.Errorf("the first answer is marked %q, want nothing", got)
+	}
+	if was, is := opened.Header().Get("Location"), again.Header().Get("Location"); was != is {
+		t.Errorf("Location = %q, want %q", is, was)
+	}
+}
+
+func TestCreate_RefusesAKeyThatArrivesWithAnotherBody(t *testing.T) {
+	t.Parallel()
+	f := served(t)
+
+	w, err := f.keyed(t, first, "a-key", example)
+	if err != nil || w.Code != http.StatusCreated {
+		t.Fatalf("the first body under the key answered %d, %v", w.Code, err)
+	}
+	w, err = f.keyed(t, first, "a-key", another)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("answered %d, want 400:\n%s", w.Code, w.Body)
+	}
+	if got := refused(t, w); len(got) != 1 || !strings.Contains(got[0], payment.IdempotencyKeyHeader) {
+		t.Errorf("problems = %v, want one naming the header", got)
+	}
+	if got := f.rows(t); got != 1 {
+		t.Errorf("%d payments, want the one the key opened", got)
+	}
+}
+
+func TestCreate_KeysBelongToOneAccount(t *testing.T) {
+	t.Parallel()
+	f := served(t)
+	f.accepted.paidTo[acceptance{other, jpyc(t)}] = address(t, "d")
+
+	mine, err := f.keyed(t, first, "a-key", example)
+	if err != nil {
+		t.Fatal(err)
+	}
+	theirs, err := f.keyed(t, other, "a-key", example)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if mine.Code != http.StatusCreated || theirs.Code != http.StatusCreated {
+		t.Fatalf("answered %d and %d, want 201 twice:\n%s", mine.Code, theirs.Code, theirs.Body)
+	}
+	if was, is := decoded(t, mine)["id"], decoded(t, theirs)["id"]; was == is {
+		t.Errorf("both accounts were given payment %v", is)
+	}
+	if got := f.rows(t); got != 2 {
+		t.Errorf("%d payments, want one for each account", got)
+	}
+}
+
+func TestCreate_OpensAPaymentForEveryRequestThatCarriesNoKey(t *testing.T) {
+	t.Parallel()
+	f := served(t)
+
+	was, is := f.created(t, example), f.created(t, example)
+
+	if was == is {
+		t.Errorf("both requests were given payment %s", is)
+	}
+	if got := f.rows(t); got != 2 {
+		t.Errorf("%d payments, want one for each request", got)
+	}
+}
+
+func TestCreate_KeepsNoKeyFromARequestItRefused(t *testing.T) {
+	t.Parallel()
+	f := served(t)
+
+	refusal, err := f.keyed(t, first, "a-key", `{"asset": "jpyc", "amount": "0"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := f.keyed(t, first, "a-key", example)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refusal.Code != http.StatusBadRequest {
+		t.Fatalf("the body nobody could open answered %d, want 400", refusal.Code)
+	}
+	if w.Code != http.StatusCreated {
+		t.Fatalf("the same key with a body that opens answered %d:\n%s", w.Code, w.Body)
+	}
+	if got := w.Header().Get("Idempotent-Replayed"); got != "" {
+		t.Errorf("the answer is marked %q, want nothing: the key opened nothing before", got)
+	}
+	if got := f.rows(t); got != 1 {
+		t.Errorf("%d payments, want the one the corrected body opened", got)
+	}
+}
+
+func TestCreate_AnswersTheKeyAndTheBodyInOneRound(t *testing.T) {
+	t.Parallel()
+	f := served(t)
+
+	w, err := f.keyed(t, first, "", `{"asset": "gold", "amount": "1"}`)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("answered %d, want 400:\n%s", w.Code, w.Body)
+	}
+	got := refused(t, w)
+	if len(got) != 2 {
+		t.Fatalf("problems = %v, want the header and the asset in one answer", got)
+	}
+	if !strings.Contains(got[0], payment.IdempotencyKeyHeader) || !strings.Contains(got[1], "asset") {
+		t.Errorf("problems = %v, want the header first and then the body", got)
+	}
+	if n := f.rows(t); n != 0 {
+		t.Errorf("%d payments, want none", n)
+	}
+}
+
+func TestCreate_AnswersRequestsThatRaceUnderOneKeyWithOnePayment(t *testing.T) {
+	t.Parallel()
+	f := served(t)
+	const racing = 3
+
+	type answer struct {
+		code     int
+		id       string
+		replayed string
+	}
+	answers := make(chan answer, racing)
+	var start sync.WaitGroup
+	start.Add(1)
+	for range racing {
+		go func() {
+			start.Wait()
+			w, err := f.keyed(t, first, "a-key", example)
+			if err != nil {
+				answers <- answer{code: -1}
+				return
+			}
+			var body map[string]any
+			_ = json.Unmarshal(w.Body.Bytes(), &body)
+			id, _ := body["id"].(string)
+			answers <- answer{w.Code, id, w.Header().Get("Idempotent-Replayed")}
+		}()
+	}
+	start.Done()
+
+	opened, replayed := map[string]int{}, 0
+	for range racing {
+		got := <-answers
+		if got.code != http.StatusCreated {
+			t.Errorf("one of the requests answered %d", got.code)
+			continue
+		}
+		opened[got.id]++
+		if got.replayed == "true" {
+			replayed++
+		}
+	}
+	if len(opened) != 1 {
+		t.Errorf("the racing requests were given %d payments, want one: %v", len(opened), opened)
+	}
+	if replayed != racing-1 {
+		t.Errorf("%d answers are marked replayed, want %d", replayed, racing-1)
+	}
+	if n := f.rows(t); n != 1 {
+		t.Errorf("%d payments, want one", n)
 	}
 }

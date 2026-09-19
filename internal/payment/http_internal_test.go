@@ -2,6 +2,7 @@ package payment
 
 import (
 	"encoding/json"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -282,6 +283,88 @@ func FuzzReadRequest(f *testing.F) {
 		}
 		if cmp, err := again.Cmp(r.amount); err != nil || cmp != 0 {
 			t.Errorf("readRequest(%q) read %s, which reads back as %s", body, r.amount, again)
+		}
+	})
+}
+
+func TestReadIdempotencyKey_ReadsBothSpellingsAndRefusesWhatIsNotAKey(t *testing.T) {
+	t.Parallel()
+	for name, c := range map[string]struct {
+		given []string
+		want  string
+		wrong string
+	}{
+		"none":              {given: nil},
+		"bare":              {given: []string{"8e03978e-40d5"}, want: "8e03978e-40d5"},
+		"quoted":            {given: []string{`"8e03978e-40d5"`}, want: "8e03978e-40d5"},
+		"the longest":       {given: []string{strings.Repeat("a", 255)}, want: strings.Repeat("a", 255)},
+		"one quote":         {given: []string{`"`}, wrong: "character"},
+		"empty":             {given: []string{""}, wrong: "empty"},
+		"quoted empty":      {given: []string{`""`}, wrong: "empty"},
+		"too long":          {given: []string{strings.Repeat("a", 256)}, wrong: "255"},
+		"twice":             {given: []string{"a", "b"}, wrong: "more than once"},
+		"a space inside":    {given: []string{"a b"}, want: "a b"},
+		"a tab":             {given: []string{"a\tb"}, wrong: "character"},
+		"invisible":         {given: []string{"a\u200bb"}, wrong: "character"},
+		"visible non-ASCII": {given: []string{"日本円"}, wrong: "character"},
+		"a backslash":       {given: []string{`a\b`}, wrong: "character"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			header := http.Header{}
+			if c.given != nil {
+				header[IdempotencyKeyHeader] = c.given
+			}
+
+			key, problems := readIdempotencyKey(header)
+
+			if key != c.want {
+				t.Errorf("key = %q, want %q", key, c.want)
+			}
+			switch {
+			case c.wrong == "":
+				if problems != nil {
+					t.Errorf("refused: %v", problems)
+				}
+			case len(problems) != 1 || problems[0].Field != IdempotencyKeyHeader:
+				t.Fatalf("problems = %v, want one naming the header", problems)
+			case !strings.Contains(problems[0].Message, c.wrong):
+				t.Errorf("message = %q, want it to say %q", problems[0].Message, c.wrong)
+			}
+		})
+	}
+}
+
+// FuzzIdempotencyKey reads whatever a merchant puts in the header: what comes
+// back is either a key of the shape the documentation promises, or a problem
+// naming the header, and never both.
+func FuzzIdempotencyKey(f *testing.F) {
+	for _, seed := range []string{
+		"", `""`, "k", `"k"`, `"`, `""" "`, "a b", "a\tb", "a\u200bb", "日本円",
+		`a\b`, strings.Repeat("a", 255), strings.Repeat("a", 256), "\x00",
+	} {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, raw string) {
+		key, problems := readIdempotencyKey(http.Header{IdempotencyKeyHeader: []string{raw}})
+
+		if (key == "") == (problems == nil) {
+			t.Fatalf("key %q and problems %v: one of the two answers a header", key, problems)
+		}
+		if problems != nil {
+			if len(problems) != 1 || problems[0].Field != IdempotencyKeyHeader {
+				t.Fatalf("problems = %v, want one naming the header", problems)
+			}
+			return
+		}
+		if len(key) > MaxIdempotencyKeyBytes {
+			t.Errorf("key is %d bytes, over %d", len(key), MaxIdempotencyKeyBytes)
+		}
+		for i := range len(key) {
+			if c := key[i]; c < 0x20 || c > 0x7e || c == '"' || c == '\\' {
+				t.Fatalf("key %q carries %q", key, c)
+			}
 		}
 	})
 }
