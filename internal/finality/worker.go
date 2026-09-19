@@ -181,12 +181,45 @@ type Worker struct {
 	answers map[recorded]answer
 	pass    map[recorded]answer
 	from    payment.Place
+	// back is where the next round goes on from among the transfers recorded
+	// against refunds, which are read and asked about the same way.
+	back payment.Place
 
 	// What a round leaves behind is read by whoever is answering somebody
 	// else's question about this deployment, which is another goroutine.
 	mu       sync.Mutex
 	word     string
 	finished time.Time
+}
+
+// standing is one transfer a round puts to the endpoints: what names it, and
+// which of the two things it stands against.
+//
+// A payment and a refund are asked about in the same words, and what an
+// answer means is where they part: one brings money in and the other sends
+// it back.
+type standing struct {
+	key    string
+	tx     string
+	height uint64
+	hash   string
+	// Exactly one of the two is set.
+	payment *payment.Candidate
+	refund  *payment.RefundCandidate
+}
+
+// work is every transfer a round asks about, the payments first.
+func work(payments []payment.Candidate, refunds []payment.RefundCandidate) []standing {
+	out := make([]standing, 0, len(payments)+len(refunds))
+	for i := range payments {
+		c := &payments[i]
+		out = append(out, standing{key: c.Key, tx: c.Tx, height: c.BlockHeight, hash: c.BlockHash, payment: c})
+	}
+	for i := range refunds {
+		c := &refunds[i]
+		out = append(out, standing{key: c.Key, tx: c.Tx, height: c.BlockHeight, hash: c.BlockHash, refund: c})
+	}
+	return out
 }
 
 // recorded names one transfer the way the row of one is named.
@@ -312,9 +345,16 @@ func (w *Worker) round(ctx context.Context) (short bool, err error) {
 	if err != nil {
 		return false, err
 	}
+	// The refunds of the same network, read and asked about the same way: a
+	// transfer that sends money back settles on the endpoints agreeing, as
+	// one that brings it in does.
+	refunds, err := w.store.RefundCandidates(ctx, network, w.back, w.perRound)
+	if err != nil {
+		return false, err
+	}
 	asking := slices.Clone(w.network.Endpoints)
-	for _, c := range candidates {
-		at := recorded{key: c.Key, tx: c.Tx}
+	for _, c := range work(candidates, refunds) {
+		at := recorded{key: c.key, tx: c.tx}
 		before, told := w.answers[at]
 		if told && before.verdict == Disagreed && before.skip > 0 {
 			before.skip--
@@ -324,7 +364,7 @@ func (w *Worker) round(ctx context.Context) (short bool, err error) {
 		said := Answers{Verdict: Unanswered}
 		if len(asking) > 0 {
 			if said, err = Ask(ctx, asking, w.network.Agreements,
-				Recorded{Tx: c.Tx, Height: c.BlockHeight, Hash: c.BlockHash}); err != nil {
+				Recorded{Tx: c.tx, Height: c.height, Hash: c.hash}); err != nil {
 				return false, err
 			}
 		}
@@ -347,12 +387,12 @@ func (w *Worker) round(ctx context.Context) (short bool, err error) {
 		if said.Verdict == Disagreed {
 			now.skip = min(now.rounds, maxSkip)
 			if now.rounds == 1 {
-				if err := w.store.Disagree(ctx, network, c.Key, c.Tx, w.now()); err != nil {
+				if err := w.store.Disagree(ctx, network, c.key, c.tx, w.now()); err != nil {
 					return false, err
 				}
 			}
 		} else if told && before.verdict == Disagreed {
-			if err := w.store.Agree(ctx, network, c.Key, c.Tx); err != nil {
+			if err := w.store.Agree(ctx, network, c.key, c.tx); err != nil {
 				return false, err
 			}
 		}
@@ -361,11 +401,23 @@ func (w *Worker) round(ctx context.Context) (short bool, err error) {
 			return false, err
 		}
 	}
+	// Each source is paged on its own, and what the endpoints said is kept
+	// until both have been read to the end: a pass is every candidate of both
+	// asked about once.
 	if len(candidates) < w.perRound {
-		w.answers, w.pass, w.from = w.pass, map[recorded]answer{}, payment.Place{}
+		w.from = payment.Place{}
 	} else {
 		last := candidates[len(candidates)-1]
 		w.from = payment.Place{BlockHeight: last.BlockHeight, Tx: last.Tx}
+	}
+	if len(refunds) < w.perRound {
+		w.back = payment.Place{}
+	} else {
+		last := refunds[len(refunds)-1]
+		w.back = payment.Place{BlockHeight: last.BlockHeight, Tx: last.Tx}
+	}
+	if len(candidates) < w.perRound && len(refunds) < w.perRound {
+		w.answers, w.pass = w.pass, map[recorded]answer{}
 	}
 	if short {
 		w.log.Warn("fewer endpoints answered than agreement takes", "network", w.network.Name,
@@ -414,6 +466,42 @@ func (w *Worker) swept(ctx context.Context) error {
 			return err
 		}
 	}
+	return w.sweptRefunds(ctx, network, now)
+}
+
+// sweptRefunds moves the refunds the clock has passed by. The two moves are
+// the payments': a refund whose deadline has passed stops being signable, and
+// one whose network has been read past the deadline with nothing that could
+// settle it expires and gives its amount back to what the payment can still
+// refund.
+func (w *Worker) sweptRefunds(ctx context.Context, network payment.Network, now time.Time) error {
+	reached, err := w.store.OverdueRefunds(ctx, network, now, w.perRound)
+	if err != nil {
+		return err
+	}
+	for _, one := range reached {
+		if err := one.Refund.AwaitFinality(); err != nil {
+			return err
+		}
+		if err := w.returned(ctx, one.Account, one.Refund, one.RefundAt,
+			"refund awaiting finality"); err != nil {
+			return err
+		}
+	}
+
+	over, err := w.store.UnsettledRefunds(ctx, network, w.perRound)
+	if err != nil {
+		return err
+	}
+	for _, one := range over {
+		if err := one.Refund.Expire(); err != nil {
+			return err
+		}
+		if err := w.returned(ctx, one.Account, one.Refund, one.RefundAt,
+			"refund expired"); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -452,20 +540,23 @@ func (w *Worker) told(ctx context.Context, account payment.AccountID, p *payment
 }
 
 // decided writes what one answer means for the transfer it was about.
-func (w *Worker) decided(ctx context.Context, c payment.Candidate, said answer) error {
+func (w *Worker) decided(ctx context.Context, c standing, said answer) error {
 	switch said.verdict {
 	case Final:
-		return w.pay(ctx, c, said)
+		if c.refund != nil {
+			return w.settle(ctx, *c.refund, said)
+		}
+		return w.pay(ctx, *c.payment, said)
 	case Gone:
 		if said.rounds < w.network.Misses {
 			return nil
 		}
 		if err := w.store.Vanish(ctx, payment.Network(w.network.Name),
-			c.Key, c.Tx, w.now()); err != nil {
+			c.key, c.tx, w.now()); err != nil {
 			return err
 		}
-		w.log.Warn("transfer vanished", "network", w.network.Name, "payment", c.Payment.ID(),
-			"tx", c.Tx, "height", c.BlockHeight, "rounds", said.rounds)
+		w.log.Warn("transfer vanished", "network", w.network.Name, "payment", c.of(),
+			"tx", c.tx, "height", c.height, "rounds", said.rounds)
 	case Elsewhere:
 		// Said once, on the way into the state. A transfer the chain holds
 		// somewhere other than where it was recorded stays that way until the
@@ -473,16 +564,67 @@ func (w *Worker) decided(ctx context.Context, c payment.Candidate, said answer) 
 		// whatever else the log has to say.
 		if said.rounds == 1 {
 			w.log.Warn("transfer recorded in another block", "network", w.network.Name,
-				"payment", c.Payment.ID(), "tx", c.Tx, "height", c.BlockHeight)
+				"payment", c.of(), "tx", c.tx, "height", c.height)
 		}
 	case Disagreed:
 		if said.rounds == 1 {
 			w.log.Warn("the endpoints disagree about a transfer", "network", w.network.Name,
-				"payment", c.Payment.ID(), "tx", c.Tx, "height", c.BlockHeight)
+				"payment", c.of(), "tx", c.tx, "height", c.height)
 		}
 	}
 	// Waiting, and anything that is not one of these: the payment stays where
 	// it is. Settling is the move that cannot be taken back.
+	return nil
+}
+
+// of is the payment a transfer stands against, whichever side it is on.
+func (c standing) of() payment.ID {
+	if c.refund != nil {
+		return c.refund.Refund.PaymentID()
+	}
+	return c.payment.Payment.ID()
+}
+
+// settle ends a refund on a transfer the endpoints call final: the money is
+// back with whoever paid, and the merchant is told.
+func (w *Worker) settle(ctx context.Context, c payment.RefundCandidate, said answer) error {
+	if err := c.Refund.Settle(); err != nil {
+		// Settled already by an earlier round, or ended some other way. The
+		// row is where it should be either way.
+		if said.rounds == 1 {
+			w.log.Warn("refund not settled by a final transfer", "network", w.network.Name,
+				"refund", c.Refund.ID(), "tx", c.Tx, "error", shown(err))
+		}
+		return nil
+	}
+	return w.returned(ctx, c.Account, c.Refund, c.RefundAt, "refund succeeded",
+		"tx", c.Tx, "height", c.BlockHeight)
+}
+
+// returned writes a refund's new state and the event that says so together,
+// so a merchant is told exactly what was kept. What [Worker.told] is on the
+// paying side.
+func (w *Worker) returned(ctx context.Context, account payment.AccountID, r *payment.Refund,
+	at payment.Revision, said string, fields ...any) error {
+	seen, found, err := w.store.RefundTransfer(ctx, account, r.PaymentID(), r.ID())
+	if err != nil {
+		return err
+	}
+	var sent *payment.Transfer
+	if found {
+		sent = &seen
+	}
+	event, err := payment.AnnounceRefund(r, sent)
+	if err != nil {
+		return err
+	}
+	if err := w.store.SaveRefund(ctx, account, r, at, event); err != nil {
+		if errors.Is(err, payment.ErrStale) {
+			return nil
+		}
+		return err
+	}
+	w.log.Info(said, append([]any{"network", w.network.Name, "refund", r.ID()}, fields...)...)
 	return nil
 }
 

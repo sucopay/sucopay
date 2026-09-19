@@ -1684,3 +1684,204 @@ func (r refunder) refund() (*Refund, Revision, error) {
 	}
 	return refund, Revision{id: string(r.stored.ID), at: r.version}, nil
 }
+
+// refundDueColumns are what the sweeps of the clock read of a refund and the
+// payment it sends back.
+// The asset comes with refundColumns, which joins it from the payment: a
+// query using these selects the payment once and reads it once.
+const refundDueColumns = `r.account_id, r.payment_id, ` + refundColumns
+
+// RefundDue is a refund a sweep of the clock picked up, with the revision it
+// was read at. What [Due] is on the paying side.
+type RefundDue struct {
+	Account  AccountID
+	Refund   *Refund
+	RefundAt Revision
+}
+
+// RefundCandidate is a recorded transfer that would settle a refund: matched
+// against it, and seen where the chain said it would not be replaced.
+type RefundCandidate struct {
+	Account     AccountID
+	Refund      *Refund
+	RefundAt    Revision
+	Key         string
+	Tx          string
+	BlockHeight uint64
+	BlockHash   string
+}
+
+// RefundCandidates reads the transfers recorded against the refunds of a
+// network that would settle one, from a place onwards.
+//
+// What [Postgres.Candidates] is on the paying side, and read the same way: in
+// the order the chain carried them, a bounded number at a time.
+func (s *Postgres) RefundCandidates(ctx context.Context, network Network, from Place, limit int) ([]RefundCandidate, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx, `
+		select o.key, o.tx, o.block_height, o.block_hash, `+refundDueColumns+`
+		  from observations o
+		  join refunds r on r.account_id = o.account_id and r.payment_id = o.payment_id
+		                and r.id = o.refund_id
+		  join payments p on p.account_id = r.account_id and p.id = r.payment_id
+		 where o.network = $1 and o.reason = $2 and o.final_at is not null
+		   and o.refund_id is not null and r.status = any($3)
+		   and (o.block_height, o.tx) > ($4, $5)
+		 order by o.block_height, o.tx
+		 limit $6`,
+		network, Matched, []RefundStatus{RefundCreated, RefundAwaitingFinality},
+		from.BlockHeight, from.Tx, limit)
+	if err != nil {
+		return nil, fmt.Errorf("observations on %s: %w", network, err)
+	}
+	defer rows.Close()
+
+	var candidates []RefundCandidate
+	for rows.Next() {
+		var (
+			c   RefundCandidate
+			row refunder
+		)
+		if err := rows.Scan(&c.Key, &c.Tx, &c.BlockHeight, &c.BlockHash,
+			&c.Account, &row.stored.PaymentID, &row.stored.ID, &row.amount,
+			&row.stored.Destination, &row.stored.Scheme, &row.stored.Network,
+			&row.stored.Key, &row.stored.ExpiresAt, &row.stored.Status,
+			&row.stored.Token.Hash, &row.stored.Token.KeyID, &row.idempotencyKey,
+			&row.stored.Idempotency.BodyHash, &row.stored.CreatedAt, &row.closedAt,
+			&row.version, &row.network, &row.reference, &row.symbol, &row.decimals); err != nil {
+			return nil, fmt.Errorf("observations on %s: %w", network, err)
+		}
+		if c.Refund, c.RefundAt, err = row.refund(); err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("observations on %s: %w", network, err)
+	}
+	return candidates, nil
+}
+
+// OverdueRefunds reads the refunds of a network whose deadline has passed and
+// which are still open for a transfer to settle.
+func (s *Postgres) OverdueRefunds(ctx context.Context, network Network, at time.Time, limit int) ([]RefundDue, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx, `
+		select `+refundDueColumns+`
+		  from refunds r
+		  join payments p on p.account_id = r.account_id and p.id = r.payment_id
+		 where r.network = $1 and r.status = $2 and r.expires_at <= $3
+		 order by r.expires_at, r.id
+		 limit $4`,
+		network, RefundCreated, at, limit)
+	if err != nil {
+		return nil, fmt.Errorf("refunds on %s: %w", network, err)
+	}
+	return scanRefundDue(rows, network)
+}
+
+// UnsettledRefunds reads the refunds of a network that are waiting, whose
+// deadline the reading of the chain has passed, and which no transfer
+// matched.
+//
+// The position and not the clock, for the reason the paying side reads it
+// that way: a refund whose transfer this deployment has not read yet is not
+// one nothing settled.
+func (s *Postgres) UnsettledRefunds(ctx context.Context, network Network, limit int) ([]RefundDue, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx, `
+		select `+refundDueColumns+`
+		  from refunds r
+		  join payments p on p.account_id = r.account_id and p.id = r.payment_id
+		  join observation_cursors c on c.network = r.network
+		 where r.network = $1 and r.status = $2
+		   and c.block_time is not null and c.block_time >= r.expires_at
+		   and not exists (
+		       select 1 from observations o
+		        where o.account_id = r.account_id and o.payment_id = r.payment_id
+		          and o.refund_id = r.id and o.reason = $3)
+		 order by r.expires_at, r.id
+		 limit $4`,
+		network, RefundAwaitingFinality, Matched, limit)
+	if err != nil {
+		return nil, fmt.Errorf("refunds on %s: %w", network, err)
+	}
+	return scanRefundDue(rows, network)
+}
+
+// scanRefundDue reads what the two sweeps above select.
+func scanRefundDue(rows pgx.Rows, network Network) ([]RefundDue, error) {
+	defer rows.Close()
+
+	var due []RefundDue
+	for rows.Next() {
+		var (
+			one RefundDue
+			row refunder
+		)
+		if err := rows.Scan(&one.Account, &row.stored.PaymentID, &row.stored.ID, &row.amount,
+			&row.stored.Destination, &row.stored.Scheme, &row.stored.Network,
+			&row.stored.Key, &row.stored.ExpiresAt, &row.stored.Status,
+			&row.stored.Token.Hash, &row.stored.Token.KeyID, &row.idempotencyKey,
+			&row.stored.Idempotency.BodyHash, &row.stored.CreatedAt, &row.closedAt,
+			&row.version, &row.network, &row.reference, &row.symbol, &row.decimals); err != nil {
+			return nil, fmt.Errorf("refunds on %s: %w", network, err)
+		}
+		r, at, err := row.refund()
+		if err != nil {
+			return nil, err
+		}
+		one.Refund, one.RefundAt = r, at
+		due = append(due, one)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("refunds on %s: %w", network, err)
+	}
+	return due, nil
+}
+
+// SaveRefund writes back a refund that was read, with the event its move
+// produced, in one transaction. What [Postgres.Save] is on the paying side.
+func (s *Postgres) SaveRefund(ctx context.Context, account AccountID, r *Refund, at Revision, e Event) (err error) {
+	if r == nil {
+		return errors.New("payment: nothing to save")
+	}
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("refund %s: %w", r.ID(), err)
+	}
+	defer func() { err = unwind(ctx, tx, fmt.Sprintf("refund %s", r.ID()), err) }()
+
+	// closed_at is written once, when a final status is first saved: a resave
+	// does not move the time the page's life is counted from.
+	tag, err := tx.Exec(ctx, `
+		update refunds
+		   set status = $4, version = version + 1,
+		       closed_at = coalesce(closed_at, case when $5 then now() end)
+		 where account_id = $1 and id = $2 and version = $3`,
+		account, r.ID(), at.at, r.Status(), r.Status().Final())
+	if err != nil {
+		return fmt.Errorf("refund %s: %w", r.ID(), err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("refund %s: %w", r.ID(), ErrStale)
+	}
+	if e.Name != "" || len(e.Payload) > 0 {
+		if err := writeOutbox(ctx, tx, account, r.PaymentID(), e); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("refund %s: %w", r.ID(), err)
+	}
+	return nil
+}

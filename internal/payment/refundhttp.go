@@ -37,6 +37,37 @@ type refundJSON struct {
 	RefundURL *string `json:"refund_url,omitempty"`
 }
 
+// AnnounceRefund is the event a refund produces on reaching the status it is
+// in, carrying the refund as a read of it would answer, and the zero [Event]
+// for a status nothing is announced for.
+//
+// Two of the four are announced: that the money is back, and that the refund
+// died with nothing sent. The two in between are the merchant's own doing and
+// the merchant's to read.
+//
+// Less the URL the merchant signs on: that carries the page's token, and a
+// receiver's log is not where one belongs, for the reason a payment's
+// checkout URL is kept out of what is sent.
+func AnnounceRefund(r *Refund, t *Transfer) (Event, error) {
+	if !r.Status().Final() {
+		return Event{}, nil
+	}
+	var payload bytes.Buffer
+	writer := json.NewEncoder(&payload)
+	writer.SetEscapeHTML(false)
+	if err := writer.Encode(refundJSON{
+		ID: r.ID(), Payment: r.PaymentID(), Status: r.Status(),
+		Amount: r.Amount().Units(), Destination: r.Destination(),
+		ExpiresAt: r.ExpiresAt(), CreatedAt: r.CreatedAt(), Transfer: t.shown(),
+	}); err != nil {
+		return Event{}, fmt.Errorf("refund %s: %w", r.ID(), err)
+	}
+	return Event{
+		Name:    "refund." + r.Status().String(),
+		Payload: bytes.TrimRight(payload.Bytes(), "\n"),
+	}, nil
+}
+
 // refundKeys is every key the body of a refund request may hold.
 var refundKeys = []string{"amount"}
 

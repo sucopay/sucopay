@@ -40,6 +40,8 @@ var Events = []string{
 	"payment.succeeded",
 	"payment.expired",
 	"payment.failed",
+	"refund.succeeded",
+	"refund.expired",
 	"endpoint.test",
 }
 

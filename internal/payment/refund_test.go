@@ -1,6 +1,7 @@
 package payment_test
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -464,5 +465,162 @@ func TestRefund_LeavesARefundWhereItIsWhenItsTransferVanishes(t *testing.T) {
 	}
 	if _, found, err := s.RefundTransfer(t.Context(), first, p.ID(), r.ID()); err != nil || found {
 		t.Errorf("the transfer that vanished is still answered: %v, %v", found, err)
+	}
+}
+
+func TestRefund_SettlesOnATransferTheChainKeptAndSaysSo(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	p := paidFor(t, s, pool, first)
+	r := refunding(t, s, first, p, "0.5")
+	seen := sending(t, s, first, p, r, "0xback", r.Amount().Amount().String(),
+		r.Destination(), p.Destination(), now)
+	if err := recordingRefund(t, s, pool, now, 1, 20, true, seen); err != nil {
+		t.Fatal(err)
+	}
+
+	candidates, err := s.RefundCandidates(t.Context(), p.Network(), payment.Place{}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].Tx != "0xback" {
+		t.Fatalf("RefundCandidates = %d rows, want the refund's transfer", len(candidates))
+	}
+	c := candidates[0]
+	if err := c.Refund.Settle(); err != nil {
+		t.Fatal(err)
+	}
+	event, err := payment.AnnounceRefund(c.Refund, &seen.Transfer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveRefund(t.Context(), first, c.Refund, c.RefundAt, event); err != nil {
+		t.Fatal(err)
+	}
+
+	back, _, err := s.FindRefund(t.Context(), first, p.ID(), r.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.Status() != payment.RefundSucceeded || back.ClosedAt().IsZero() {
+		t.Errorf("the refund is %s, closed at %v", back.Status(), back.ClosedAt())
+	}
+	// What the merchant is told is what a read of the refund answers, less
+	// the URL they signed on.
+	var told map[string]any
+	if err := json.Unmarshal(event.Payload, &told); err != nil {
+		t.Fatal(err)
+	}
+	if event.Name != "refund.succeeded" {
+		t.Errorf("event = %q, want refund.succeeded", event.Name)
+	}
+	if told["id"] != r.ID().String() || told["amount"] != "0.5" || told["status"] != "succeeded" {
+		t.Errorf("payload = %v", told)
+	}
+	if _, has := told["refund_url"]; has {
+		t.Errorf("the payload carries the page's URL: %v", told)
+	}
+	transfer, _ := told["transfer"].(map[string]any)
+	if transfer["tx"] != "0xback" {
+		t.Errorf("payload transfer = %v, want the transfer that settled it", told["transfer"])
+	}
+}
+
+func TestRefund_ExpiresOnceTheChainIsReadPastItsDeadlineWithNothingSent(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	p := paidFor(t, s, pool, first)
+	r := refunding(t, s, first, p, "0.5")
+
+	// At the deadline the key dies, and the refund waits to see whether
+	// anything signed before it arrives.
+	due, err := s.OverdueRefunds(t.Context(), p.Network(), r.ExpiresAt(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(due) != 1 {
+		t.Fatalf("OverdueRefunds = %d rows, want the one past its deadline", len(due))
+	}
+	if err := due[0].Refund.AwaitFinality(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveRefund(t.Context(), first, due[0].Refund, due[0].RefundAt, payment.Event{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Nothing expires while the chain has been read only to a moment before
+	// the deadline: a transfer signed before it may still be in a block this
+	// deployment has not read.
+	readPast(t, pool, p.Network(), r.ExpiresAt().Add(-time.Minute))
+	over, err := s.UnsettledRefunds(t.Context(), p.Network(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(over) != 0 {
+		t.Errorf("UnsettledRefunds = %d rows before the chain was read that far", len(over))
+	}
+	readPast(t, pool, p.Network(), r.ExpiresAt().Add(time.Minute))
+
+	over, err = s.UnsettledRefunds(t.Context(), p.Network(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(over) != 1 {
+		t.Fatalf("UnsettledRefunds = %d rows, want the one nothing settled", len(over))
+	}
+	if err := over[0].Refund.Expire(); err != nil {
+		t.Fatal(err)
+	}
+	event, err := payment.AnnounceRefund(over[0].Refund, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Name != "refund.expired" {
+		t.Errorf("event = %q, want refund.expired", event.Name)
+	}
+	if err := s.SaveRefund(t.Context(), first, over[0].Refund, over[0].RefundAt, event); err != nil {
+		t.Fatal(err)
+	}
+	// And the amount is the payment's to refund again.
+	held, err := s.Refunded(t.Context(), first, p.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held != "0" {
+		t.Errorf("the refunds hold %s, want an expired one to hold nothing", held)
+	}
+}
+
+// readPast puts the network's reading position past a moment, the way a round
+// of the observer would.
+func readPast(t *testing.T, pool *pgxpool.Pool, network payment.Network, at time.Time) {
+	t.Helper()
+	if _, err := pool.Exec(t.Context(), `
+		insert into observation_cursors (network, height, hash, block_time, updated_at)
+		values ($1, 100, 'block', $2, $2)
+		on conflict (network) do update set block_time = $2`, network, at); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRefund_AnnouncesNothingWhileItIsStillOpen(t *testing.T) {
+	t.Parallel()
+	s, pool := store(t)
+	p := paidFor(t, s, pool, first)
+	r := refunding(t, s, first, p, "0.5")
+
+	event, err := payment.AnnounceRefund(r, nil)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Name != "" || len(event.Payload) > 0 {
+		t.Errorf("a refund nobody has signed announced %q", event.Name)
+	}
+	if err := r.AwaitFinality(); err != nil {
+		t.Fatal(err)
+	}
+	if event, err = payment.AnnounceRefund(r, nil); err != nil || event.Name != "" {
+		t.Errorf("a refund waiting for finality announced %q, %v", event.Name, err)
 	}
 }
