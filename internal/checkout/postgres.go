@@ -73,8 +73,14 @@ func (s *Postgres) Lookup(ctx context.Context, hash []byte, keyID string, now ti
 }
 
 // Matched is the transfer seen for a payment that matched it, or nil where
-// none has: what a page shows as the result. The newest, should more than
-// one have been seen; confirming until the payment succeeded.
+// none has: what a page shows as the result. The first in the order the chain
+// carried them, should more than one have been seen, which is the one the
+// payment's arrival was credited from; confirming until the payment
+// succeeded.
+//
+// The same order as [payment.Postgres.MatchedTransfer], and it has to be: one
+// payment answering a merchant with one transfer and showing its payer
+// another would leave the two of them reading different chains.
 func (s *Postgres) Matched(ctx context.Context, account payment.AccountID, id payment.ID, status payment.Status) (*Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
 	defer cancel()
@@ -89,7 +95,7 @@ func (s *Postgres) Matched(ctx context.Context, account payment.AccountID, id pa
 		  from observations
 		 where account_id = $1 and payment_id = $2 and reason = $3
 		   and attempt_id is not null
-		 order by seen_at desc limit 1`, account, id, payment.Matched).
+		 order by block_height, tx, position limit 1`, account, id, payment.Matched).
 		Scan(&r.Tx, &height, &r.BlockTime, &r.Value, &finalAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil

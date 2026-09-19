@@ -161,13 +161,23 @@ func (s *Postgres) FindByKey(ctx context.Context, account AccountID, key string)
 	return find(ctx, s.pool, account, id)
 }
 
-// MatchedTransfer reads the transfer that matched a payment: what a merchant
-// is answered with, and what the page shows a payer.
+// MatchedTransfer reads the transfer that paid a payment: what a merchant is
+// answered with, what the page shows a payer, and where a refund of it is
+// sent back to.
 //
-// The newest, should more than one have been seen, which is the order the
-// page reads them in. A transfer that is no longer on the chain is left out:
-// vanish rewrites the reason of the row it wrote, so reading the matched ones
-// leaves it behind.
+// The first in the order the chain carried them, should more than one have
+// been seen. That is the one whose arrival the payment kept: an arrival is
+// credited once and the earliest is what credits it, so the address a refund
+// goes back to is the address the money in received came from.
+//
+// Ordered by the block and not by when the row was seen. A round stamps every
+// row it writes with one moment, so two transfers read together are the same
+// age and which came back was Postgres's to decide; and re-reading a range
+// stamps a row again, which would move a refund's destination between one
+// round and the next.
+//
+// A transfer that is no longer on the chain is left out: vanish rewrites the
+// reason of the row it wrote, so reading the matched ones leaves it behind.
 func (s *Postgres) MatchedTransfer(ctx context.Context, account AccountID, id ID) (Transfer, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
 	defer cancel()
@@ -182,7 +192,7 @@ func (s *Postgres) MatchedTransfer(ctx context.Context, account AccountID, id ID
 		  from observations
 		 where account_id = $1 and payment_id = $2 and reason = $3
 		   and attempt_id is not null
-		 order by seen_at desc limit 1`, account, id, Matched).
+		 order by block_height, tx, position limit 1`, account, id, Matched).
 		Scan(&t.Asset, &t.Key, &t.Authorizer, &t.From, &t.To, &t.Value,
 			&t.Tx, &t.Position, &height, &t.BlockHash, &t.BlockTime)
 	if errors.Is(err, pgx.ErrNoRows) {

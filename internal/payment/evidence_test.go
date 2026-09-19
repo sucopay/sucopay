@@ -1091,7 +1091,15 @@ func TestRepository_ReadsNoTransferForAPaymentNothingMatched(t *testing.T) {
 	}
 }
 
-func TestRepository_ReadsTheNewestOfTwoTransfersThatMatched(t *testing.T) {
+// Two transfers can match one payment, and only the first of them is
+// credited. The read answers with that one, because its sender is where a
+// refund of the payment is sent back to: answering with the other would send
+// the money in received back to somebody it did not come from.
+//
+// The order is the chain's and not the moment the rows were seen. Here the
+// two disagree, so a read that went by seen_at would answer with the later
+// block.
+func TestRepository_ReadsTheTransferTheChainCarriedFirstOfTwoThatMatched(t *testing.T) {
 	t.Parallel()
 	s, pool := store(t)
 	hit := spent(t, s, first)
@@ -1099,8 +1107,9 @@ func TestRepository_ReadsTheNewestOfTwoTransfersThatMatched(t *testing.T) {
 		seenAt(hit, "0xfirst", 10, payment.Matched)); err != nil {
 		t.Fatal(err)
 	}
-	if err := recordingAt(t, s, pool, now.Add(time.Minute), 21, 40, false,
-		seenAt(hit, "0xsecond", 30, payment.Matched)); err != nil {
+	later := seenAt(hit, "0xsecond", 30, payment.Matched)
+	later.Transfer.From, later.Transfer.Authorizer = string(address(t, "e")), string(address(t, "e"))
+	if err := recordingAt(t, s, pool, now.Add(time.Minute), 21, 40, false, later); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1109,8 +1118,11 @@ func TestRepository_ReadsTheNewestOfTwoTransfersThatMatched(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("MatchedTransfer found %v, %v", found, err)
 	}
-	if got.Tx != "0xsecond" {
-		t.Errorf("MatchedTransfer = %s, want the transfer seen last", got.Tx)
+	if got.Tx != "0xfirst" {
+		t.Errorf("MatchedTransfer = %s, want the transfer the chain carried first", got.Tx)
+	}
+	if got.From != theSigner {
+		t.Errorf("it came from %s, want the wallet whose money the payment kept", got.From)
 	}
 }
 
