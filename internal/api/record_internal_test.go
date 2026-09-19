@@ -66,3 +66,54 @@ func TestRecord_WritesNoHeaderOfTheRequest(t *testing.T) {
 		t.Errorf("the log lost the route:\n%s", got)
 	}
 }
+
+// A request the mux routes nothing for still carries a live token, and it is
+// the one a log is most likely to keep: a URL a mail client put a trailing
+// slash on, a segment too many, another spelling, a method the route does not
+// take. None of them has a pattern to be logged by.
+func TestRecord_WritesNoTokenForARequestTheMuxRoutesNothingFor(t *testing.T) {
+	t.Parallel()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /refund/{token}", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	mux.HandleFunc("GET /checkout/{token}", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	mux.HandleFunc("GET /refund-assets/{path...}", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	const token = "9f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0"
+
+	for name, request := range map[string]*http.Request{
+		"a trailing slash":   httptest.NewRequest(http.MethodGet, "/refund/"+token+"/", nil),
+		"a segment too many": httptest.NewRequest(http.MethodGet, "/refund/"+token+"/x", nil),
+		"another spelling":   httptest.NewRequest(http.MethodGet, "/Refund/"+token, nil),
+		"a method it lacks":  httptest.NewRequest(http.MethodPost, "/refund/"+token, nil),
+		"the payer's page":   httptest.NewRequest(http.MethodGet, "/checkout/"+token+"/x", nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			log, lines := logged()
+
+			record(log, mux).ServeHTTP(httptest.NewRecorder(), request)
+
+			got := lines.String()
+			if strings.Contains(got, token) {
+				t.Errorf("the log carries the token:\n%s", got)
+			}
+			if !strings.Contains(got, "{token}") {
+				t.Errorf("the log does not say a token was there:\n%s", got)
+			}
+		})
+	}
+}
+
+// The assets beside a page carry no token, so their paths are written whole.
+func TestRecord_WritesThePathOfTheAssetsBesideAPage(t *testing.T) {
+	t.Parallel()
+	log, lines := logged()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /refund-assets/{path...}", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	record(log, mux).ServeHTTP(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "/refund-assets/app.js", nil))
+
+	if got := lines.String(); !strings.Contains(got, "/refund-assets/app.js") {
+		t.Errorf("the assets lost their path:\n%s", got)
+	}
+}

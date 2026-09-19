@@ -57,7 +57,7 @@ func record(log *slog.Logger, next http.Handler) http.Handler {
 		counted := &counter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(counted, r)
 
-		path := invisible.Shown(r.URL.Path, maxPathBytes)
+		path := invisible.Shown(redacted(r.URL.Path), maxPathBytes)
 		if strings.Contains(r.Pattern, "{token}") {
 			path = r.Pattern
 		}
@@ -68,6 +68,36 @@ func record(log *slog.Logger, next http.Handler) http.Handler {
 			slog.Int64("duration_ms", time.Since(began).Milliseconds()),
 		)
 	})
+}
+
+// tokenPaths are the prefixes whose next segment is a token: a key to a
+// payment's or a refund's outcome, which is not what a log outlives one to
+// hold. The assets beside them carry no token and keep their paths.
+var tokenPaths = []string{"checkout", "refund"}
+
+// redacted is a path with the token it carries replaced by the name of what
+// it is.
+//
+// Read from the path rather than from the pattern the mux matched, because
+// the requests that most need this are the ones it matched nothing for: a URL
+// a mail client put a trailing slash on, a segment too many, a method the
+// route does not take. Those carry a live token and no pattern at all.
+func redacted(path string) string {
+	// A path begins with a slash, so the first field is empty and the segment
+	// after the prefix is the third.
+	parts := strings.Split(path, "/")
+	if len(parts) < 3 {
+		return path
+	}
+	for _, prefix := range tokenPaths {
+		// Folded, because a mux that routes nothing for another spelling still
+		// answers it, and the token in it is the same token.
+		if strings.EqualFold(parts[1], prefix) {
+			parts[2] = "{token}"
+			return strings.Join(parts, "/")
+		}
+	}
+	return path
 }
 
 func requestID() (string, error) {
