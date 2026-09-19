@@ -20,13 +20,18 @@ type Checkout interface {
 	Assets(w http.ResponseWriter, r *http.Request) error
 }
 
-// forPayer serves one method of c. The route is open: what admits a payer
-// is the token, and the method reads it. c is nil in an instance configured
-// without a database, and that is answered as what the instance lacks.
-func forPayer(log *slog.Logger, c Checkout,
-	method func(Checkout, http.ResponseWriter, *http.Request) error) http.HandlerFunc {
+// forToken serves one method of p. The route is open: what admits whoever
+// opened it is the token in the path, and the method reads it. P is whichever
+// interface serves a page reached that way, [Checkout] for the payer's or
+// [Refund] for the merchant's.
+//
+// p is nil in an instance configured without a database, and that is answered
+// as what the instance lacks.
+func forToken[P comparable](log *slog.Logger, c P,
+	method func(P, http.ResponseWriter, *http.Request) error) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if c == nil {
+		var none P
+		if c == none {
 			unavailable(w)
 			return
 		}

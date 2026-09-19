@@ -35,6 +35,7 @@ type Dependencies struct {
 	Settling    Settling
 	Delivering  Delivering
 	Checkout    Checkout
+	Refund      Refund
 }
 
 // Handler returns the routes an instance serves, each behind what it asks of

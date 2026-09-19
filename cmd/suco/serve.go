@@ -58,6 +58,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		payments    api.Payments
 		webhooks    api.Webhooks
 		pages       api.Checkout
+		signing     api.Refund
 		chains      api.Chains
 		observers   observe.Observers
 		workers     finality.Workers
@@ -152,6 +153,16 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 			},
 			Now: time.Now,
 		})
+		signing = refund.NewHTTP(refund.Deps{
+			Store: refund.NewPostgres(db.Conns()), Refunds: store,
+			Key: key.Derive(refund.KeyPurpose), KeyID: cfg.Credentials.KeyID,
+			ChainIDs: chainIDs,
+			Domain: func(asset payment.Asset) (string, string) {
+				d, _ := cfg.Domain(asset)
+				return d.Name, d.Version
+			},
+			Now: time.Now,
+		})
 
 		// One for the deployment, under the same leases: a delivery is sent
 		// by whichever instance holds the name, and once.
@@ -161,7 +172,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 
 	addr := net.JoinHostPort(cfg.Listen.Host, strconv.Itoa(cfg.Listen.Port))
 	deps := api.Dependencies{Database: ready, Credentials: credentials, Payments: payments,
-		Webhooks: webhooks, Chains: chains, Settling: decides, Checkout: pages}
+		Webhooks: webhooks, Chains: chains, Settling: decides, Checkout: pages, Refund: signing}
 	if delivering != nil {
 		// Set only when there is one: a nil pointer in the interface would
 		// read as a worker and be asked.

@@ -59,9 +59,9 @@ internal/payment/
 
 Check the direction with a test that reads a package's imports and fails on anything the
 inner files are not allowed. `internal/accepted`, `internal/adapter/chain`,
-`internal/adapter/chain/evm`, `internal/config`, `internal/credential`, `internal/finality`,
-`internal/observe`, `internal/payment`, `internal/postgres` and `internal/webhook` each have
-one.
+`internal/adapter/chain/evm`, `internal/checkout`, `internal/config`, `internal/credential`,
+`internal/finality`, `internal/observe`, `internal/payment`, `internal/postgres`,
+`internal/refund` and `internal/webhook` each have one.
 
 ## Domain model
 

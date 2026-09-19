@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Refund</title>
+{{if .Assets}}<link rel="stylesheet" href="/refund-assets/app.css">{{end}}
+</head>
+<body>
+{{if not .State}}
+<main>
+<h1>Nothing to sign here</h1>
+<p>This refund page does not exist or is no longer available.</p>
+</main>
+{{else}}
+<main data-status="{{.State.Status}}">
+<h1>Refund {{.State.Amount}} {{.State.Asset.Symbol}}</h1>
+<p>From <code>{{.State.From}}</code> back to <code>{{.State.To}}</code></p>
+<p>Payment: <code>{{.State.Payment}}</code></p>
+<p>Status: {{.State.Status}}</p>
+<p>Sign by: <time datetime="{{.State.ExpiresAt.Format "2006-01-02T15:04:05Z07:00"}}">{{.State.ExpiresAt.Format "2006-01-02 15:04 MST"}}</time></p>
+{{if .State.Result}}<p>Transaction: <code>{{.State.Result.Tx}}</code>{{if .State.Result.Settling}} (waiting to be settled){{end}}</p>{{end}}
+{{if .State.Reason}}<p data-reason="{{.State.Reason}}"></p>{{end}}
+{{if not .Assets}}<p>This deployment serves no signing page. Nothing can be signed here.</p>{{end}}
+</main>
+{{if .Assets}}<script type="module" src="/refund-assets/app.js"></script>{{end}}
+{{end}}
+</body>
+</html>
