@@ -55,7 +55,7 @@
 |---|---|
 | 支払いの状態と遷移、`transfer` の項目、単位の規則、URL をログに残さないこと、`Idempotency-Key` | docs/api |
 | 返金の状態と遷移 | docs/refunds |
-| Webhook エンドポイントの経路と配送 | docs/webhooks |
+| Webhook エンドポイントの経路と通知 | docs/webhooks |
 | ページの経路のセキュリティヘッダと CSP | docs/api の経路の表の注 |
 | module が未公開である注記、iframe を断ること、typed data の説明 | docs/checkout |
 | `/readyz` の語の定義 | docs/operating |
