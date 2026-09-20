@@ -2,51 +2,47 @@
 
 日本語: [webhooks.ja.md](webhooks.ja.md)
 
-suco sends an HTTP `POST` to a URL you register whenever a payment or a refund changes. This
-page says what your receiver has to do, and how endpoints and deliveries are managed over the
-API.
+suco Pay sends an HTTP `POST` when a payment or refund changes. This guide covers endpoint
+registration, signature verification, idempotent processing, retries, and delivery diagnostics.
 
-It is written for the developer running the receiver. It assumes you can already create a
-payment, as [api.md](api.md) describes, and that the same credential is at hand: registering an
-endpoint, reading what was sent, and rotating a secret all take it.
+You need a public HTTPS receiver and a read-write API token. Create a test payment first by
+following the [API reference](api.md).
 
-## Terms
+## Integration sequence
 
-| Term | Meaning |
-|---|---|
-| endpoint | A URL you register over the API, which suco sends a `POST` to |
-| receiver | Your program, which takes the `POST` at the endpoint's URL |
-| signing secret | What your receiver verifies a signature with. Shown once, in the answer to the registration |
-| event | One notice that a payment or a refund changed |
-| delivery | One event sent to one endpoint |
-| attempt | One `POST` of one delivery |
-| retry | Another attempt suco makes at a delivery that got no `2xx` |
-| manual resend | One more sending of a delivered or failed delivery, which you ask for |
+1. Register the receiver URL and store the signing secret in your secret manager.
+2. Verify each request with a Standard Webhooks library.
+3. Persist each `webhook-id` before returning `2xx`, then process the event asynchronously.
+4. Send a test event and inspect its delivery record.
+5. Subscribe only to the event types your application handles.
 
 ## Receiver requirements
 
-1. **Verify the signature with a Standard Webhooks library** for your language. Do not verify
-   it by hand. Allow 5 minutes of tolerance on the timestamp. The headers are the standard's:
+1. **Verify the signature with a Standard Webhooks library** for your language. Do not implement
+   signature verification yourself. Allow 5 minutes of tolerance on the timestamp. The headers are:
    `webhook-id`, `webhook-timestamp` and `webhook-signature`. The secret is the `whsec_…`
-   string the registration answered with.
+   value returned once during registration.
 2. **Process each delivery once, keyed by `webhook-id`.** The id is the same on every attempt at
    one delivery, retries and manual resends included.
-3. **Answer `2xx` first and do the work after.** You have 20 seconds, counting the connection.
-   A slower answer counts as a failed attempt and is retried.
-4. **Hand over the goods on `payment.succeeded` only.** `attempt.confirming` says money was
-   seen, and nothing may follow it.
-5. **Close the order on `payment.expired` only.** A deadline on your own clock is not the
-   deadline. A transfer sent before the deadline may still be on its way.
-6. **Act on `data.status`, not on the order events arrive in.** Retries and resends can put a
-   later event before an earlier one. When in doubt, read `GET /payments/{id}`.
-7. **Exempt the webhook path from CSRF protection.** The request carries no cookie and no form,
-   so a CSRF check refuses it.
-8. **Keep the secret.** It is shown once, in the answer to the registration. A lost secret is
-   replaced by rotating it, which shows a new one once.
+3. **Persist or enqueue the event, then return `2xx`.** Complete both within 20 seconds,
+   including connection time. Process business logic asynchronously. A later response counts as
+   a failed attempt and is retried.
+4. **Fulfil the order only after `payment.succeeded`.** `attempt.confirming` means a transfer
+   was detected, but that transfer may never settle.
+5. **Mark the order expired only after `payment.expired`.** Do not decide from your own clock.
+   A transfer submitted before the deadline may not have appeared on chain yet.
+6. **Act on `data.status`, not arrival order.** Retries and manual resends can deliver an older
+   event after a newer one. When in doubt, read `GET /payments/{id}`.
+7. **Exempt the webhook path from CSRF protection.** Webhook requests use signatures rather than
+   browser cookies or form tokens, so conventional CSRF middleware may reject them.
+8. **Protect the signing secret.** Store it as a secret, never log it, and rotate it if it is
+   lost or exposed. A rotation response shows the new value once.
 
 ## Event
 
-Every event is one `POST` with a JSON body of one shape.
+An event records one payment or refund change. Sending an event to one endpoint creates a
+delivery; each HTTP `POST` for that delivery is an attempt. Every event body has the following
+shape.
 
 ```json
 {
@@ -59,55 +55,57 @@ Every event is one `POST` with a JSON body of one shape.
 
 | Field | Type | Description |
 |---|---|---|
-| `type` | string | What happened. One of the types below |
-| `timestamp` | string | When it happened, RFC 3339, UTC |
+| `type` | string | Event type, as listed below |
+| `timestamp` | string | Event time in RFC 3339 format and UTC |
 | `account` | string | The account the payment or refund belongs to |
-| `data` | object | The payment or the refund, as the API answers it |
+| `data` | object | The payment or refund object returned by the API |
 
-For a `payment.` or `attempt.` event, `data` is the payment as `GET /payments/{id}` answers it,
-`metadata` included. `checkout_url` is left out: whoever has that URL can read the payment's
-outcome, and a receiver's log is not where it belongs. For a `refund.` event, `data` is the refund
-as `GET /payments/{id}/refunds/{refund}` answers it, without `refund_url` for the same reason.
-[refunds.md](refunds.md) lists its fields.
+For a `payment.` or `attempt.` event, `data` contains the payment returned by
+`GET /payments/{id}`, including `metadata`. It excludes `checkout_url` because that URL grants
+access to the payment outcome and must not appear in receiver logs. For a `refund.` event,
+`data` contains the refund returned by `GET /payments/{id}/refunds/{refund}`, without
+`refund_url`. [Refunds](refunds.md) lists its fields.
 
 Fields are added and never removed or renamed. Read the fields you need and ignore the rest.
 
 | `type` | When | `data` |
 |---|---|---|
-| `payment.awaiting_payment` | The payment can be paid | the payment |
-| `attempt.confirming` | A transfer for it was seen on the chain, before it settled | the payment |
-| `payment.succeeded` | The payment settled | the payment |
-| `payment.expired` | Nothing arrived before the deadline | the payment |
-| `payment.failed` | The payment will not settle | the payment |
-| `refund.succeeded` | A refund settled, and the money is back with whoever paid | the refund |
-| `refund.expired` | A refund's deadline passed and nothing settled | the refund |
+| `payment.awaiting_payment` | The payment became payable | the payment |
+| `attempt.confirming` | suco Pay detected a transfer but it has not reached finality | the payment |
+| `payment.succeeded` | The payment transfer reached finality | the payment |
+| `payment.expired` | The payment expired without a qualifying transfer | the payment |
+| `payment.failed` | The payment cannot settle | the payment |
+| `refund.succeeded` | The refund transfer reached finality | the refund |
+| `refund.expired` | The refund expired without a settled transfer | the refund |
 | `endpoint.test` | You called `POST /webhook_endpoints/{id}/test` | `{}` |
 
-Once a transfer has been seen for the payment, `data` carries `transfer`: `tx`, `block_height`,
-`block_hash`, `block_time`, `from` and `value`, which you can check against a node of your own.
-`attempt.confirming` is the first event to carry it. It says a transfer was seen, not that the
-payment settled: a transfer can be reorganised away, and `payment.succeeded` is what says the
-money is yours. `value` is not in the unit `amount` and `received` are in. [api.md](api.md)
-describes the fields and the units.
+After suco Pay detects a transfer, `data.transfer` contains `tx`, `block_height`, `block_hash`,
+`block_time`, `from`, and `value`. You can verify these fields against your own node.
+`attempt.confirming` is the first event that includes the transfer, but it does not mean the
+payment is final: a chain reorganisation can remove it. Wait for `payment.succeeded`. The
+`value` unit differs from `amount` and `received`; see [API](api.md#transfer).
 
-## Endpoint registration
+## Register an endpoint
 
-```
+```http
 POST /webhook_endpoints
+Authorization: Bearer <token>
+Content-Type: application/json
+
 {"url": "https://shop.example/webhooks/suco", "description": "orders", "events": ["payment.succeeded", "payment.expired"]}
 ```
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `url` | string | yes | `https` only, at most 2048 bytes, without a username or password. A URL that resolves to an address inside the deployment is refused |
+| `url` | string | yes | HTTPS URL of at most 2048 bytes, without a username or password. URLs resolving to private deployment addresses are rejected |
 | `description` | string | no | A note to yourself, at most 200 bytes |
 | `events` | array of string | no | The types to receive. Left out, the endpoint receives every type, including types added later |
 
-The answer is `201` with the endpoint and, this once, its `secret`. An account holds at most 8
-endpoints.
+The response is `201` and includes the endpoint and its `secret`. The API returns the secret only
+once, so store it before discarding the response. An account can have up to 8 endpoints.
 
-A disabled endpoint (`"enabled": false`) receives nothing and has no deliveries made for it.
-What was pending waits, and is sent once the endpoint is enabled again.
+A disabled endpoint (`"enabled": false`) receives no new deliveries. Pending deliveries remain
+queued and resume when the endpoint is enabled again.
 
 ## Endpoint routes
 
@@ -119,12 +117,12 @@ What was pending waits, and is sent once the endpoint is enabled again.
 | `PATCH /webhook_endpoints/{id}` | read-write | Change `url`, `description`, `events` or `enabled` |
 | `POST /webhook_endpoints/{id}/secret` | read-write | Rotate the secret. The old one verifies for 24 more hours |
 | `DELETE /webhook_endpoints/{id}` | read-write | Remove the endpoint. Its pending deliveries become `failed` |
-| `POST /webhook_endpoints/{id}/test` | read-write | Send one `endpoint.test`. Answers `202` with the delivery's id. While the last test is pending, the next is refused |
+| `POST /webhook_endpoints/{id}/test` | read-write | Send one `endpoint.test`. Returns `202` with the delivery ID. A new test is rejected while the previous one is pending |
 | `GET /webhook_endpoints/{id}/deliveries` | read-only | The newest 100 deliveries and every attempt at each |
 | `POST /webhook_endpoints/{id}/deliveries/{delivery}/resend` | read-write | Send a delivered or failed delivery again. Answers `202` |
 
-While a rotated secret is within its 24 hours, `webhook-signature` carries two signatures
-separated by a space, one under each secret. A library verifies against either.
+For 24 hours after rotation, `webhook-signature` contains two space-separated signatures: one
+for the previous secret and one for the new secret. The library can verify either signature.
 
 ## Retries
 
@@ -142,20 +140,21 @@ An attempt that gets no `2xx` is tried again, with up to 10% added at random to 
 | 9 | 20 hours |
 | 10 | 24 hours |
 
-After the tenth attempt, a little more than 3 days in, the delivery is `failed` and is not tried
-again. A `3xx` answer is not followed and counts as a failure.
+After the tenth attempt, slightly more than three days after the first, the delivery becomes
+`failed` and is not retried automatically. suco Pay does not follow `3xx` redirects; they count
+as failed attempts.
 
 Deliveries to one endpoint about one payment are sent in the order the events happened. A later
 delivery waits until the earlier one is delivered or failed. Deliveries about different payments
 do not wait for each other.
 
-Nothing disables an endpoint for failing. What is failing is in the delivery log, and the
-operator's `suco doctor` counts it.
+Repeated failures do not disable an endpoint. Inspect the delivery log for the cause;
+`suco doctor` also reports the number of failed and pending deliveries.
 
 ## Delivery log
 
-`GET /webhook_endpoints/{id}/deliveries` answers with the newest 100 deliveries to the endpoint,
-each with every attempt at it.
+`GET /webhook_endpoints/{id}/deliveries` returns the endpoint's 100 newest deliveries and every
+attempt for each delivery.
 
 ```json
 {
@@ -182,16 +181,16 @@ each with every attempt at it.
 | `state` | string | `pending`, `delivered` or `failed` |
 | `attempts` | array | Every attempt at the delivery, oldest first |
 | `attempts[].at` | string | When the attempt was made |
-| `attempts[].status` | integer or null | The HTTP status you answered, or `null` when you did not answer |
-| `attempts[].reason` | string | Why there was no answer. Present only when `status` is `null` |
-| `attempts[].response` | string | The first 256 bytes of the body you answered |
+| `attempts[].status` | integer or null | HTTP response status, or `null` when no response was received |
+| `attempts[].reason` | string | Reason no response was received. Present only when `status` is `null` |
+| `attempts[].response` | string | First 256 bytes of the response body |
 | `attempts[].took_ms` | integer | How long the attempt took, in milliseconds |
 | `next_at` | string or null | When the next attempt is due, while the delivery is pending |
 | `delivered_at` | string or null | When a `2xx` was received |
 
 | `reason` | Meaning |
 |---|---|
-| `timeout` | No answer within 20 seconds |
+| `timeout` | No response within 20 seconds |
 | `connection` | The connection could not be made, or was lost |
 | `destination` | The URL no longer passes the check made at registration |
 | `secret` | The deployment can no longer read the secret to sign with. See below |
@@ -200,23 +199,23 @@ Delivered and failed deliveries are kept for 30 days.
 
 ## Manual resend
 
-`POST /webhook_endpoints/{id}/deliveries/{delivery}/resend` sends a delivered or failed
-delivery once more, under the same `webhook-id`, with a fresh `webhook-timestamp` and
-signature. Its attempts go on from where they were. Use it after your receiver was down and is
-back, or after it answered `2xx` and then lost what it took. A receiver that keeps the ids it
-has seen drops the resend of a delivery it already took. A pending delivery cannot be resent: it
-is on its way already.
+`POST /webhook_endpoints/{id}/deliveries/{delivery}/resend` sends a delivered or failed delivery
+again. It keeps the same `webhook-id`, uses a fresh `webhook-timestamp` and signature, and appends
+to the existing attempt history. Use it after restoring an unavailable receiver or recovering
+from data loss after a `2xx` response. An idempotent receiver discards a resend it already
+persisted. Pending deliveries cannot be resent because automatic delivery is still in progress.
 
 ## Key rotation by the operator
 
 Secrets are stored encrypted under a key derived from the deployment's `credentials.key`. If the
 operator replaces that key, existing secrets cannot be read. Deliveries to your endpoint are
-then attempted with the reason `secret`, and `suco doctor` counts the endpoints affected.
-Rotating your secret (`POST /webhook_endpoints/{id}/secret`) stores a new one under the current
-key, and deliveries go on from the next attempt.
+then recorded with the reason `secret`, and `suco doctor` reports the affected endpoints.
+Rotating the endpoint secret (`POST /webhook_endpoints/{id}/secret`) encrypts a new value with
+the current key; delivery resumes on the next attempt.
 
-## Related
+## Next steps
 
-- [api.md](api.md): payments, `transfer`, and the routes that read a payment back
-- [refunds.md](refunds.md): the refund a `refund.` event carries
-- [operating.md](operating.md): what `suco doctor` says about failing deliveries
+- Add `refund.succeeded` and `refund.expired` handling when you implement
+  [Refunds](refunds.md).
+- Give operators the [delivery diagnostics](operating.md#suco-doctor) for investigating failed
+  webhooks.

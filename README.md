@@ -111,12 +111,13 @@ on one real payment. [ROADMAP.md](ROADMAP.md) says what works today and what doe
 
 | | |
 |---|---|
-| [docs/api.md](docs/api.md) | The HTTP API your server calls: payments, refunds and webhook endpoints |
-| [docs/webhooks.md](docs/webhooks.md) | What suco sends your server, and what a receiver has to do |
-| [docs/checkout.md](docs/checkout.md) | suco Checkout, the page a payer pays on: where to send a payer, and how to integrate it |
-| [docs/refunds.md](docs/refunds.md) | Sending a payment back, and the page you sign on |
-| [docs/configuration.md](docs/configuration.md) | Every setting in `suco.yaml` |
-| [docs/operating.md](docs/operating.md) | `/readyz`, `suco doctor`, and putting a stopped instance right |
+| [Developer documentation](docs/README.md) | Start here for the recommended integration path |
+| [Configuration](docs/configuration.md) | Every setting in `suco.yaml` |
+| [API](docs/api.md) | Create and retrieve payments |
+| [Checkout](docs/checkout.md) | Send a payer to the payment page |
+| [Webhooks](docs/webhooks.md) | Receive payment and refund events |
+| [Refunds](docs/refunds.md) | Create, sign and track a refund |
+| [Operations](docs/operating.md) | Monitor readiness and recover an instance |
 | [ROADMAP.md](ROADMAP.md) | What works today and what does not |
 
 ## Contributing

@@ -2,92 +2,84 @@
 
 日本語: [refunds.ja.md](refunds.ja.md)
 
-A refund sends back what a payment received, to the address it came from, and this page says how
-you open one and sign it.
+Refunds return all or part of a settled payment to the address that sent it. This guide covers
+creating, signing, and tracking a refund.
 
-It is written for the developer integrating it. It assumes you can already open a payment and
-read it back, as [api.md](api.md) describes.
+You need a `succeeded` payment and access to the wallet registered as its destination. The
+wallet must support EIP-712 typed-data signing.
 
-## Terms
+## Availability
 
-| Term | Meaning |
-|---|---|
-| refund | A record that sends back what a payment received, to the address it came from |
-| signing page | The page you sign a refund on, served by suco. Its URL is `refund_url` |
-| signing data | The typed data the signing page hands the wallet the payment was paid to |
-| refund address | Where a refund sends the money back. suco reads it off the transfer that paid the payment |
-| token | The string in `refund_url`. Whoever has it is admitted to the page |
-| what is left | What a payment can still be refunded, which is `received` less `refunded` |
-| `nonce` | The one value in the signing data. The asset honours it once |
-| module | The script and style that talk to a wallet |
+> **Pre-alpha:** the browser module that connects the signing page to a wallet has not been
+> released. The current page displays refund details but cannot sign or submit a transaction.
+
+The refund API, state tracking, and page API described below are available now. Check the
+[roadmap](../ROADMAP.md) before planning a production integration.
 
 ## Refund flow on the page
 
-1. Your server opens a refund with `POST /payments/{id}/refunds`. The answer carries
-   `refund_url`.
-2. You open `refund_url`. The page reads the refund from `GET /refund/{token}/state` and shows
-   it.
-3. The wallet the payment was paid to signs the EIP-712 authorisation the page hands it.
-4. You send the transaction.
-5. suco reads the chain and finds the transfer. The same reading that settled the payment settles
-   this.
-6. The chain settles the transfer, the refund reaches `succeeded`, and the money is back with
-   whoever paid.
+1. Your server creates a refund with `POST /payments/{id}/refunds`.
+2. The response includes `refund_url`. Open it for the operator who controls the receiving
+   wallet.
+3. The page loads the refund from `GET /refund/{token}/state`.
+4. The receiving wallet signs the EIP-712 authorisation and submits the transaction.
+5. suco Pay detects the transfer and waits for it to settle.
+6. The refund reaches `succeeded`, and the funds return to the address that paid.
 
-A refund is the payment with the direction reversed. suco holds no money and sends no
-transaction.
+suco Pay does not hold funds or submit the refund transaction.
 
 ## Refund states
 
 | `status` | Entered when | Leaves to | Final |
 |---|---|---|---|
-| `created` | `POST /payments/{id}/refunds` opened the refund. It is signable, and nothing has settled | `succeeded`, `awaiting_finality` | no |
-| `awaiting_finality` | The refund passed its deadline, and whether a transfer already sent settles is not decided | `succeeded`, `expired` | no |
-| `succeeded` | The chain settled the transfer, and the money is back | nothing | yes |
-| `expired` | The refund passed its deadline and nothing settled | nothing | yes |
+| `created` | The API created the refund and it is available to sign | `succeeded`, `awaiting_finality` | no |
+| `awaiting_finality` | The deadline passed while a submitted transfer may still settle | `succeeded`, `expired` | no |
+| `succeeded` | The refund transfer reached finality | — | yes |
+| `expired` | No qualifying transfer settled by the deadline | — | yes |
 
-A refund never goes back. A transfer that is seen for it moves nothing by being seen, and the
-chain settling one is what moves the refund.
+Refund states do not move backwards. A detected transfer is not enough to complete a refund;
+the refund reaches `succeeded` only after the transfer settles.
 
 | Event | When |
 |---|---|
 | `refund.succeeded` | The chain settled the transfer |
-| `refund.expired` | The deadline passed and nothing settled |
+| `refund.expired` | The refund expired without a settled transfer |
 
-The body is the refund as a read of it answers, less `refund_url`. Nothing is sent for `created`
-or `awaiting_finality`, and a read says when a refund is at one of them.
-[webhooks.md](webhooks.md) has the rest.
+The event body contains the same refund object as the read endpoint, without `refund_url`. suco
+Pay does not send events for `created` or `awaiting_finality`; retrieve the refund to inspect
+those states. See [Webhooks](webhooks.md) for delivery behavior.
 
 ## What the page shows
 
-The amount and the asset. The wallet that has to sign, and where the money goes back to. The
-payment the refund is against. The deadline. The status. And the transfer seen for the refund,
-once one has been.
+The signing page displays the amount, asset, signing wallet, refund address, payment ID,
+deadline, status, and any detected refund transfer.
 
-## Integrating
+## Create and track a refund
 
 ### The wallet that signs
 
-The wallet a payment is paid to has to be able to sign EIP-712 typed data, because that wallet is
-what signs the refund. `suco asset accept <name> <address>` records that address. An address
-nobody can sign for takes payments and returns none.
+The receiving wallet must support EIP-712 typed-data signing because it signs the refund.
+`suco asset accept <name> <address>` registers that wallet. An address without a signing key can
+receive payments, but you cannot refund them.
 
 ### Opening a refund
 
 ```http
 POST /payments/{id}/refunds
+Authorization: Bearer <token>
 Content-Type: application/json
 
 {"amount": "250"}
 ```
 
-`amount` is in the asset's units, written as a string, and is the only key the body may carry.
-Leave the body empty, or send `{}`, to send back everything the payment has left.
+`amount` is a string in the asset's display unit and is the only supported field. To refund the
+entire remaining balance, send an empty body or `{}`.
 
-Only a payment that is `succeeded` can be refunded. What arrived is taken back when a transfer
-stops being on the chain, and `succeeded` is the one status that keeps it.
+Only a `succeeded` payment can be refunded. That status confirms the payment transfer has
+settled.
 
-The answer is `201`, with `Location` at the refund and the refund as the body.
+The response is `201`. `Location` contains the refund path, and the response body contains the
+refund.
 
 ```json
 {
@@ -105,83 +97,80 @@ The answer is `201`, with `Location` at the refund and the refund as the body.
 
 | Field | Type | Description |
 |---|---|---|
-| `id` | string | What names the refund on the route that reads it back |
-| `payment` | string | The payment the refund is against |
-| `status` | string | Where the refund has got to. The states are above |
-| `amount` | string | What is being sent back, in the asset's units |
-| `destination` | string | Where the money goes back to |
-| `expires_at` | string | When the refund stops being signable, UTC |
-| `created_at` | string | When the refund was opened, UTC |
-| `transfer` | object or null | The transfer suco matched to the refund, in the shape [api.md](api.md) gives. `null` until one has been seen, and a candidate until `status` is `succeeded` |
-| `refund_url` | string | Where you sign. Left out of a webhook event |
+| `id` | string | The refund identifier used by the read endpoint |
+| `payment` | string | Identifier of the payment being refunded |
+| `status` | string | The current refund state, as listed above |
+| `amount` | string | Refund amount in the asset's display unit |
+| `destination` | string | Address that receives the refund |
+| `expires_at` | string | UTC timestamp after which the refund can no longer be signed |
+| `created_at` | string | UTC timestamp at which the refund was created |
+| `transfer` | object or null | Transfer matched to the refund, using the shape described in [API](api.md#transfer). It remains `null` until a transfer is detected and is not final until `status` is `succeeded` |
+| `refund_url` | string | URL at which the operator signs the refund. Webhook events omit it |
 
-`GET /payments/{id}/refunds/{refund}` reads one back, and answers the same body. There is no
-route that lists them, so keep the identifier the answer gives, or read it off the webhook event.
+`GET /payments/{id}/refunds/{refund}` returns the same object. There is no list endpoint, so
+store the refund ID from the create response or retrieve it from a webhook event.
 
-`Idempotency-Key` is read here as it is on `POST /payments`, and under the same rules
-([api.md](api.md)). A key names one request, and the payment is part of that request even though
-the path rather than the body carries it: a key this account used on another payment is refused,
-with a problem naming the header. The same key and body sent to the same payment again are
-answered with the refund that key opened.
+The endpoint supports `Idempotency-Key` under the same rules as `POST /payments`; see
+[API](api.md#idempotency-key). The payment ID is part of the idempotent request even though it is
+in the path. Reusing a key for another payment returns `400`. Repeating the same key and body for
+the same payment returns the original refund.
 
-`refund_url` is `<listen.base_url>/refund/<token>`, and the token is what admits whoever opens
-it. Whoever has it can read the refund, so keep it out of your logs, as suco keeps it out of its
-own and out of webhook events. The field itself is answered to the account's own credentials and
-to nobody else.
+`refund_url` has the form `<listen.base_url>/refund/<token>`. The token in the path grants access,
+so anyone with the URL can read the refund. Keep it out of logs. suco Pay also excludes it from
+its logs and webhook events, and returns it only to the account that created the refund.
 
 ### Where the money goes
 
-`destination` is not the caller's to choose. suco reads it off the transfer that paid the payment
-and copies it onto the refund when the refund is opened, so that a later reading of the chain
-cannot move where a signature sends money. A payment nothing has been seen for has nowhere to
-send a refund, and opening one is refused.
+The caller cannot choose `destination`. suco Pay copies the source address from the payment
+transfer when it creates the refund. Later chain reads cannot change where the signed refund
+sends funds. If the payment has no transfer, it has no refund destination and the API rejects the
+request.
 
 ### How much is left
 
-A payment can be refunded up to what arrived, counting every refund of it that has not expired. A
-refund holds its amount from the moment it is opened, whether or not anyone has signed it.
+A payment can be refunded up to its `received` amount. Creating a refund immediately reserves
+that amount, even before anyone signs it.
 
-`GET /payments/{id}` answers `refunded`, the total those refunds hold, in the asset's units.
+`GET /payments/{id}` returns the total reserved by non-expired refunds in `refunded`, using the
+asset's display unit.
 
 ```json
 {"amount": "1000", "received": "1000", "refunded": "250"}
 ```
 
-What can still be refunded is `received` less `refunded`. Asking for more is refused, and the
-refusal says what is left. A refund that expires gives its amount back. One whose key was already
-spent on the chain out of the payment's destination does not expire at all, whatever the rules
-made of that transfer.
+The refundable balance is `received - refunded`. A request above that balance returns `400` and
+reports the available amount. An expired refund releases its reservation. If the refund's
+`nonce` has already been used on chain by the receiving wallet, the reservation does not expire,
+regardless of whether the resulting transfer matched the refund.
 
 ### Failures
 
-The shape of a failure, and every rule a request is held to, are in [api.md](api.md). What a
-refund adds to them:
+The [API error reference](api.md#failures) defines the common response format. Refund endpoints
+add the following cases:
 
 | Status | `error` | When | What to do |
 |---|---|---|---|
-| 400 | `invalid` | The payment is not `succeeded`, nothing has been seen for it, the amount is more than it has left, or `Idempotency-Key` was used to refund another payment. `problems` says which | Fix what `problems` names, and send the request again |
-| 404 | `not_found` | No payment or refund of the account under that identifier | Check the identifier, and that the credential is of the account that opened the payment |
+| 400 | `invalid` | The payment is not `succeeded`, has no transfer, has insufficient refundable balance, or the `Idempotency-Key` belongs to another payment | Correct the fields listed in `problems`, then retry |
+| 404 | `not_found` | The account has no payment or refund with that identifier | Check the identifier and the account associated with the token |
 | 413 | `too_large` | The body is over 64 KiB | Send `amount` alone, or an empty body |
-| 503 | `unavailable` | suco could not reach its database | Ask the operator, who has [operating.md](operating.md) |
+| 503 | `unavailable` | suco Pay cannot reach its database | Follow the [operations guide](operating.md) |
 
 ## Page routes
 
-The token in the path admits whoever calls the routes under `/refund/`, and no credential is
-asked for. Their answers carry the headers and the content security policy [api.md](api.md)
-lists. The script and style under `/refund-assets/` take no token, and carry
-`X-Content-Type-Options: nosniff` alone.
+Routes under `/refund/` use the token in the path instead of an API credential. Responses use the
+security headers and Content Security Policy listed in the
+[API route summary](api.md#route-summary). Assets under `/refund-assets/` are public and include
+only `X-Content-Type-Options: nosniff`.
 
 | Path | Description |
 |---|---|
-| `GET /refund/{token}` | The page, as HTML |
-| `GET /refund/{token}/state` | What the page shows, as JSON |
-| `GET /refund-assets/{path}` | The page's script and style, in an instance that has them |
+| `GET /refund/{token}` | Return the signing page as HTML |
+| `GET /refund/{token}/state` | Return the data displayed by the signing page as JSON |
+| `GET /refund-assets/{path}` | Return a signing-page script or stylesheet when the instance includes the browser module |
 
-The routes the module will call are served all the same.
-
-A token that leads nowhere is `404` on every route of the page, and each says it its own way:
-`GET /refund/{token}` answers a page, `GET /refund/{token}/state` answers the failure body, and
-`/refund-assets/` answers plain text.
+The API routes are available even when the browser module is not installed. An invalid token
+returns `404`: the HTML route returns an error page, the state route returns the standard error
+body, and the asset route returns plain text.
 
 ### state
 
@@ -202,23 +191,24 @@ A token that leads nowhere is `404` on every route of the page, and each says it
 
 | Field | Description |
 |---|---|
-| `status` | Where the refund has got to |
-| `payment` | Which payment this refund is against |
-| `amount` | What is being sent back, in the asset's units |
-| `asset` | The asset, with `chain_id` for the wallet to switch to |
-| `from` | The wallet that has to sign, which is where the payment was paid |
-| `to` | Where the money goes back to |
+| `status` | The current refund state |
+| `payment` | Identifier of the payment being refunded |
+| `amount` | Refund amount in the asset's display unit |
+| `asset` | Asset details, including `chain_id` for selecting the wallet network |
+| `from` | Receiving wallet that must sign the refund |
+| `to` | Address that receives the refund |
 | `expires_at` | The refund's deadline |
-| `authorization` | What you sign, and `null` when nothing can be signed |
+| `authorization` | The EIP-712 typed data to sign, or `null` when signing is unavailable |
 | `result` | The transfer seen for the refund, or `null` |
-| `reason` | Why nothing can be signed, and `null` while something can. The words are below |
+| `reason` | Why signing is unavailable, or `null` when it is available. Values are listed below |
 
-`result` is the transfer as it is shown here: `tx`, `block_height`, `block_time`, `value` in the
-asset's smallest unit, and `settling`, which is `true` until the refund succeeds.
+`result` contains `tx`, `block_height`, `block_time`, `value` in the asset's smallest unit, and
+`settling`. The `settling` field remains `true` until the refund succeeds.
 
-It is the transfer that matched the refund. One that spent the refund's key and was not what the
-refund authorised holds the refund open, as **How much is left** says, and is not answered here,
-so such a refund sits at `awaiting_finality` with `result` still `null`.
+Only a transfer that matches the refund appears in `result`. If another transfer spends the
+refund's `nonce`, the reservation remains in place as described in
+[How much is left](#how-much-is-left), but `result` remains `null` and the refund stays
+`awaiting_finality`.
 
 | `reason` | Meaning |
 |---|---|
@@ -228,8 +218,9 @@ so such a refund sits at `awaiting_finality` with `result` still `null`.
 
 ## Signing
 
-`authorization` is the EIP-712 typed data, less the parts a wallet fills in. It is what a payer
-signs with three differences, and [checkout.md](checkout.md) describes the rest of it.
+`authorization` contains the EIP-712 typed data, excluding fields supplied by the wallet. It
+differs from a payment authorization in the ways described below; [Checkout](checkout.md#signing)
+documents the shared fields.
 
 ```json
 {
@@ -241,10 +232,10 @@ signs with three differences, and [checkout.md](checkout.md) describes the rest 
 }
 ```
 
-It carries `from`, because a payer may pay from wherever they hold the money and a refund can
-only be signed by the wallet the payment was paid to. `validBefore` is the refund's `expires_at`
-in seconds. There is no `id` and nothing to reissue. `nonce` is the one key this refund spends,
-and the asset honours it once. Open another refund when a second key is needed.
+It includes `from` because only the wallet that received the payment can sign the refund.
+`validBefore` is the refund's `expires_at` as a Unix timestamp. A refund has no attempt `id` and
+cannot be reissued. Its `nonce` can be used once; create another refund if a new `nonce` is
+required.
 
 `value` is in the asset's smallest unit here too, where `amount` is in its units.
 
@@ -252,22 +243,20 @@ and the asset honours it once. Open another refund when a second key is needed.
 
 | Deadline | When | Once past |
 |---|---|---|
-| The refund's | `expires_at` | Nothing more can be signed. Open another refund |
-| The page's | 30 days after the refund ends | The URL answers `404` |
+| Refund deadline | `expires_at` | The authorization can no longer be signed. Create another refund |
+| Page retention | 30 days after the refund reaches a final state | The URL returns `404` |
 
-A refund is good for 30 minutes from the moment it is opened, which is long enough to open the
-page, reach a wallet, sign and send. The asset itself stops honouring the signature at the same
-moment, so a transfer carried after it moves nothing.
+A refund remains signable for 30 minutes after creation. At the same deadline, the asset
+contract stops accepting the authorization, so a transaction submitted afterwards cannot move
+funds.
 
 ## Security
 
-The signing page is under the same rules as the payment page, which [checkout.md](checkout.md)
-states: the module that talks to a wallet is not released, and the page refuses to be framed.
-Until it is released, the page shows a refund and signs none. Without it, the plain page shows
-the amount, the two addresses, the deadline and the status.
+The signing page refuses to load in an iframe. Open it as a top-level page. It uses the same
+security headers as [Checkout](checkout.md#security).
 
-## Related
+## Next steps
 
-- [api.md](api.md): payments, the routes that open and read a refund, and `Idempotency-Key`
-- [checkout.md](checkout.md): the payment page, and the typed data a signing page hands a wallet
-- [webhooks.md](webhooks.md): what suco sends your server when a refund settles or expires
+- Subscribe to `refund.succeeded` and `refund.expired` as described in
+  [Webhooks](webhooks.md).
+- Add refund failures and signing-page expiry to your [operations runbook](operating.md).

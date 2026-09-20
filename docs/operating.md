@@ -2,46 +2,41 @@
 
 日本語: [operating.ja.md](operating.ja.md)
 
-This page is what an instance says about itself, and the four commands that put it right.
+Use this runbook to monitor a suco Pay instance and recover it when payments or webhooks stop
+progressing. It is for operators who already have a validated
+[`suco.yaml`](configuration.md).
 
-It is written for the operator running the instance. It assumes `suco.yaml` is written as
-[configuration.md](configuration.md) describes.
+An instance is one `suco serve` process. Multiple instances can share a database; one holds the
+lease for each network while the others wait as spares.
 
-## Terms
+## Start with the symptom
 
-| Term | Meaning |
-|---|---|
-| instance | One `suco serve` process |
-| network | One chain the instance reads. Its name is a key of `suco.yaml` |
-| asset | One token on one network. Its name is a key of `suco.yaml` |
-| issuer | Who runs an asset's contract and can stop every transfer of it |
-| transfer | A movement of an asset on the chain, as suco reads it |
-| settled | The chain will no longer take a transfer back |
-| delivery | One change to a payment or a refund, sent once to one webhook endpoint |
-| round | One read of a chain |
-| RPC endpoint | The URL an instance calls to read a chain |
-| provider | Whoever runs an RPC endpoint: your own node, or a third party |
-| cursor | How far a round has read a chain |
-| lease | What one instance holds to work a network. The others are spares |
-| worker | The loop inside an instance that runs the rounds |
-| receiver | The merchant's program that takes the `POST` at a webhook endpoint's URL |
-| destination address | The wallet address a payment is paid to. `suco asset accept` records one per asset |
-| domain | What a contract signs under, fixed by `assets.<name>.eip712` and the network's `chain_id` |
+| Symptom | First check | Continue with |
+|---|---|---|
+| The process does not answer | `GET /healthz` | Process logs and your service manager |
+| The API returns `503` | `GET /readyz` | The matching readiness field below |
+| Payments stop progressing | `networks` and `finality` in `/readyz` | `suco doctor` for provider and cursor details |
+| Webhooks stop arriving | `webhooks` in `/readyz` | Delivery records and `suco doctor` |
+| An asset may be paused or upgraded | `assets` and `paused` in `/readyz` | Confirm the change with the asset issuer |
+
+Run `suco doctor` before changing configuration or moving a network cursor. It performs read-only
+checks and reports the resolved configuration, database, RPC providers, assets, and webhook
+backlog.
 
 ## /healthz and /readyz
 
-Neither route asks for a credential. Anyone who can reach the port can read them, so neither
-carries a reason, a hostname, or any part of an RPC endpoint.
+Neither route requires authentication. Anyone who can reach the port can call them. To avoid
+leaking infrastructure details, their responses omit error messages, hostnames, and RPC URLs.
 
 ### /healthz
 
-`GET /healthz` answers `200` while the process runs. It consults nothing. Point a liveness probe
-here and nowhere else: a probe that failed because the database was unreachable would have the
-orchestrator restart a working instance, which does not bring the database back.
+`GET /healthz` returns `200` while the process is running and checks no dependencies. Use it for
+liveness probes. A database failure should not restart a healthy process because restarting the
+process cannot restore the database.
 
 ### /readyz
 
-`GET /readyz` answers whether the instance can serve.
+`GET /readyz` reports whether the instance can serve API traffic and process payments.
 
 ```json
 {"status":"ok","database":"reachable","credentials":"read-write",
@@ -53,91 +48,91 @@ orchestrator restart a working instance, which does not bring the database back.
 |---|---|
 | `status` | `ok` or `unavailable` |
 | `database` | `reachable`, `unreachable`, or `none configured` for an instance without a database |
-| `credentials` | What the store of credentials holds. Left out where there is no store |
-| `networks` | One word per network, below |
-| `assets` | One word per asset, below |
+| `credentials` | Credential-store access level. Omitted when no store is configured |
+| `networks` | Ingestion state for each network, defined below |
+| `assets` | Contract-code state for each asset, defined below |
 | `paused` | Per asset, whether its issuer has stopped every transfer of it |
-| `finality` | One word per network, below |
-| `webhooks` | One word for the deployment, below |
+| `finality` | Finality-worker state for each network, defined below |
+| `webhooks` | Webhook-worker state for the deployment, defined below |
 
-An instance configured without a database reads no chain, settles nothing and delivers nothing,
-so it leaves out `networks`, `assets`, `paused`, `finality` and `webhooks`.
+Without a database, the instance omits `networks`, `assets`, `paused`, `finality`, and `webhooks`
+because it does not ingest chains, settle transfers, or deliver webhooks.
 
-`status` is `unavailable`, and the response `503`, when the database cannot be reached or when
-every configured network is `unreachable`, `stalled`, `chain-mismatch` or `no-finalized`. The
-other four words leave it `ok`: the API is running, and the one who can act is you or the
-provider. No word under `finality` or `webhooks` makes it `unavailable`. An instance that
-settles nothing still sees payments arrive and records them, and the funds are at the merchant's
-address either way.
+The route returns `503` with `status: unavailable` when the database is unreachable or every
+configured network is in `unreachable`, `stalled`, `chain-mismatch`, or `no-finalized`.
+Other network states leave the overall status `ok`. The `finality` and `webhooks` fields do not
+change the overall status because the API can still read recorded data while those workers are
+degraded.
 
 ### networks
 
+A round is one scan of a chain. Each network has a cursor that records the last block a round
+completed.
+
 | Word | Meaning | What to do |
 |---|---|---|
-| `observing` | A round finished within the last 60 seconds. Finishing is reading the finalised range and writing what it found. A failure ahead of finality does not count | Nothing |
-| `no-cursor` | The chain answers and is the one `suco.yaml` names, and no round has finished yet | Wait for the first round |
-| `unreachable` | The last read of the head failed | Check the provider and the RPC endpoint. `suco doctor` says what the instance reaches |
-| `stalled` | No round has finished for 60 seconds. A provider that has dropped the history the cursor sits in leaves a network here | Check the provider. If the history is gone, move the cursor with `suco network cursor`, below |
-| `chain-mismatch` | `eth_chainId` is not what `suco.yaml` names. Nothing is read or written | Fix the network's `chain_id` or its RPC endpoint |
-| `no-finalized` | The provider will not say which block is final. Nothing is read or written | Use a provider that answers for the `finalized` block |
-| `finalized-changed` | The chain no longer holds the block the cursor sits on. Nothing moves until somebody puts the cursor where it does | Move the cursor with `suco network cursor`, below |
-| `finalized-behind` | The provider's final block is below the cursor. The provider is behind, and reading resumes when it catches up | Wait, or switch to a provider that has caught up |
+| `observing` | A round ingested and stored the finalised range within the last 60 seconds | None |
+| `no-cursor` | The RPC endpoint is reachable and has the expected chain ID, but no round has completed | Wait for the first round |
+| `unreachable` | The latest head request failed | Check the RPC endpoint and provider. Run `suco doctor` for details |
+| `stalled` | No round has completed for 60 seconds | Check the provider. If it removed the cursor's history, use `suco network cursor` |
+| `chain-mismatch` | `eth_chainId` differs from the configured `chain_id`. Ingestion is stopped | Correct `chain_id` or the RPC endpoint |
+| `no-finalized` | The provider does not support the `finalized` block. Ingestion is stopped | Use a provider that supports `finalized` |
+| `finalized-changed` | The chain no longer contains the block at the cursor | Move the cursor with `suco network cursor` |
+| `finalized-behind` | The provider's finalised block is behind the cursor | Wait for the provider to catch up or switch providers |
 
 The 60 seconds are twice the 30-second lease an instance holds on a network.
 
-While a network is not being read, no payment on it expires. That holds for `unreachable`,
-`stalled`, `chain-mismatch`, `no-finalized` and `finalized-changed` alike. Expiry follows the
-block time of the position read, not the clock. [configuration.md](configuration.md) describes
-the rule.
+Payments do not expire while network ingestion is stopped. Expiry follows the block timestamp at
+the cursor, not wall-clock time. See [Configuration](configuration.md#cursor).
 
 ### finality
 
-Reading a chain and deciding what settled are two things, and `finality` answers for the second.
+The `finality` field reports the worker that decides whether detected transfers have settled.
 
 | Word | Meaning | What to do |
 |---|---|---|
-| `deciding` | A round asked the endpoints and wrote what their answers settled | Nothing |
-| `no-round` | No round has finished since this instance started. Nothing is wrong yet | Wait for the first round |
-| `waiting` | Another instance holds the network. This one is the spare, and the other is settling | Nothing |
-| `too-few` | Fewer endpoints answered the last round than agreement takes. What the round asked about stays where it was until another endpoint answers. `suco doctor` says how many answer | Add or repair endpoints under `rpc.others`. [configuration.md](configuration.md) says how many agreement takes |
-| `unreachable` | The last round did not finish. An endpoint that does not answer no longer ends a round, so what stopped it is the database, and `database` says so | See `database` |
-| `stalled` | Rounds have stopped finishing. A round cannot end the loop it is in, so this is a worker stuck inside one | Restart the instance |
+| `deciding` | A finality round completed and stored its decisions | None |
+| `no-round` | No finality round has completed since startup | Wait for the first round |
+| `waiting` | Another instance holds the network lease and runs finality checks | None |
+| `too-few` | Too few `rpc.others` endpoints responded to reach agreement | Add or repair endpoints. Run `suco doctor` to see the response count |
+| `unreachable` | The round could not access the database | Check the `database` field |
+| `stalled` | Finality rounds stopped completing | Restart the instance |
 
-`deciding` and `too-few` hold for three rounds of `networks.<name>.finality.recheck`, so that one
-slow round does not change the word.
+`deciding` and `too-few` remain visible for three `finality.recheck` intervals to avoid state
+flapping after one slow round.
 
 ### assets and paused
 
-`assets` carries `unchanged` or `changed` for each asset. It is `changed` once the code the chain
-runs for that asset is not the code it ran when the instance started, which is what an upgrade
-of a proxy does. Confirm the change with the issuer before trusting the asset further.
+For each asset, `assets` is `unchanged` or `changed`. `changed` means the contract implementation
+differs from the one observed at startup, as it would after a proxy upgrade. Confirm the change
+with the issuer before continuing to accept the asset.
 
-`paused` says, for each asset, whether its issuer has stopped every transfer of it, as the asset's
-contract answers. It is read once a minute. An asset missing from `paused` was not read in the
-last 2 minutes, for any of three reasons: the contract did not answer, the provider did not carry
-the call, or this instance has not been reading. Absence is never "not paused". A paused asset
-leaves `status` where it is: the API is up, and the one who can act is the issuer.
+`paused` reports whether each asset contract has stopped all transfers. The value is refreshed
+once a minute. A missing asset was not read during the last 2 minutes; do not interpret absence
+as `false`. A paused asset does not change the overall readiness status because only the issuer
+can resume transfers.
 
 ### webhooks
 
-`webhooks` is one word for the deployment, since one worker sends every endpoint's deliveries.
+One worker sends deliveries for all endpoints, so `webhooks` reports one deployment-wide state.
 
 | Word | Meaning | What to do |
 |---|---|---|
-| `delivering` | A round turned what the payments produced into deliveries and sent what was due | Nothing |
+| `delivering` | A round created deliveries from state changes and sent those that were due | None |
 | `no-round` | No round has finished since this instance started | Wait for the first round |
-| `waiting` | Another instance holds the deliveries. This one is the spare | Nothing |
-| `unreachable` | The last round did not finish, which is the database. A receiver that does not answer is an attempt written down, not a round stopped | See `database` |
+| `waiting` | Another instance holds the webhook lease and this instance is a spare | None |
+| `unreachable` | The round could not access the database | Check the `database` field |
 | `stalled` | Rounds have stopped finishing | Restart the instance |
 
-`delivering` holds for 15 seconds, three of the 5-second rounds. No word here makes the instance
-`unavailable`: what a merchant was not told, they can still read.
+`delivering` remains visible for 15 seconds, or three 5-second rounds. Webhook degradation does
+not make the instance unavailable because merchants can still retrieve current state through the
+API.
 
 ## suco doctor
 
-`suco doctor` prints every setting it resolved and where each came from, then what it reaches.
-It reads the chains the way a start does, so what it reports is what an instance would meet. It
-writes nothing.
+`suco doctor` is a read-only diagnostic. It prints each resolved setting and its source, then
+checks the database, RPC providers, assets, and webhook backlog using the same connections as
+`suco serve`.
 
 ```
 suco.yaml
@@ -159,30 +154,29 @@ networks:
 
 | In the report | Meaning | What to do |
 |---|---|---|
-| `2 waiting to settle` | Recorded transfers waiting for the RPC endpoints to be asked about them | Nothing, until the number keeps growing from one report to the next. The settling has then stopped getting anywhere, and `/readyz` says which word it is in |
-| `1 disagreed about` | Transfers the RPC endpoints disagree about, counted after what is waiting and only when there are any | Act on it. Nothing settles from a disagreement, and it does not resolve itself |
-| `3 of 4 others answer` | How many of the `others` answer, on a network reached through them alone | Nothing |
+| `2 waiting to settle` | Recorded transfers awaiting finality checks | Watch the count. If it continues to grow, inspect the network's `finality` state in `/readyz` |
+| `1 disagreed about` | Transfers for which RPC endpoints returned different results | Investigate the providers. Disputed transfers do not settle automatically |
+| `3 of 4 others answer` | Number of configured `rpc.others` endpoints that responded | None |
 | `no spare` | Exactly as many of the `others` answer as agreement takes | Add an RPC endpoint under `rpc.others` |
 | `too few to settle` | Fewer of the `others` answer than agreement takes | Add or repair the RPC endpoints under `rpc.others` |
-| `behind 10` | How far below the final block the position read sits. From the final block and not the latest, since the finalised range is what a round reads | Nothing |
-| `could not be read: …` | A network that could not be read, in place of the numbers. It carries the provider's own code and words, cut short and with nothing of the RPC endpoint in them | Check the provider and the RPC endpoint |
-| `chain 80002 (Polygon Amoy, a testnet)` | The chain id the network answers with is a testnet's, whatever `suco.yaml` calls the network | Nothing, unless `suco.yaml` is meant for production. It was then copied from the step before production |
-| `paused` | The asset's issuer has stopped every transfer of it | Ask the issuer. An asset that is not paused adds nothing to its line |
+| `behind 10` | The cursor is 10 blocks behind the finalised block | None unless the distance keeps growing |
+| `could not be read: …` | The provider returned an error, shown without the RPC URL | Check the provider and RPC endpoint |
+| `chain 80002 (Polygon Amoy, a testnet)` | The RPC endpoint returned a known testnet chain ID | Confirm that the environment is intended for testing |
+| `paused` | The issuer has stopped all transfers for the asset | Contact the issuer |
 | `paused not read` | The asset's contract would not say whether it is paused | Check the provider |
 | `paid to 0x…, which is blocklisted, the provider says` | The asset's contract refuses transfers to the address the account is paid at | Run `suco asset accept` with another address |
-| `2 pending, 1 failed to 7c1d…` | One account's deliveries as the database holds them: `pending` ones waiting for their next attempt, and `failed` ones given up on after their last, with the ids of the webhook endpoints the failed ones were to | Nothing |
-| `nothing pending, nothing failed` | No delivery is waiting and none was given up on | Nothing |
-| `3 endpoints hold a signing secret sealed under another key` | How many webhook endpoints hold a signing secret sealed under another key, which is what a swapped `credentials.key` leaves behind. It follows the accounts when there are any | Nothing. Those merchants rotate their secret, and deliveries go on |
+| `2 pending, 1 failed to 7c1d…` | Pending and failed deliveries, followed by affected endpoint IDs | Inspect the endpoint's delivery log when failures are unexpected |
+| `nothing pending, nothing failed` | No delivery is pending or failed | None |
+| `3 endpoints hold a signing secret sealed under another key` | Endpoint secrets were encrypted with a previous `credentials.key` | Ask affected merchants to rotate their signing secrets |
 
-What the worker sending them is doing is the `webhooks` word of `/readyz`.
+Use the `webhooks` field in `/readyz` to inspect the delivery worker itself.
 
-The address an asset is paid at goes to the network's RPC endpoint in the asking, your own node
-or the first of the others. The report asks nothing of an address on a network it could not
-read, and nothing where the database does not hold exactly one account, since naming one is not
-implemented.
+Asset checks send the receiving address to the network's RPC endpoint: `rpc.own` or the first
+entry in `rpc.others`. suco Pay skips this check when it cannot read the network or when the
+database does not contain exactly one account.
 
-A deployment with no database, or one nothing has applied the schema to, still has its chains
-read. What it cannot say is how far each has been read.
+Without an initialized database schema, `suco doctor` can still query the configured chains but
+cannot report their saved cursor positions.
 
 ## suco asset accept
 
@@ -190,24 +184,22 @@ read. What it cannot say is how far each has been read.
 suco asset accept <name> <address>
 ```
 
-Records that the account takes the asset `suco.yaml` lists under that name, paid to the
-address. It asks the asset's contract two things first. One is what it signs under, which a
-payer's wallet then signs under as well. The other is whether it refuses transfers to the
-address, which an issuer does to one account at a time.
+Registers `<address>` as the receiving wallet for the configured asset `<name>`. Before saving
+it, suco Pay checks the contract's EIP-712 domain and whether the issuer blocks transfers to the
+address.
 
 | Refused when | What to do |
 |---|---|
-| What the contract signs under is not what `suco.yaml` gives | Check `assets.<name>.eip712` and the network's `chain_id` against the contract |
+| The contract's EIP-712 domain differs from `suco.yaml` | Check `assets.<name>.eip712` and the network's `chain_id` against the contract |
 | The contract refuses transfers to the address | Give another address |
-| One of the two answers could not be read | Check the provider. An address is not registered on the strength of a provider that would not carry the call |
+| Either contract check fails | Check the RPC provider. The address is not registered |
 
-A contract with no `DOMAIN_SEPARATOR()` to answer, which JPYC is, is checked by what it does
-answer: the chain it is on against the network's `chain_id`, and what it calls itself against
-the domain's `name`. The `version` is then `suco.yaml`'s word, and the line that confirms the
-registration says so.
+JPYC does not expose `DOMAIN_SEPARATOR()`. For this contract, suco Pay verifies the chain ID and
+domain name, then uses the configured `version`. The success output states that the version came
+from configuration.
 
-The provider asked is the network's RPC endpoint, your own node or the first of the others, and
-the address goes to it in the asking. It is public the moment a payment reaches it.
+These checks send the address to `rpc.own` or the first endpoint in `rpc.others`. The address also
+becomes public when it receives a payment.
 
 ## suco network cursor
 
@@ -215,34 +207,30 @@ the address goes to it in the asking. It is public the moment a payment reaches 
 suco network cursor <name> <height> [--force]
 ```
 
-A cursor is what moves and a position is where it is. Each network has one, and it holds the
-height a round has read to and the hash of the block there.
+Each network has one cursor containing the height and hash of the last block a round ingested.
 
-A chain that no longer holds the block the cursor sits on is one no round reads past. How far
-back to go is not something a round can work out, so this is how you put the cursor where the
-chain does hold a block. `/readyz` says `finalized-changed` while a network is in that state.
+Use this command when the chain no longer contains the block at the cursor. In that state,
+`/readyz` reports `finalized-changed` and ingestion cannot continue automatically.
 
-The block at that height is read from the chain and its hash is written with it. A height alone
-does not say which chain it was on.
+The command reads the block at `<height>` and stores both its height and hash, preventing a
+height from being associated with the wrong chain.
 
-No lease is taken. A round under way when this writes does not commit its advance, and the
-round after it reads from where this put it.
+The command does not acquire the network lease. A concurrent round cannot commit its cursor
+advance, and the following round starts from the new position.
 
-**Nothing reads the blocks it skips.** Putting the cursor forward past blocks no round has read
-means every transfer in them goes unseen, and there is no later pass that finds them. A payment
-still open on the network may have been paid in one of those blocks, and once the cursor is past
-its deadline it expires as unpaid. A refund still open may have been sent in one of them, and
-expires with its amount refundable again while the money is already gone, which lets the same
-money go out twice. So the command refuses to move forward while the network has a payment that
-is `awaiting_payment` or `awaiting_finality`, or a refund that is `created` or
-`awaiting_finality`, and says how many of each. `--force` moves it anyway, and the log line says
-how many of each were skipped. Moving the cursor back is never refused: nothing is skipped, and
-the rounds read the range again.
+> **Important:** moving the cursor forward permanently skips blocks. Transfers in skipped blocks
+> are never ingested. A payment may expire as unpaid even though funds arrived, and a refund may
+> release its reservation even though funds were sent, allowing a duplicate refund.
 
-A provider that has dropped its history is the case this exists for, and there the only way on
-is forward. Use `--force` once you have counted what it costs.
+To prevent this, the command refuses to move forward while the network has payments in
+`awaiting_payment` or `awaiting_finality`, or refunds in `created` or `awaiting_finality`. It
+reports the count for each state. `--force` bypasses the check and logs the skipped counts.
+Moving the cursor backwards is allowed because subsequent rounds read the range again.
 
-Where the cursor was and where it is now both go to the log. Where it was is what puts it back.
+Use `--force` only when a provider has removed required history and you have reconciled every
+open payment and refund that may be affected.
+
+The log records both cursor positions so you can restore the previous one if needed.
 
 ## suco payment await
 
@@ -250,8 +238,8 @@ Where the cursor was and where it is now both go to the log. Where it was is wha
 suco payment await <id>
 ```
 
-Makes one payment payable and prints the seven values a payer signs to pay it. It stands in for
-suco Checkout until there is one.
+Makes a payment payable and prints the seven values the payer signs. Use it to test payments until
+the Checkout browser module is released.
 
 ```
 contract 0xe7c3d8c9a439fede00d2600032d5db0be71c3c29
@@ -263,42 +251,35 @@ validBefore 1788972899
 nonce 0x11becaaf611be4cfb6bd8a5287bf3688f85dbbbd2af45aa10ac31a7b4513ae01
 ```
 
-The nonce is the key that matches a transfer to the payment. `validBefore` is the payment's
-deadline, truncated to the second the chain compares. What the payer signs is theirs to write,
-so a transfer can come back carrying a later deadline than the one printed here. One carried at
-or after the deadline printed here is recorded against the payment and does not pay it.
+The `nonce` links a transfer to the payment. `validBefore` is the payment deadline truncated to
+whole seconds. A modified signature may contain a later deadline, but a transfer submitted at or
+after the printed deadline does not complete the payment.
 
-**What it prints goes to a person at a terminal and nowhere that keeps it.** Anybody who reads
-it can tell what is being paid where, and can sign for the payer if they also hold the payer's
-key.
+> **Important:** send this output only to the payer through a trusted channel. It reveals the
+> payment details. Anyone who also controls the payer's key can use it to sign the payment.
 
-A payment has to be `awaiting_payment` and its network has to have been read before a key is
-issued: a key handed out for a chain nothing has ever read would be signed, paid, and never
-seen. Running the command again on a payment that is already payable issues no second key, and
-says the payment already has one.
+The payment must be `awaiting_payment`, and the instance must have completed a network round.
+Running the command again does not create a second `nonce`; it reports that the payment already
+has one.
 
 ## Webhook endpoints inside the deployment
 
-A webhook URL that resolves to an address inside the deployment, such as a private network or
-the loopback, is refused at registration and at every send, so that a merchant cannot make the
-deployment call what only it can reach. For a receiver of your own running inside, allow one
-endpoint to reach one address or range by writing it on the endpoint's row:
+Webhook registration and delivery reject URLs that resolve to private or loopback addresses.
+This prevents server-side request forgery into the deployment network. To allow an internal
+receiver you control, set an address range on that endpoint's database row:
 
 ```sql
 update webhook_endpoints set allowed = '{10.0.5.0/24}' where id = '<endpoint id>';
 ```
 
-The allowance is bound to the endpoint and to the address, not to the name: a name moved to
-another inside address is refused as before. Since a URL that resolves inside cannot be
-registered, the merchant registers a URL that resolves outside, you write the allowance, and the
-merchant then changes the URL with `PATCH /webhook_endpoints/{id}`, which checks it again with
-the allowance in force. An entry that is not a prefix allows nothing and stops nothing else.
+The allowance applies to one endpoint and address range, not a hostname. First register an
+external URL, apply the database update, then change the endpoint to its internal URL with
+`PATCH /webhook_endpoints/{id}`. The patch validates the new URL against the allowance. An
+invalid prefix grants no access.
 
-## Related
+## Next steps
 
-- [configuration.md](configuration.md): what each setting means, and how many of the `others` have
-  to agree
-- [api.md](api.md): the payment states `network cursor` and `payment await` name
-- [refunds.md](refunds.md): the refund states `network cursor` names
-- [webhooks.md](webhooks.md): what a merchant's receiver has to do with the deliveries `doctor`
-  counts
+- Add alerts for `status: unavailable`, growing finality backlogs, and failed webhook deliveries.
+- Rehearse cursor recovery in a test environment before using `--force` in production.
+- Share the [Webhook receiver requirements](webhooks.md#receiver-requirements) with integration
+  teams.

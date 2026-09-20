@@ -115,12 +115,13 @@ assets:
 
 | | |
 |---|---|
-| [docs/api.ja.md](docs/api.ja.md) | 加盟店のサーバーが呼ぶ HTTP API（支払い、返金、Webhook エンドポイント） |
-| [docs/webhooks.ja.md](docs/webhooks.ja.md) | suco が加盟店のサーバーに送る通知と、受信側の要件 |
-| [docs/checkout.ja.md](docs/checkout.ja.md) | 支払者が払うページ suco Checkout。支払者をどこへ送るかと、組み込み方 |
-| [docs/refunds.ja.md](docs/refunds.ja.md) | 支払いを送り返す返金と、加盟店が返金に署名する署名ページ |
-| [docs/configuration.ja.md](docs/configuration.ja.md) | `suco.yaml` の設定の全部 |
-| [docs/operating.ja.md](docs/operating.ja.md) | `/readyz`、`suco doctor`、止まったインスタンスの直し方 |
+| [開発者向けドキュメント](docs/README.ja.md) | 推奨する組み込み手順の入口 |
+| [設定](docs/configuration.ja.md) | `suco.yaml` の全設定 |
+| [API](docs/api.ja.md) | 支払いの作成と取得 |
+| [Checkout](docs/checkout.ja.md) | 支払者を支払いページへ案内する方法 |
+| [Webhook](docs/webhooks.ja.md) | 支払いと返金のイベント受信 |
+| [返金](docs/refunds.ja.md) | 返金の作成、署名、追跡 |
+| [運用](docs/operating.ja.md) | 稼働準備状態の監視とインスタンスの復旧 |
 | [ROADMAP.ja.md](ROADMAP.ja.md) | 今できることとできないこと |
 
 ## コントリビュート
