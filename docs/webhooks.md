@@ -10,6 +10,19 @@ It is written for the developer running the receiver. It assumes you can already
 payment, as [api.md](api.md) describes, and that the same credential is at hand: registering an
 endpoint, reading what was sent, and rotating a secret all take it.
 
+## Terms
+
+| Term | Meaning |
+|---|---|
+| endpoint | A URL you register over the API, which suco sends a `POST` to |
+| receiver | Your program, which takes the `POST` at the endpoint's URL |
+| signing secret | What your receiver verifies a signature with. Shown once, in the answer to the registration |
+| event | One notice that a payment or a refund changed |
+| delivery | One event sent to one endpoint |
+| attempt | One `POST` of one delivery |
+| retry | Another attempt suco makes at a delivery that got no `2xx` |
+| manual resend | One more sending of a delivered or failed delivery, which you ask for |
+
 ## Receiver requirements
 
 1. **Verify the signature with a Standard Webhooks library** for your language. Do not verify

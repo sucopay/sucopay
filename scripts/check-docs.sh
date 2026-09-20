@@ -91,8 +91,8 @@ done
 # carry the words as code has them. Lines are kept in place, so that a report
 # names the line of the file.
 #
-# Documents not rewritten to the glossary yet are skipped here, and leave this
-# list as each is rewritten.
+# Documents not yet proofread to these rules are skipped here, and leave this
+# list as each is proofread.
 unwritten=""
 for doc in $unwritten; do
   [ -e "$doc" ] || note "$doc is listed as not rewritten yet, and does not exist"
@@ -121,12 +121,20 @@ if ! printf 'サーバが\n' | grep -qP 'サーバ(?!ー)'; then
   note "grep cannot read UTF-8 under this locale, so the documents were not checked"
 fi
 forbidden='印字(?!可能)|訊|配備|宛先|経路|要求|応答|契約|配送|周(?=[がをはにのとでも、。]|$)|[0-9] ?周|(サーバ|ユーザ|インタフェース|アダプタ|エクスプローラ|プロバイダ)(?!ー)|(?<![A-Za-z/._])(Payment|Refund)s?(?![A-Za-z_])|(?<!API )(?<!RPC )(?<!Webhook )(?<![A-Za-z])エンドポイント'
-for doc in docs/*.ja.md README.ja.md; do
+# A sentence that opens with a demonstrative points at the sentence before it,
+# and a thing named by a verb and もの has no name. Both are ruled out by the
+# sentence rules in WRITING-STYLE.ja.md; the lead's このページは is the one
+# demonstrative allowed.
+unnamed='(^|。|\| )(それ(?!ぞれ)|その|これ|この(?!ページ)|そこ|あれ|あの)|(る|た|ない)もの'
+for doc in docs/*.ja.md README.ja.md CONTRIBUTING.ja.md ROADMAP.ja.md SECURITY.ja.md; do
   [ -f "$doc" ] || { note "$doc is not a file"; continue; }
   case " $unwritten " in *" $doc "*) continue ;; esac
   while IFS= read -r line; do
     note "$doc uses a word WRITING-STYLE.ja.md rules out: $line"
   done < <(prose "$doc" | grep -nP "$forbidden")
+  while IFS= read -r line; do
+    note "$doc opens a sentence with a demonstrative, or names a thing by a verb and もの: $line"
+  done < <(prose "$doc" | grep -nP "$unnamed")
 done
 
 # A half-width letter or digit and a full-width character have a space between

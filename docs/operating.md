@@ -7,6 +7,27 @@ This page is what an instance says about itself, and the four commands that put 
 It is written for the operator running the instance. It assumes `suco.yaml` is written as
 [configuration.md](configuration.md) describes.
 
+## Terms
+
+| Term | Meaning |
+|---|---|
+| instance | One `suco serve` process |
+| network | One chain the instance reads. Its name is a key of `suco.yaml` |
+| asset | One token on one network. Its name is a key of `suco.yaml` |
+| issuer | Who runs an asset's contract and can stop every transfer of it |
+| transfer | A movement of an asset on the chain, as suco reads it |
+| settled | The chain will no longer take a transfer back |
+| delivery | One change to a payment or a refund, sent once to one webhook endpoint |
+| round | One read of a chain |
+| RPC endpoint | The URL an instance calls to read a chain |
+| provider | Whoever runs an RPC endpoint: your own node, or a third party |
+| cursor | How far a round has read a chain |
+| lease | What one instance holds to work a network. The others are spares |
+| worker | The loop inside an instance that runs the rounds |
+| receiver | The merchant's program that takes the `POST` at a webhook endpoint's URL |
+| destination address | The wallet address a payment is paid to. `suco asset accept` records one per asset |
+| domain | What a contract signs under, fixed by `assets.<name>.eip712` and the network's `chain_id` |
+
 ## /healthz and /readyz
 
 Neither route asks for a credential. Anyone who can reach the port can read them, so neither

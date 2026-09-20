@@ -8,6 +8,19 @@ you open one and sign it.
 It is written for the developer integrating it. It assumes you can already open a payment and
 read it back, as [api.md](api.md) describes.
 
+## Terms
+
+| Term | Meaning |
+|---|---|
+| refund | A record that sends back what a payment received, to the address it came from |
+| signing page | The page you sign a refund on, served by suco. Its URL is `refund_url` |
+| signing data | The typed data the signing page hands the wallet the payment was paid to |
+| refund address | Where a refund sends the money back. suco reads it off the transfer that paid the payment |
+| token | The string in `refund_url`. Whoever has it is admitted to the page |
+| what is left | What a payment can still be refunded, which is `received` less `refunded` |
+| `nonce` | The one value in the signing data. The asset honours it once |
+| module | The script and style that talk to a wallet. It is not released |
+
 ## Refund flow on the page
 
 1. Your server opens a refund with `POST /payments/{id}/refunds`. The answer carries

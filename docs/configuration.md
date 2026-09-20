@@ -7,6 +7,24 @@ This page is every setting `suco.yaml` takes, with what each one does and what i
 It is written for the operator running an instance. It assumes `suco init` has written a
 document, and that you can run `suco doctor` against it.
 
+## Terms
+
+| Term | Meaning |
+|---|---|
+| instance | One `suco serve` process |
+| configuration file (`suco.yaml`) | The file an instance's settings are written in. `suco init` writes one |
+| secret | A setting whose value never prints. `suco doctor` says only whether it is set |
+| credential | The token sent in `Authorization` on an API call. `suco credential new` writes one |
+| network | One chain the instance reads. Its name is a key of `suco.yaml` |
+| asset | One token on one network. Its name is a key of `suco.yaml` |
+| round | One read of a chain |
+| RPC endpoint | The URL an instance calls to read a chain |
+| provider | Whoever runs an RPC endpoint: your own node, or a third party |
+| transfer | A movement of an asset on the chain, as suco reads it |
+| settled | The chain will no longer take a transfer back |
+| cursor | How far a round has read a chain |
+| reference | What a chain identifies a token by. On an EVM chain, a contract address |
+
 ## The configuration file
 
 `suco` reads one document. `suco init` writes it, and every command reads it from `suco.yaml`,

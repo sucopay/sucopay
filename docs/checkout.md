@@ -8,6 +8,18 @@ it takes.
 It is written for the developer integrating it. It assumes you can already open a payment, as
 [api.md](api.md) describes.
 
+## Terms
+
+| Term | Meaning |
+|---|---|
+| payment page | The page a payer pays on, served by suco. Its URL is `checkout_url` |
+| token | The string in `checkout_url`. Whoever has it is admitted to the page |
+| attempt | One try at paying, which the payment page issues |
+| signing data | The typed data an attempt carries, which the payer's wallet signs |
+| `nonce` | The one value in the signing data. It can be spent once |
+| `return_url` | Where the payment page sends the payer when they are done, and when they cannot pay |
+| module | The script and style that talk to a wallet. It is not released |
+
 ## Payment flow on the page
 
 1. Your server opens a payment and sends the payer to `checkout_url`.
