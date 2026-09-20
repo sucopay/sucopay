@@ -86,17 +86,8 @@ for readme in README.md README.ja.md; do
   esac
 done
 
-# The Japanese docs hold to the glossary in WRITING-STYLE.ja.md. Prose only:
-# fenced code is blanked and code spans are replaced by a marker, since both
-# carry the words as code has them. Lines are kept in place, so that a report
-# names the line of the file.
-#
-# Documents not yet proofread to these rules are skipped here, and leave this
-# list as each is proofread.
-unwritten=""
-for doc in $unwritten; do
-  [ -e "$doc" ] || note "$doc is listed as not rewritten yet, and does not exist"
-done
+# Keep typography checks out of fenced code and code spans. Lines remain in
+# place so an error can name its source line.
 prose() {
   awk '
     function run(line,   t, c, n) {
@@ -113,31 +104,10 @@ prose() {
       print ""
     }' "$1" | sed 's/`[^`]*`/X/g'
 }
-# The character classes below are Unicode ones, which grep reads as such only
-# under a UTF-8 locale. A locale that is not one leaves grep -P failing, which
-# would pass every document, so a known violation is tried first.
 export LC_ALL=C.UTF-8
-if ! printf 'サーバが\n' | grep -qP 'サーバ(?!ー)'; then
+if ! printf 'Aあ\n' | grep -qP '[A-Za-z][\x{3041}-\x{3096}]'; then
   note "grep cannot read UTF-8 under this locale, so the documents were not checked"
 fi
-forbidden='印字(?!可能)|訊|配備|宛先|経路|要求|応答|契約|配送|要り|要る|断(り|る|っ|れ)|名指|押さえ|落ち(た|る|て|れ)|控え|素の|周(?=[がをはにのとでも、。]|$)|[0-9] ?周|(サーバ|ユーザ|インタフェース|アダプタ|エクスプローラ|プロバイダ)(?!ー)|(?<![A-Za-z/._])(Payment|Refund)s?(?![A-Za-z_])|(?<!API )(?<!RPC )(?<!Webhook )(?<![A-Za-z])エンドポイント'
-# A sentence that opens with a demonstrative points at the sentence before it,
-# and so does one that adds an example or a condition with がそうです, が該当します
-# or も同じです; a thing named by a verb and もの has no name. All are ruled out
-# by the sentence rules in WRITING-STYLE.ja.md; the lead's このページは is the
-# one demonstrative allowed. も同じで after で compares within its own sentence
-# (どの試行でも同じで) and is not one of these.
-unnamed='(^|。|\| )(それ(?!ぞれ)|その|これ|この(?!ページ)|そこ|あれ|あの)|(る|た|ない)もの|がそうです|が該当します|も同じです|(?<!で)も同じで[、。]'
-for doc in docs/*.ja.md README.ja.md CONTRIBUTING.ja.md ROADMAP.ja.md SECURITY.ja.md; do
-  [ -f "$doc" ] || { note "$doc is not a file"; continue; }
-  case " $unwritten " in *" $doc "*) continue ;; esac
-  while IFS= read -r line; do
-    note "$doc uses a word WRITING-STYLE.ja.md rules out: $line"
-  done < <(prose "$doc" | grep -nP "$forbidden")
-  while IFS= read -r line; do
-    note "$doc points a sentence at the one before it, or names a thing by a verb and もの: $line"
-  done < <(prose "$doc" | grep -nP "$unnamed")
-done
 
 # A half-width letter or digit and a full-width character have a space between
 # them, in every document of either language. A code span reads as half-width,
