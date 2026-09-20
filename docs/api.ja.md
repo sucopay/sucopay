@@ -2,41 +2,78 @@
 
 English: [api.md](api.md)
 
-suco は加盟店のサーバに HTTP と JSON で応答します。経路は、Payment を作るものと読むもの、それを
-サーバに知らせる先を扱うものです。どれも `suco.yaml` の `listen` の `base_url` からの相対で、
-省くと `http://localhost:7826` です。支払者が払うページの経路は [checkout.ja.md](checkout.ja.md)
-にあります。
+このページは、支払い（`payment`）を作り、読み戻し、返金し、その知らせ先を管理する HTTP API の
+リファレンスです。
+
+API を呼ぶ加盟店の開発者向けです。`suco credential new` が書いた資格情報を前提にします。
+
+## 支払いの流れ
+
+パスはすべて `suco.yaml` の `listen` の `base_url` からの相対です。省くと
+`http://localhost:7826` です。
+
+1. 加盟店のサーバーが `POST /payments` で支払いを作ります。レスポンスに `checkout_url` が
+   入ります。
+2. 支払者を `checkout_url` へ送ります。そこが支払いページで、何をするかは
+   [checkout.ja.md](checkout.ja.md) にあります。
+3. ページが支払者の署名するものを初めて発行し、支払いが支払い可能になります。運用者の
+   `suco payment await <id>` でも同じです。ページの script が公開されるまでは、このコマンド
+   だけが支払者に署名するものを渡す手段です。ほかにまだ無いものは
+   [ROADMAP.ja.md](../ROADMAP.ja.md) にあります。
+4. 支払者のウォレットが、ちょうどの金額を `destination` へ送る EIP-3009 の
+   `TransferWithAuthorization` に署名します。ウォレットが取引を送ります。
+5. suco がチェーンを読んで送金を見つけ、`transfer` に返します。まだ確定していません。
+6. チェーンが送金を確定させ、支払いが `succeeded` になります。品物を渡すのはこのときです。
+   suco が加盟店のサーバーにどう知らせるかは [webhooks.ja.md](webhooks.ja.md) にあります。
+
+## 支払いの状態
+
+| `status` | 入り方 | 出方 | 終点 |
+|---|---|---|---|
+| `created` | `POST /payments` が支払いを作った | `awaiting_payment` | いいえ |
+| `awaiting_payment` | ページが支払者の署名するものを初めて発行したか、運用者が `suco payment await` を実行した | `succeeded`、`failed`、`awaiting_finality` | いいえ |
+| `awaiting_finality` | 支払い可能でなくなり、飛んでいる途中の送金が届くかどうかが決まっていない | `succeeded`、`expired` | いいえ |
+| `succeeded` | チェーンがその支払いの送金を確定させた | なし | はい |
+| `failed` | この build には、ここへ移すものがありません。確定せず、待っても変わらない支払いのための状態です | なし | はい |
+| `expired` | 支払い可能でなくなるまでに何も届かなかった | なし | はい |
+
+チェーンが送金を見せる時点と、その送金が残ると分かる時点は別で、支払いは 2 つ目で
+`succeeded` になります。期限の直前に認可された送金は、期限の後に届くことがあります。
+`awaiting_finality` は支払いが 2 つ目の事実を待つ場所で、注文の終わりではありません。
 
 ## 認証
 
-すべての要求は資格情報を持ちます。`Authorization: Bearer <token>` で、トークンは
-`suco credential new` が書いたものです。資格情報は 1 つの account に属し、読むか、読み書きするか
-のどちらかです。account は今のところ 1 つです。`suco serve` が初めて起動するときに、表と一緒に作ります。
-`POST /payments` は書ける資格情報を求め、`GET /payments/{id}` はどちらでも通ります。
-資格情報の無い要求と、効力を失った資格情報の要求は `401` です。経路のすることをその資格情報が
-してよくない要求は `403` です。
+リクエストはすべて資格情報を持ちます。`Authorization: Bearer <token>` で、トークンは
+`suco credential new` が書いたものです。資格情報は 1 つの account に属し、読むか、
+読み書きするかのどちらかです。account は 1 つです。`suco serve` が初めて起動するとき、表と
+一緒にデータベースへ書きます。複数の account を扱うことは実装していません。
+
+何かを変える API エンドポイントは、書ける資格情報を求めます。読むだけの API エンドポイントは
+どちらでも通ります。どちらかは下の一覧にあります。資格情報の無いリクエストと、効力を失った
+資格情報のリクエストは `401` です。その API エンドポイントのすることを資格情報がしてよくない
+リクエストは `403` です。
 
 ## 資産と金額
 
-資産は、1 つの network 上の 1 つのトークンです。Polygon の JPYC がそうです。通貨ではありません。
-1 つの network に同じ symbol のトークンが 2 つあり得ますし、2 つの network の同じ symbol は 2 つの
-トークンです。資産を識別するのは network と reference で、reference はそのチェーンがトークンを
-識別する値です。EVM のチェーンではアドレスです。symbol は識別しません。
+資産は、1 つの `network` 上の 1 つのトークンです。Polygon の JPYC がそうです。通貨ではありません。
+資産を識別するのは `network` と reference で、reference はそのチェーンがトークンを識別する値です。
+EVM のチェーンではアドレスです。symbol は何も識別しません。1 つの `network` に同じ symbol の
+トークンが 2 つあり得ますし、2 つの `network` の同じ symbol は 2 つのトークンです。
 
-`suco.yaml` が、そのインスタンスが受け取る資産を並べ、それぞれに名前を付けます。要求はその名前で
-指します。Payment が持つのは network と reference なので、文書がそのトークンを別の名前で載せ直しても、
-載せるのをやめても、Payment は作ったときのトークンのままです。
+`suco.yaml` が、そのインスタンスが受け取る資産を並べ、それぞれに名前を付けます。リクエストは
+その名前で指します。支払いが持つのは `network` と reference です。文書がそのトークンを別の名前で
+載せ直しても、載せるのをやめても、支払いは作ったときのトークンのままです。
 
 資産は 1 単位を最小単位へ分けていて、その桁数が `decimals` です。JPYC は 18 なので、1 JPYC は
-最小単位の 1000000000000000000 です。チェーンは最小単位で数え、この API は資産の単位で数えます。
-`"1000"` は 1000 JPYC です。
+最小単位の 1000000000000000000 です。チェーンは最小単位で数えます。この API は資産の単位で
+数えるので、`"1000"` は 1000 JPYC です。
 
-金額は文字列です。JSON の数を多くのクライアントが浮動小数点で読み、1000 JPYC を最小単位で書くと
-1000000000000000000000 で、double では正確に持てません。桁を 1 つ間違えた金額も正しい形をしています。
+金額は文字列です。多くのクライアントは JSON の数を浮動小数点で読みます。1000 JPYC を最小単位で
+書くと 1000000000000000000000 で、double では正確に持てません。
 
 ## POST /payments
 
-資格情報が名指す account の Payment を作ります。
+資格情報が名指す account の支払いを作ります。
 
 ```http
 POST /payments
@@ -52,17 +89,17 @@ Content-Type: application/json
 }
 ```
 
-| キー | | |
-|---|---|---|
-| `asset` | 必須 | `suco.yaml` がその資産に付けた名前です。account がその資産を受け付けていることが要ります。受け付けと、その資産の支払いを受け取るアドレスは、`suco asset accept <名前> <アドレス>` が記録します |
-| `amount` | 必須 | 資産の単位で書いた数を、文字列で書きます。`"1000"` は 1000 JPYC です。数字と、小数点があればその後に数字だけで、符号も指数も付けません。小数の桁は資産の `decimals` まで、最小単位に直したときに 78 桁までです。`0` は Payment ではありません |
-| `expires_at` | 任意 | RFC 3339 の時刻です。現在より後で、30 日後までです。省くと 15 分後です |
-| `return_url` | 任意 | 支払いのページが支払者を戻す先です。`https` の URL で、2048 バイトまで、username と password を持たないものです。`http://localhost` と `http://127.0.0.1` も通します。ページがこれをどう使うかは [checkout.ja.md](checkout.ja.md) にあります |
-| `metadata` | 任意 | 文字列のキーと文字列の値です。20 件まで、キーは 64 バイトまで、値は 512 バイトまでです。送ったとおりに返り、省くと `{}` で返ります。suco の記録には残しません |
+| パラメータ | 型 | 必須 | 説明 |
+|---|---|---|---|
+| `asset` | string | 必須 | `suco.yaml` がその資産に付けた名前です。account がその資産を受け付けている必要があります。受け付けと、その資産の受取アドレスは `suco asset accept <name> <address>` が記録します |
+| `amount` | string | 必須 | 資産の単位で書いた数です。`"1000"` は 1000 JPYC です。数字と、小数点があればその後に数字だけです。符号も指数も付けません。小数の桁は資産の `decimals` まで、最小単位に直して 78 桁までです。0 は断ります |
+| `expires_at` | string | 任意 | RFC 3339 の時刻です。現在より後で、30 日後までです。省くと 15 分後です |
+| `return_url` | string | 任意 | 支払いページが支払者を戻す先です。`https` の URL で、2048 バイトまで、username と password を持たないものです。`http://localhost` と `http://127.0.0.1` も通します。ページがこれをどう使うかは [checkout.ja.md](checkout.ja.md) にあります |
+| `metadata` | object | 任意 | 文字列のキーと文字列の値です。20 件まで、キーは 64 バイトまで、値は 512 バイトまでです。送ったとおりに返り、省くと `{}` です。suco のログには残しません |
 
 これ以外のキーは拒みます。本文は 64 KiB までです。
 
-応答は `201` で、`Location` に Payment の経路を、本文に Payment を返します。
+レスポンスは `201` で、`Location` に支払いのパスを、本文に支払いを返します。
 
 ```http
 HTTP/1.1 201 Created
@@ -91,67 +128,68 @@ Content-Type: application/json
 }
 ```
 
-`asset` はトークンをネットワークと reference で識別し、記述します。`suco.yaml` で付けた名前は
-返しません。運用者は名前を後で変えられ、Payment は作ったときのトークンのままです。`destination` は
-その Payment の支払いを受け取るアドレスで、`suco asset accept` がその資産に記録したものです。
-`amount`、`received`、`refunded` は資産の単位です。`received` は何かが届くまで `null` です。
-`refunded` はその Payment の Refund が押さえている額で、1 つも作っていなければ `"0"` です。
-時刻は UTC です。
-`return_url` は省いたとき `null` です。`checkout_url` は加盟店が支払者を送る先で、Payment の結果を
-読める鍵です。ログに残さないでください。suco も自分のログと Webhook の event には載せません。
-インスタンスがページを配信する前に作った Payment には無く、キーごと省きます。
+| 項目 | 型 | 説明 |
+|---|---|---|
+| `id` | string | ほかの API エンドポイントでその支払いを指す名前 |
+| `status` | string | その支払いがどこまで進んだか。状態は上の表 |
+| `asset` | object | トークンを `network` と `reference` で識別し、`symbol` と `decimals` で説明する。`suco.yaml` で付けた名前は返らない |
+| `amount` | string | その支払いが求める額。資産の単位 |
+| `received` | string か null | 届いた額。資産の単位。何かが届くまでは `null` |
+| `destination` | string | その支払いの受取アドレス。`suco asset accept` がその資産に記録したもの |
+| `metadata` | object | リクエストが送ったもの。送らなければ `{}` |
+| `expires_at` | string | 支払い可能でなくなる時刻。UTC |
+| `created_at` | string | 支払いを作った時刻。UTC |
+| `return_url` | string か null | ページが支払者を戻す先。リクエストが省いたときは `null` |
+| `checkout_url` | string | 支払者を送る先。インスタンスがページを配信する前に作った支払いには入らない |
+| `transfer` | object か null | その支払いを払った送金。下の節 |
+| `refunded` | string | その支払いの返金が押さえている額。資産の単位。1 つも作っていなければ `"0"` |
 
-`POST /payments` が作る Payment の `status` は `created` です。
+`checkout_url` を持つ人は支払いの結果を読めます。ログに残さないでください。suco も自分の
+ログと Webhook の event には載せません。
 
-### transfer
+## GET /payments/{id}
 
-`transfer` は、その Payment が払われたチェーン上の送金です。見つかるまでは `null` です。
+資格情報が名指す account の支払いを 1 つ読み、`POST /payments` が返したのと同じ本文を `200` で
+返します。
 
-```json
-{
-  "tx": "0x9f1e…",
-  "block_height": 78123,
-  "block_hash": "0x4c2a…",
-  "block_time": "2026-09-05T23:10:44Z",
-  "from": "0xab…",
-  "value": "1000000000000000000000"
-}
-```
+ほかの account の支払い、誰も作っていない支払い、識別子の形をしていないものは、どれも同じ本文の
+`404` です。`404` はその 3 つのどれであるかを言いません。
 
-加盟店が自分の node で送金を引くための値です。`status` が `succeeded` になるまでは候補で、
-送金が reorg でチェーンから無くなれば、ここにも出なくなります。
+## 返金
 
-`value` はチェーンが動かした額で、資産の最小単位です。`amount` と `received` は資産の単位です。
-同じ額が、`amount` では `"1000"`、`transfer` では `"1000000000000000000000"` になります。
+返金は、支払いが受け取ったものを、届いた元のアドレスへ送り返します。その支払いを受け取った
+ウォレットから出る送金に加盟店が署名し、suco がそれを記録してチェーンを見ます。全体と、返金の
+進む状態は [refunds.ja.md](refunds.ja.md) にあります。
 
-チェーンと送り先はここに重ねません。チェーンは `asset.network` で、この Payment を払った送金の
-送り先は必ず `destination` です。
+`POST /payments/{id}/refunds` は資産の単位の `amount` を取ります。支払いの残り全部を送り返すなら、
+何も持たせません。返金先アドレスは呼ぶ側が選ぶものではありません。その支払いを払った送金から
+suco が読み取ります。`Idempotency-Key` はここでも下の規則で読みます。
 
-`amount` より少ない額の送金は、この Payment のものになりません。届いた額を `received` に書き、
-ここには出ません。`received` が入っていて `transfer` が `null` のことがあります。
+レスポンスは `refund_url` を持ちます。加盟店が署名する先です。この URL を持つ人は返金を読めます。
+ログに残さないでください。suco も自分のログと Webhook の event には載せません。
 
-### Idempotency-Key
+## Idempotency-Key
 
-Payment を 2 回作ると Payment が 2 つできます。2 回目が 1 回目の送り直しだと言うには、この
-header を付けます。
+支払いを 2 回作ると支払いが 2 つできます。2 回目が 1 回目の送り直しだと言うには、この header を
+付けます。
 
 ```http
 Idempotency-Key: 8e03978e-40d5-43e8-bc93-6894a57f9324
 ```
 
-鍵は乱数にして、Payment ごとに新しく作ってください。多くのクライアントは UUID を送ります。
-引用符で囲んだ値も読み、引用符は鍵に含めません。鍵は印字できる ASCII で 255 バイトまで、
-引用符と `\` は入れられません。空も断ります。header は 1 回だけ送ってください。2 つあると
-要求が 2 つになるので断ります。
+鍵は乱数にして、支払いごとに新しく作ってください。多くのクライアントは UUID を送ります。引用符で
+囲んだ値も読み、引用符は鍵に含めません。鍵は印字可能な ASCII で 255 バイトまでです。空は断り、
+引用符と `\` は入れられません。header は 1 回だけ送ってください。2 つあるとリクエストが 2 つに
+なり、断ります。
 
-その account が既に使った鍵の要求には、その鍵が作った Payment を返します。`201` と同じ
-`Location` で、応答に `Idempotent-Replayed: true` が付きます。本文は最初の応答の写しではなく、
-そのときの Payment です。その後に支払い可能になっていれば、そう返ります。
+その account が既に使った鍵のリクエストには、その鍵が作った支払いを返します。`201` と同じ
+`Location` で、レスポンスに `Idempotent-Replayed: true` が付きます。本文は最初のレスポンスの
+写しではなく、そのときの支払いです。その後に支払い可能になっていれば、そう返ります。
 
-2 つの要求は、本文がバイト単位で同じである必要があります。JSON のキーの順を変えるだけで別の
-本文です。別の本文で届いた鍵は `400` で、`problems` が `Idempotency-Key` を名指します。最初に
-送った本文を送るか、まだ使っていない鍵を送ってください。この header の元になった IETF の
-draft はここに `422` を挙げていますが、suco は要求の他の誤りと同じく `400` で答えます。
+2 つのリクエストは、本文がバイト単位で同じである必要があります。JSON のキーの順を変えるだけで
+別の本文です。別の本文で届いた鍵は `400` で、`problems` が `Idempotency-Key` を名指します。
+最初に送った本文を送るか、まだ使っていない鍵を送ってください。この header の元になった IETF の
+draft はここに `422` を挙げています。suco はリクエストのほかの誤りと同じく `400` で答えます。
 
 ```json
 {
@@ -165,111 +203,53 @@ draft はここに `422` を挙げていますが、suco は要求の他の誤�
 }
 ```
 
-鍵は、それが作った Payment と同じだけ残ります。suco が断った要求は鍵を残さないので、同じ鍵で
-正しい本文を送り直せます。同じ鍵の 2 つの要求が同時に届いても構いません。2 つ目は 1 つ目を
-待ち、その Payment を返します。
+鍵は、それが作った支払いと同じだけ残ります。suco が断ったリクエストは鍵を残さないので、同じ鍵で
+正しい本文を送り直せます。同じ鍵の 2 つのリクエストが同時に届いても構いません。2 つ目は 1 つ目を
+待ち、その支払いを返します。
 
-鍵を読むのは `POST /payments` と `POST /payments/{id}/refunds` だけです。
+鍵を読むのは `POST /payments` と `POST /payments/{id}/refunds` だけです。鍵を送らない場合、
+送ったのにレスポンスの無かったリクエストは、送り直す前に、加盟店の側で `metadata` に入れたものを
+手がかりに探すことになります。
 
-鍵を送らない場合、送ったのに応答の無かった要求は、送り直す前に、加盟店の側で `metadata` に
-入れたものを手がかりに探すことになります。
+## transfer
 
-## GET /payments/{id}
+`transfer` は、その支払いが払われたチェーン上の送金です。見つかるまでは `null` です。
 
-資格情報が名指す account の Payment を 1 つ読み、`POST /payments` が返したのと同じ本文を `200` で
-返します。
+```json
+{
+  "tx": "0x9f1e…",
+  "block_height": 78123,
+  "block_hash": "0x4c2a…",
+  "block_time": "2026-09-05T23:10:44Z",
+  "from": "0xab…",
+  "value": "1000000000000000000000"
+}
+```
 
-他の account の Payment、誰も作っていない Payment、識別子の形をしていないものは、どれも同じ本文の
-`404` です。応答は何が存在するかを言いません。
-
-## Refund
-
-Refund は、Payment が受け取ったものを、届いた元のアドレスへ送り返します。Payment の宛先の
-ウォレットから出る送金に加盟店が署名し、suco はそれを記録してチェーンを見ます。全体は
-[refunds.ja.md](refunds.ja.md) にあります。
-
-| 経路 | 資格情報 | |
+| 項目 | 型 | 説明 |
 |---|---|---|
-| `POST /payments/{id}/refunds` | read-write | `succeeded` の Payment に 1 つ作る |
-| `GET /payments/{id}/refunds/{refund}` | read-only | 1 つ読み返す |
+| `tx` | string | 加盟店が自分のノードで送金を引くための値 |
+| `block_height` | integer | その送金が入っているブロック |
+| `block_hash` | string | そのブロックのハッシュ |
+| `block_time` | string | そのブロックの時刻。UTC |
+| `from` | string | 送金の出たアドレス。この支払いの返金が戻る先 |
+| `value` | string | チェーンが動かした額。資産の最小単位 |
 
-本文は資産の単位の `amount` を持ちます。Payment の残り全部を送り返すなら、何も持たせません。
-送り先は呼ぶ側が選ぶものではなく、Payment を払った送金から suco が読み取ります。
-`Idempotency-Key` はここでも上の規則で読みます。
+`status` が `succeeded` になるまでは候補です。送金が再編成（reorg）でチェーンから無くなれば、
+ここにも出なくなります。
 
-応答は `refund_url` を持ちます。加盟店が署名する先で、`checkout_url` が Payment の鍵であるのと
-同じく、この Refund の鍵です。ログに残さないでください。suco も自分のログと Webhook の event には
-載せません。そのページが呼ぶ経路は、この URL の token で通し、資格情報は要りません。
+`value` は `amount` や `received` と同じ書き方ではありません。`amount` と `received` は資産の
+単位です。同じ額が、`amount` では `"1000"`、ここでは `"1000000000000000000000"` になります。
 
-| 経路 | |
-|---|---|
-| `GET /refund/{token}` | ページの HTML |
-| `GET /refund/{token}/state` | ページが見せるものと、加盟店が署名するもの。JSON |
+チェーンと、額の行った先はここに重ねません。チェーンは `asset.network` です。この支払いを払った
+送金の行き先は必ず `destination` です。
 
-ページ自身の script と style は、それを持つ配備では `/refund-assets/` の下にあります。
+`amount` より少ない額の送金は、この支払いのものになりません。届いた額を `received` に書き、
+ここには出ません。`received` が入っていて `transfer` が `null` のことがあります。
 
-## Checkout
+## 失敗
 
-支払いのページが呼ぶ経路です。`checkout_url` の token で通し、資格情報は要りません。何を返すかは
-[checkout.ja.md](checkout.ja.md) にあります。
-
-| 経路 | |
-|---|---|
-| `GET /checkout/{token}` | ページの HTML |
-| `GET /checkout/{token}/state` | ページが見せるもの。JSON |
-| `POST /checkout/{token}/attempts` | 支払者が署名するもの。発行するか、発行済みのものを返す |
-
-ページ自身の script と style は、それを持つ配備では `/checkout-assets/` の下にあります。
-
-## Webhook の宛先
-
-payment が変わったことを加盟店のサーバーに知らせる先です。宛先の登録、一覧、変更、秘密の
-更新、削除、試験の送信と、届けたものの確認と再送は `/webhook_endpoints` の下の経路で、どれも
-資格情報が指す account のものです。何を送るか、どう署名するか、受け取り側が何をするかは
-[webhooks.ja.md](webhooks.ja.md) にあります。
-
-| 経路 | 資格情報 | |
-|---|---|---|
-| `POST /webhook_endpoints` | read-write | 登録し、秘密を受け取る |
-| `GET /webhook_endpoints` | read-only | 一覧。秘密は入らない |
-| `GET /webhook_endpoints/{id}` | read-only | 1 つ読む |
-| `PATCH /webhook_endpoints/{id}` | read-write | `url`、`description`、`events`、`enabled` を変える |
-| `POST /webhook_endpoints/{id}/secret` | read-write | 秘密を更新する |
-| `DELETE /webhook_endpoints/{id}` | read-write | 消す |
-| `POST /webhook_endpoints/{id}/test` | read-write | `endpoint.test` を 1 つ送る |
-| `GET /webhook_endpoints/{id}/deliveries` | read-only | 新しい順に 100 件の配送と試行 |
-| `POST /webhook_endpoints/{id}/deliveries/{delivery}/resend` | read-write | もう 1 度送る |
-
-他 account の宛先、無い宛先、形を成さない識別子は、payment の経路と同じく `404` です。
-
-## Payment の一生
-
-| `status` | |
-|---|---|
-| `created` | 作られました。まだ何も払えません |
-| `awaiting_payment` | 支払い可能です。支払者に署名するものを渡せます |
-| `awaiting_finality` | もう払えず、飛んでいる途中の送金が届くかどうかが決まっていません |
-| `succeeded` | 払われ、確定しました |
-| `failed` | 確定しません。待っても変わりません |
-| `expired` | 支払い可能でなくなるまでに何も届きませんでした |
-
-Payment は `created` から `awaiting_payment` へ進み、そこから `succeeded`、`failed`、
-`awaiting_finality` のどれかへ進みます。`awaiting_finality` からは `succeeded` か `expired` です。
-後ろの 3 つが終点で、その先はありません。
-
-`awaiting_finality` が状態として要るのは、チェーンが「送金があった」と言う時点と「その送金は残る」と
-言う時点が別だからです。2 つの事実があり、Payment は 2 つ目で `succeeded` になります。期限の直前に
-認可された送金は期限のあとに届き得ます。この状態が無ければ、その送金の置き場は既に expired と
-呼ばれた Payment だけになり、そこは終点です。
-
-Payment が支払い可能になるのは、ページが支払者の署名するものを初めて発行したときです。それは
-[checkout.ja.md](checkout.ja.md) の `POST /checkout/{token}/attempts` か、運用者が実行する
-`suco payment await <id>` です。ページの script が公開されるまでは、後者だけが支払者に署名するもの
-を渡す手段です。ほかにまだ無いものは [ROADMAP.ja.md](../ROADMAP.ja.md) にあります。
-
-## 応答
-
-成功は Payment です。失敗はどの経路でも 1 つの形です。
+成功は支払いです。失敗はどの API エンドポイントでも 1 つの形です。
 
 ```json
 {
@@ -283,21 +263,21 @@ Payment が支払い可能になるのは、ページが支払者の署名する
 }
 ```
 
-| 状態 | `error` | いつ |
-|---|---|---|
-| 400 | `invalid` | 本文が JSON のオブジェクトでない、API が読まないキーがある、型が違う、値が規則の外にあるときです。`Idempotency-Key` が鍵の形でないときと、別の本文で届いたときもです。どれかは `problems` が言います |
-| 401 | `unauthorized` | 資格情報が無いか、効力を失っているときです |
-| 403 | `forbidden` | 経路のすることをその資格情報がしてよくないときです |
-| 404 | `not_found` | その識別子の Payment、Refund、Webhook の宛先がこの account に無いときです |
-| 409 | 理由の語 | その Payment に署名するものを発行できないときです。返すのは `POST /checkout/{token}/attempts` だけで、語は [checkout.ja.md](checkout.ja.md) にあります |
-| 413 | `too_large` | 本文が 64 KiB を越えたときです |
-| 503 | `unavailable` | suco がデータベースに届かなかったときです。理由は suco の記録にあり、本文にはありません |
+| ステータス | `error` | いつ | 対処 |
+|---|---|---|---|
+| 400 | `invalid` | 本文が JSON のオブジェクトでない、API が読まないキーがある、型が違う、値が規則の外にある。`Idempotency-Key` が鍵の形でない、別の本文で届いた | `problems` が名指すものを直して送り直す |
+| 401 | `unauthorized` | 資格情報が無いか、効力を失っている | 効力のある資格情報を送る |
+| 403 | `forbidden` | その API エンドポイントのすることを資格情報がしてよくない | 書ける資格情報を送る |
+| 404 | `not_found` | その識別子の支払い、返金、Webhook エンドポイントが account に無い | 識別子と、資格情報がそれを作った account のものかを確かめる |
+| 409 | 理由の語 | その支払いに署名するものを発行できない。返すのは `POST /checkout/{token}/attempts` だけ | 語は [checkout.ja.md](checkout.ja.md) にある |
+| 413 | `too_large` | 本文が 64 KiB を越えた | 小さい本文を送る |
+| 503 | `unavailable` | suco がデータベースに届かなかった | 運用者に頼む。理由は suco のログにあり、本文には入らない。追い方は [operating.ja.md](operating.ja.md) にある |
 
 `problems` を持つのは `400` だけです。
 
 ### 問題
 
-各問題は、要求のどこについてかを `field` で、値がどの規則を破ったかを `message` で言います。
+各問題は、リクエストのどこについてかを `field` で、値がどの規則を破ったかを `message` で言います。
 `field` は本文のキーか、header が悪いときはその header の名前です。本文全体についての問題は
 `field` を持ちません。
 
@@ -312,16 +292,19 @@ Payment が支払い可能になるのは、ページが支払者の署名する
 }
 ```
 
-`message` が要求の値を繰り返すときは、その値を 128 バイトで切ります。`field` は要求が選んだキーの
-ことがあり、`field` と `message` はそれぞれ 512 バイトで切り、制御文字や見えない文字を含むときは
-それらをエスケープにして引用符で囲みます。
+`message` がリクエストの値を繰り返すときは、その値を 128 バイトで切ります。`field` はリクエストが
+選んだキーのことがあります。`field` と `message` はそれぞれ 512 バイトで切ります。制御文字や
+見えない文字を含むときは、それらをエスケープにして引用符で囲みます。
 
 問題には段階があり、本文は最初に引っかかった段階について答えます。鍵の形でない
 `Idempotency-Key` は最初の段階で答えるので、header の問題と本文の問題は一緒に返ります。
-まず本文の形の問題です。知らない
-キー、型の違う値、`suco.yaml` に無い資産、数や時刻として読めない値、無い必須キーです。次に、account が
-その資産を受け付けているかです。最後に値の問題です。0 の金額、範囲の外の期限、上限を越えた metadata
-です。1 つの段階にある問題はすべて列挙するので、クライアントはその段階を 1 往復で直せます。
+
+1. 本文の形の問題です。知らないキー、型の違う値、`suco.yaml` に無い資産、数や時刻として読めない
+   値、無い必須キーです。
+2. account がその資産を受け付けているかです。
+3. 値の問題です。0 の金額、範囲の外の期限、上限を越えた `metadata` です。
+
+1 つの段階にある問題はすべて列挙するので、クライアントはその段階を 1 往復で直せます。
 
 ```json
 {
@@ -338,3 +321,34 @@ Payment が支払い可能になるのは、ページが支払者の署名する
   ]
 }
 ```
+
+## API エンドポイントの一覧
+
+| パス | 資格情報 | 説明 |
+|---|---|---|
+| `POST /payments` | read-write | 支払いを作る |
+| `GET /payments/{id}` | read-only | 支払いを 1 つ読み戻す |
+| `POST /payments/{id}/refunds` | read-write | `succeeded` の支払いに返金を 1 つ作る |
+| `GET /payments/{id}/refunds/{refund}` | read-only | 返金を 1 つ読み戻す |
+| `/webhook_endpoints…` | read-only か read-write | Webhook エンドポイントの登録、変更、通知の確認。一覧と、それぞれが求める資格情報は [webhooks.ja.md](webhooks.ja.md) |
+| `/checkout/…` と `/checkout-assets/…` | 不要 | 支払いページと、ページが呼ぶもの。一覧は [checkout.ja.md](checkout.ja.md) |
+| `/refund/…` と `/refund-assets/…` | 不要 | 署名ページと、ページが呼ぶもの。一覧は [refunds.ja.md](refunds.ja.md) |
+| `GET /healthz` | 不要 | プロセスが動いているか。詳細は [operating.ja.md](operating.ja.md) |
+| `GET /readyz` | 不要 | インスタンスが仕事をできるか。詳細は [operating.ja.md](operating.ja.md) |
+
+ページの API エンドポイントは、パスの中の token で通し、資格情報は求めません。`/checkout/` と
+`/refund/` の下のレスポンスには、`Cache-Control: no-store`、`Referrer-Policy: no-referrer`、
+`X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY` が付きます。Content-Security-Policy
+も付きます。ページは自分のインスタンスにだけ届き、誰にも iframe で開かれません。CORS の
+header は付きません。呼ぶのはページ自身だけです。`/checkout-assets/` と `/refund-assets/` の
+下の script と style は誰でも読め、キャッシュされてよく、付くのは `nosniff` だけです。
+
+ほかの account の Webhook エンドポイント、無い Webhook エンドポイント、形を成さない識別子は、
+支払いの API エンドポイントと同じく `404` です。
+
+## 関連
+
+- [checkout.ja.md](checkout.ja.md): 支払いページと、支払者が署名するもの
+- [refunds.ja.md](refunds.ja.md): 返金、その状態、加盟店が署名するページ
+- [webhooks.ja.md](webhooks.ja.md): suco が加盟店のサーバーに送るものと、受信側がすること
+- [operating.ja.md](operating.ja.md): 運用者が実行するものと、`suco doctor` が出力するもの

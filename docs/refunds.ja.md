@@ -1,22 +1,60 @@
-# Refund
+# 返金
 
 English: [refunds.md](refunds.md)
 
-Refund は、Payment が受け取ったものを、届いた元のアドレスへ送り返します。Payment の向きを逆に
-したものです。加盟店が、Payment の宛先のウォレットから出る送金に署名して送り、Payment を確定
-させたのと同じチェーンの読みが、これを確定させます。suco は金を預からず、取引も送りません。
+このページは、支払いが受け取ったものを届いた元のアドレスへ送り返す返金について、作り方と
+署名の仕方を説明します。
 
-**今日の署名のページは、Refund を見せるだけで署名は受け付けません。** ウォレットとやりとりする
-script と style は別の module で、まだ公開していません。それの無い配備は素のページを配信します。
-額、2 つのアドレス、期限、状態です。その module が呼ぶ経路は今でも配信していて、下にあります。
+組み込む加盟店の開発者向けです。[api.ja.md](api.ja.md) のとおりに支払い（`payment`）を作り、
+読み戻せることを前提にします。
 
-## 署名するウォレット
+## ページでの返金の流れ
 
-Payment の宛先のウォレットが EIP-712 の typed data に署名できる必要があります。Refund に署名する
-のがそのウォレットだからです。宛先は `suco asset accept <name> <address>` が記録します。誰も署名
-できないアドレスは、受け取れますが返せません。
+1. 加盟店のサーバーが `POST /payments/{id}/refunds` で返金を作ります。レスポンスに
+   `refund_url` が入ります。
+2. `refund_url` を開きます。ページは `GET /refund/{token}/state` で返金を読み、見せます。
+3. その支払いを受け取ったウォレットが、ページの渡す EIP-712 の認可に署名します。
+4. 加盟店が取引を送信します。
+5. suco がチェーンを読んで送金を見つけます。支払いを確定させたのと同じ読みが、これを確定
+   させます。
+6. チェーンが送金を確定させ、返金が `succeeded` になり、額が払った人に戻ります。
 
-## Refund を作る
+返金は支払いの向きを逆にしたものです。suco は資金を預からず、取引も送りません。
+
+## 返金の状態
+
+| `status` | 入り方 | 出方 | 終点 |
+|---|---|---|---|
+| `created` | `POST /payments/{id}/refunds` が返金を作った。署名でき、まだ何も確定していない | `succeeded`、`awaiting_finality` | いいえ |
+| `awaiting_finality` | 期限を過ぎ、送信済みの送金が確定するかどうかが決まっていない | `succeeded`、`expired` | いいえ |
+| `succeeded` | チェーンが送金を確定させ、額が戻った | なし | はい |
+| `expired` | 期限を過ぎ、何も確定しなかった | なし | はい |
+
+返金は戻りません。送金が見つかっただけでは何も動かず、チェーンが確定させたときに返金が動きます。
+
+| event | いつ |
+|---|---|
+| `refund.succeeded` | チェーンが送金を確定させた |
+| `refund.expired` | 期限が過ぎ、何も確定しなかった |
+
+本文は返金を読んだときと同じもので、`refund_url` は載せません。`created` と
+`awaiting_finality` では何も送らず、返金がそこにいることは読めば分かります。残りは
+[webhooks.ja.md](webhooks.ja.md) にあります。
+
+## ページが見せるもの
+
+金額と資産。署名するウォレットと、返金先アドレス。どの支払いに対する返金か。期限。状態。
+その返金に送金が見つかっていれば、その送金です。
+
+## 組み込み
+
+### 署名するウォレット
+
+支払いを受け取るウォレットが EIP-712 の typed data に署名できる必要があります。返金に署名
+するのがそのウォレットだからです。そのアドレスは `suco asset accept <name> <address>` が
+記録します。誰も署名できないアドレスは、受け取れますが返せません。
+
+### 返金を作る
 
 ```http
 POST /payments/{id}/refunds
@@ -25,13 +63,13 @@ Content-Type: application/json
 {"amount": "250"}
 ```
 
-`amount` は資産の単位で、文字列で書きます。本文が持てるキーはこれだけです。Payment の残り全部を
+`amount` は資産の単位で、文字列で書きます。本文が持てるキーはこれだけです。支払いの残り全部を
 送り返すなら、本文を空にするか `{}` を送ります。
 
-Refund を作れるのは `succeeded` の Payment だけです。チェーンから送金が消えると suco は着金を
+返金を作れるのは `succeeded` の支払いだけです。チェーンから送金が消えると suco は着金を
 取り消すので、着金を保つ状態は `succeeded` だけだからです。
 
-応答は `201` で、`Location` が Refund を指し、本文は Refund です。
+レスポンスは `201` で、`Location` が返金を指し、本文は返金です。
 
 ```json
 {
@@ -47,24 +85,41 @@ Refund を作れるのは `succeeded` の Payment だけです。チェーンか
 }
 ```
 
-`Idempotency-Key` は `POST /payments` と同じ規則で読みます（[api.ja.md](api.ja.md)）。鍵は 1 つ
-の要求を指し、Payment もその要求の一部です。本文ではなく経路が持っていても同じで、その account
-がほかの Payment に使った鍵は断り、header を名指す problem を返します。同じ Payment へ同じ鍵と
-同じ本文をもう一度送ると、その鍵が作った Refund を答えます。
+| 項目 | 型 | 説明 |
+|---|---|---|
+| `id` | string | 読み戻す API エンドポイントでその返金を指す名前 |
+| `payment` | string | どの支払いに対する返金か |
+| `status` | string | その返金がどこまで進んだか。状態は上の表 |
+| `amount` | string | 送り返す額。資産の単位 |
+| `destination` | string | 返金先アドレス |
+| `expires_at` | string | 署名できなくなる時刻。UTC |
+| `created_at` | string | 返金を作った時刻。UTC |
+| `transfer` | object か null | suco がその返金に照合した送金。形は [api.ja.md](api.ja.md)。見つかるまでは `null` で、`status` が `succeeded` になるまでは候補 |
+| `refund_url` | string | 加盟店が署名する先。Webhook の event には載らない |
 
-`GET /payments/{id}/refunds/{refund}` が 1 つ読み返し、同じ本文を答えます。一覧の経路はありま
-せん。応答が返す識別子を控えるか、Webhook の event から読んでください。
+`GET /payments/{id}/refunds/{refund}` が 1 つ読み返し、同じ本文を答えます。一覧を返す
+API エンドポイントはありません。レスポンスが返す識別子を控えるか、Webhook の event から
+読んでください。
 
-## 送り先
+`Idempotency-Key` は `POST /payments` と同じ規則で読みます（[api.ja.md](api.ja.md)）。鍵は
+1 つのリクエストを指し、支払いもそのリクエストの一部です。本文ではなくパスが持っていても
+同じで、その account がほかの支払いに使った鍵は断り、header を名指す problem を返します。
+同じ支払いへ同じ鍵と同じ本文をもう一度送ると、その鍵が作った返金を答えます。
 
-`destination` は呼ぶ側が選ぶものではありません。Payment を払った送金から suco が読み取り、Refund
-を作るときに写します。後からチェーンを読み直しても、署名の送り先が動かないようにするためです。
-何も見つかっていない Payment には送り返す先が無く、Refund を作れません。
+`refund_url` は `<listen.base_url>/refund/<token>` で、開いた人を通すのは token です。この URL を
+持つ人は返金を読めます。ログに残さないでください。suco も自分のログと Webhook の event には
+載せません。`refund_url` という項目は、その account の資格情報にだけ返します。
 
-## 残り
+### 返金先アドレス
 
-Payment は着金した額まで返せます。期限切れでない Refund は、その額を数に入れます。Refund は作った
-時点から額を押さえ、誰かが署名したかどうかは関係ありません。
+`destination` は呼ぶ側が選ぶものではありません。支払いを払った送金から suco が読み取り、返金を
+作るときに写します。後からチェーンを読み直しても、署名の送り先が動かないようにするためです。
+何も見つかっていない支払いには返金先アドレスが無く、返金を作れません。
+
+### 残り
+
+支払いは着金した額まで返せます。期限切れでない返金は、その額を数に入れます。返金は作った時点
+から額を押さえ、誰かが署名したかどうかは関係ありません。
 
 `GET /payments/{id}` は、それらが押さえている合計を資産の単位で `refunded` に答えます。
 
@@ -72,54 +127,40 @@ Payment は着金した額まで返せます。期限切れでない Refund は�
 {"amount": "1000", "received": "1000", "refunded": "250"}
 ```
 
-まだ返せるのは `received` から `refunded` を引いた額です。それを超える要求は断り、断りが残りを
-言います。期限切れになった Refund は額を戻します。ただし、鍵が Payment の宛先から既にチェーンで
-使われている Refund は、その送金を規則がどう判定したかに関わらず、期限切れになりません。出て
-行った金は戻しません。
+まだ返せるのは `received` から `refunded` を引いた額です。それを超えるリクエストは断り、断りが
+残りを言います。期限切れになった返金は額を戻します。ただし、鍵が支払いの `destination` から
+既にチェーンで使われている返金は、その送金を規則がどう判定したかに関わらず、期限切れになりません。
 
-## 署名する
+### 失敗
 
-`refund_url` が加盟店の署名する先です。`<listen.base_url>/refund/<token>` で、開いた人を通すのは
-token です。資格情報は求めません。その account の資格情報にだけ答え、ほかの誰にも答えません。
-ログに残さないでください。suco も自分のログと Webhook の event には載せません。
+断りの形と、リクエストが守る規則の全ては [api.ja.md](api.ja.md) にあります。返金が足すのは
+次です。
 
-ページは iframe の中では開きません。ページとして開いてください。
+| ステータス | `error` | いつ | 対処 |
+|---|---|---|---|
+| 400 | `invalid` | 支払いが `succeeded` でない、何も見つかっていない、額が残りより多い、`Idempotency-Key` をほかの支払いの返金に使った。`problems` がどれかを言う | `problems` が名指すものを直して送り直す |
+| 404 | `not_found` | その識別子の支払いも返金も account に無い | 識別子と、資格情報がその支払いを作った account のものかを確かめる |
+| 413 | `too_large` | 本文が 64 KiB を越えた | `amount` だけの本文か、空の本文を送る |
+| 503 | `unavailable` | suco がデータベースに届かない | 運用者に頼む。[operating.ja.md](operating.ja.md) |
 
-## 2 つの期限
+## ページの API エンドポイント
 
-| | | 過ぎると |
-|---|---|---|
-| Refund の期限 | `expires_at` | もう署名できません。新しい Refund を作ります |
-| ページの期限 | Refund が終わってから 30 日 | URL が `404` になります |
+`/refund/` の下の API エンドポイントは、パスの中の token が呼ぶ人を通します。資格情報は
+求めません。レスポンスに付く header と Content-Security-Policy は [api.ja.md](api.ja.md) に
+あります。`/refund-assets/` の下の script と style は token を取らず、付くのは
+`X-Content-Type-Options: nosniff` だけです。
 
-Refund は作ってから 30 分です。ページを開き、ウォレットに繋ぎ、署名して送るまでの時間です。
-資産のコントラクト自身も同じ時刻で署名を受け付けなくなるので、その後に載った送金は何も動かし
-ません。
-
-## Refund の一生
-
-| `status` | |
+| パス | 説明 |
 |---|---|
-| `created` | 署名できます。まだ何も確定していません |
-| `awaiting_finality` | 期限を過ぎ、送信済みの送金が確定するかどうかが決まっていません |
-| `succeeded` | チェーンが送金を確定させました。金は戻っています |
-| `expired` | 期限を過ぎ、何も確定しませんでした |
-
-Refund は戻りません。送金が見つかっただけでは状態は動かず、チェーンが確定させたときだけ動きます。
-
-## ページが呼ぶ経路
-
-`/refund/` の下の 2 つの経路は token だけで通し、資格情報は求めません。応答には
-`Cache-Control: no-store`、`Referrer-Policy: no-referrer`、`X-Content-Type-Options: nosniff` と、
-ページが自分の配備にだけ届き、誰にも iframe で開かれない Content-Security-Policy が付きます。
-CORS の header は付きません。呼ぶのはページ自身だけだからです。script と style は誰でも読め、
-キャッシュされてよく、付くのは `nosniff` だけです。
-
-| 経路 | |
-|---|---|
-| `GET /refund/{token}` | ページの HTML。通らない token にはページで答えます |
+| `GET /refund/{token}` | ページの HTML |
 | `GET /refund/{token}/state` | ページが見せるもの。JSON |
-| `GET /refund-assets/{path}` | ページの script と style。それを持つ配備だけ |
+| `GET /refund-assets/{path}` | ページの script と style。それを持つインスタンスだけ |
+
+module が呼ぶ API エンドポイントは今でも配信しています。
+
+通らない token は、ページのどの API エンドポイントでも `404` です。答え方はそれぞれ違います。
+`GET /refund/{token}` はページを、`GET /refund/{token}/state` は断りの本文を、
+`/refund-assets/` は平文を返します。
 
 ### state
 
@@ -138,28 +179,36 @@ CORS の header は付きません。呼ぶのはページ自身だけだから�
 }
 ```
 
-`from` が署名するウォレットで、Payment が払われた先です。`to` が金の戻る先です。`payment` は
-どの Payment に対する Refund かを言います。`authorization` は加盟店が署名するもので、署名できない
-あいだは `null` です。`result` はその Refund に見つかった送金で、見つかるまでは `null` です。
-`tx`、`block_height`、`block_time`、資産の最小単位の `value`、そして Refund が `succeeded` に
-なるまで `true` の `settling` を持ちます。
-
-`result` は suco が Refund に照合した送金です。Refund の鍵を使い、Refund が許したものではなかっ
-た送金は、「残り」に書いたとおり Refund を開いたままにしますが、ここには出ません。Refund が
-`awaiting_finality` にいるあいだ `result` は `null` のままです。
-
-`reason` は署名できない理由で、署名できるあいだは `null` です。
-
-| `reason` | |
+| 項目 | 説明 |
 |---|---|
-| `done` | Refund が終わった |
+| `status` | その返金がどこまで進んだか |
+| `payment` | どの支払いに対する返金か |
+| `amount` | 送り返す額。資産の単位 |
+| `asset` | 資産と、ウォレットが切り替える `chain_id` |
+| `from` | 署名するウォレット。その支払いが払われた先 |
+| `to` | 返金先アドレス |
+| `expires_at` | 返金の期限 |
+| `authorization` | 加盟店が署名するもの。署名できないあいだは `null` |
+| `result` | その返金に見つかった送金。無ければ `null` |
+| `reason` | 署名できない理由。署名できるあいだは `null`。語は下の表 |
+
+`result` はここに出る形の送金です。`tx`、`block_height`、`block_time`、資産の最小単位の
+`value`、そして返金が `succeeded` になるまで `true` の `settling` を持ちます。
+
+これは suco が返金に照合した送金です。返金の鍵を使い、返金が許したものではなかった送金は、
+「残り」に書いたとおり返金を開いたままにしますが、ここには出ません。その返金は `result` が
+`null` のまま `awaiting_finality` にいます。
+
+| `reason` | 意味 |
+|---|---|
+| `done` | 返金が終わった |
 | `sent` | 送金が見つかり、確定を待っている |
 | `expired` | 期限を過ぎた |
 
-### 加盟店が署名するもの
+## 署名
 
-`authorization` は EIP-712 の typed data から、ウォレットが埋めるものを除いたものです。`domain`
-と `message` のキーは仕様のとおり camelCase です。
+`authorization` は EIP-712 の typed data から、ウォレットが埋めるものを除いたものです。支払者が
+署名するものとの違いは 3 つで、ほかは [checkout.ja.md](checkout.ja.md) にあります。
 
 ```json
 {
@@ -171,32 +220,32 @@ CORS の header は付きません。呼ぶのはページ自身だけだから�
 }
 ```
 
-支払者が署名するものと違って、これは `from` を持ちます。支払者は金を持っているところから払えます
-が、Refund は Payment が払われたウォレットからしか署名できないからです。`value` は資産の最小単位
-で、`amount` は資産の単位です。`validBefore` は `expires_at` を秒で書いたものです。`nonce` がこの
-Refund の使う鍵で、資産はそれを 1 度だけ受け付けます。
+これは `from` を持ちます。支払者は額を持っているところから払えますが、返金は支払いが払われた
+ウォレットからしか署名できないからです。`validBefore` は返金の `expires_at` を秒で書いた
+ものです。`id` は無く、作り直すものもありません。`nonce` がこの返金の使う 1 つの鍵で、資産は
+それを 1 度だけ受け付けます。2 つ目の鍵が要るなら、別の返金を作ります。
 
-## event
+`value` はここでも資産の最小単位で、`amount` は資産の単位です。
 
-| event | |
-|---|---|
-| `refund.succeeded` | チェーンが送金を確定させた |
-| `refund.expired` | 期限が過ぎ、何も確定しなかった |
+## 期限
 
-本文は Refund を読んだときと同じもので、`refund_url` は載せません。途中の 2 つの状態は加盟店自身
-の操作なので、読めば分かります。残りは [webhooks.ja.md](webhooks.ja.md) にあります。
-
-## 応答
-
-断りの形と、要求が守る規則の全ては [api.ja.md](api.ja.md) にあります。Refund が足すのは次です。
-
-| 状態 | `error` | いつ |
+| 期限 | いつ | 過ぎると |
 |---|---|---|
-| 400 | `invalid` | Payment が `succeeded` でない、何も見つかっていない、額が残りより多い、`Idempotency-Key` をほかの Payment の Refund に使った。`problems` がどれかを言う |
-| 404 | `not_found` | その識別子の Payment も Refund も account に無い |
-| 413 | `too_large` | 本文が 64 KiB を越えた |
-| 503 | `unavailable` | suco がデータベースに届かない |
+| 返金の期限 | `expires_at` | もう署名できません。新しい返金を作ります |
+| ページの期限 | 返金が終わってから 30 日 | URL が `404` になります |
 
-通らない token は、ページの 3 つの経路のどれでも `404` です。答え方はそれぞれ違います。
-`GET /refund/{token}` はページを、`GET /refund/{token}/state` は上の本文を、`/refund-assets/` は
-平文を返します。
+返金は作ってから 30 分です。ページを開き、ウォレットに繋ぎ、署名して送るまでの時間です。資産の
+コントラクト自身も同じ時刻で署名を受け付けなくなるので、その後に載った送金は何も動かしません。
+
+## セキュリティ
+
+署名ページは支払いページと同じ規則の下にあります。規則は [checkout.ja.md](checkout.ja.md) に
+あります。ウォレットとやりとりする module はまだ公開しておらず、ページは iframe の中では
+開きません。公開するまで、ページは返金を見せるだけで署名を受け付けません。module が無いと、
+素のページが見せるのは金額、2 つのアドレス、期限、状態です。
+
+## 関連
+
+- [api.ja.md](api.ja.md): 支払い、返金を作り読み戻す API エンドポイント、`Idempotency-Key`
+- [checkout.ja.md](checkout.ja.md): 支払いページと、ページがウォレットに渡す typed data
+- [webhooks.ja.md](webhooks.ja.md): 返金が確定したときと期限切れになったときに suco が送るもの

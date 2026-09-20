@@ -2,83 +2,69 @@
 
 English: [checkout.md](checkout.md)
 
-suco Checkout は支払者が払うページです。加盟店のサーバが API で Payment を作り、応答に入っている
-URL へ支払者を送ります。ページは支払者のウォレットに、加盟店のアドレスへの送金の署名を求め、
-ウォレットがそれを送信し、ページがその結果を見せます。
+このページは、支払者が払うページ suco Checkout の仕組みと、組み込みに要ることを説明します。
 
-**今日のページは Payment を見せるだけで、支払いは受け付けません。** ウォレットとやりとりする
-script と style は別の module で、まだ公開していません。それの無い配備は素のページを配信します。
-加盟店の名前、金額、期限、状態、戻り先です。その module が呼ぶ経路は今でも配信していて、下に
-あります。
+組み込む加盟店の開発者向けです。[api.ja.md](api.ja.md) のとおりに支払い（`payment`）を作れる
+ことを前提にします。
 
-## 支払者の送り先
+## ページでの支払いの流れ
 
-`POST /payments` の応答に `checkout_url` があり、`GET /payments/{id}` も同じものを返します。
+1. 加盟店のサーバーが支払いを作り、支払者を `checkout_url` へ送ります。
+2. ページが `GET /checkout/{token}/state` で支払いを読み、見せます。
+3. ページが `POST /checkout/{token}/attempts` で支払者の署名するものを求め、支払いが
+   支払い可能になります。
+4. 支払者のウォレットが、ちょうどの金額を受取アドレスへ送る EIP-3009 の
+   `TransferWithAuthorization` に署名します。
+5. 支払者のウォレットが取引を送り、gas は支払者が払います。
+6. suco がチェーンを読んで送金を見つけます。ページはその結果を見せます。支払いが進む状態は
+   [api.ja.md](api.ja.md) にあります。
+7. `return_url` があれば、ページが支払者をそこへ送ります。
+
+支払者には、支払いの `network` で、鍵を持ち typed data に署名できるウォレットが要ります。
+ウォレットが正しい `network` にいるか、残高が足りるか、送金を許されているかは、ページが
+ウォレットから読みます。suco は読みません。
+
+## ページが見せるもの
+
+加盟店の名前で、これは account の名前です。金額と資産。期限。状態。その支払いに送金が
+見つかっていれば、その送金。そして戻り先です。
+
+`metadata` は見せません。受取アドレスはページに出ません。ウォレットが署名するものの中に
+あり、支払者が写して取引所から送れる場所にはありません。
+
+## 組み込み
+
+`POST /payments` のレスポンスに `checkout_url` があり、`GET /payments/{id}` も同じものを返します。
 そこへ支払者を送ります。リダイレクトでもリンクでも構いません。URL は
 `<listen.base_url>/checkout/<token>` で、token が支払者を通します。token を知らない人はページを
 読めず、資格情報は求めません。
 
-ページは iframe の中では開きません。ページとして開いてください。
-
-Payment の URL は 1 つで、作り直しません。失くした加盟店は `GET /payments/{id}` で読み直せます。
-配備がページを配信する前に作った Payment には無く、キーごと省きます。
-
-URL は Payment の結果を読める鍵です。ログに残さず、支払者以外に送らないでください。suco も
-自分のログと Webhook の event には載せません。
-
-## 戻り先
+支払いが持つ URL は 1 つで、suco は作り直しません。失くしたら `GET /payments/{id}` で読み直して
+ください。インスタンスがページを配信する前に作った支払いには無く、キーごと省きます。この URL は
+支払者以外に送らないでください。理由は [api.ja.md](api.ja.md) にあります。
 
 `POST /payments` の `return_url` は、支払者が払い終えたとき、または払えないときに、ページが
 支払者を送る先です。払えないのは、期限の後と、ページが対応しないウォレットのときです。任意です。
 `https` の URL で、2048 バイトまで、username と password を持たないものです。`http://localhost`
 と `http://127.0.0.1` も開発のために通します。
 
-suco は `return_url` へ何も送らず、何も付け足しません。支払者が払ったかどうかは Webhook と
-`GET /payments/{id}` が言います。`return_url` のページは、支払者が来たことではなく、自分のサーバ
-から読んだ Payment で判断してください。
+suco は `return_url` へ何も送らず、何も付け足しません。支払者が払ったかどうかを言うのは
+Webhook と `GET /payments/{id}` です。支払者が来たことではなく、加盟店のサーバーから読んだもので
+判断してください。
 
-## 2 つの期限
+## ページの API エンドポイント
 
-| | | 過ぎると |
-|---|---|---|
-| Payment の期限 | `expires_at` | もう署名するものを出しません。ページはそう言い、送信済みのものがあればその結果を見せます |
-| ページの期限 | Payment が終わってから 30 日 | URL が `404` になります |
+`/checkout/` の下の API エンドポイントは、パスの中の token が呼ぶ人を通します。資格情報は
+求めません。レスポンスに付く header と Content-Security-Policy は [api.ja.md](api.ja.md) に
+あります。`/checkout-assets/` の下の script と style は token を取らず、付くのは
+`X-Content-Type-Options: nosniff` だけです。
 
-Payment は `succeeded`、`expired`、`failed` のどれかで終わります。ページはそれまでと、その後
-30 日のあいだ読めるので、URL を持っている支払者は結果を読めます。終わっていない Payment に
-この期限は無く、期限の後に `expired` か `succeeded` になります。
-
-## ページが見せるもの
-
-加盟店の名前で、これは account の名前です。金額と資産、期限、状態、その Payment に見つかった
-送金があればそれ、戻り先です。`metadata` は見せません。支払いを受け取るアドレスは文字として
-置きません。ウォレットが署名するものの中にはあり、支払者が写して取引所から送る場所には
-ありません。
-
-## 支払者に要るもの
-
-Payment の network で、鍵を持ち typed data に署名できるウォレットです。支払者は EIP-3009 の
-`TransferWithAuthorization` にちょうどの金額で署名し、取引を自分で送信し、gas を払います。
-ウォレットが正しい network にいるか、残高が足りるか、送金を許されているかは、ページが
-ウォレットから読みます。suco は読みません。
-
-支払者が署名する鍵は 1 回だけ使えます。ウォレットがその鍵を届かないものに使ってしまったとき、
-ページは新しい鍵を求めます。Payment ごとに 1 回です。それ以上要る支払者は加盟店へ戻します。
-
-## ページが呼ぶ経路
-
-`/checkout/` の下の 3 つの経路は token だけで通します。応答には `Cache-Control: no-store`、
-`Referrer-Policy: no-referrer`、`X-Content-Type-Options: nosniff` と、ページが自分の配備にだけ
-届き、誰にも iframe で開かれない Content-Security-Policy が付きます。CORS の header は付きません。
-呼ぶのはページ自身だけだからです。script と style は誰でも読め、キャッシュされてよく、付くのは
-`nosniff` だけです。
-
-| 経路 | |
+| パス | 説明 |
 |---|---|
 | `GET /checkout/{token}` | ページの HTML。通らない token には `404` のページを返す |
 | `GET /checkout/{token}/state` | ページが見せるもの。JSON |
 | `POST /checkout/{token}/attempts` | 支払者が署名するもの。発行するか、発行済みのものを返す |
-| `GET /checkout-assets/{path}` | ページの script と style。それを持つ配備だけ |
+| `GET /checkout-assets/{path}` | ページの script と style。それを持つインスタンスだけ |
 
 ### state
 
@@ -97,51 +83,61 @@ Payment の network で、鍵を持ち typed data に署名できるウォレッ
 }
 ```
 
-| キー | |
+| 項目 | 説明 |
 |---|---|
-| `status` | `awaiting_payment`、`awaiting_finality`、`succeeded`、`expired`、`failed` のどれか。まだ `created` の Payment は `awaiting_payment` として見せます。支払者には同じことだからです |
+| `status` | `awaiting_payment`、`awaiting_finality`、`succeeded`、`expired`、`failed` のどれか。まだ `created` の支払いは `awaiting_payment` として見せる。支払者には同じこと |
 | `amount`、`asset` | `GET /payments/{id}` が返すものに、ウォレットが切り替える `chain_id` を足したもの |
-| `expires_at` | Payment の期限 |
+| `expires_at` | 支払いの期限 |
 | `merchant.name` | account の名前 |
 | `return_url` | 加盟店が支払者を戻したい先。無ければ `null` |
-| `attempt` | 有効な attempt の署名の材料。無ければ `null` |
-| `result` | その Payment に見つかった送金。無ければ `null` |
-| `reason` | 署名するものを出せない理由。出せる間は `null`。語は下 |
-| `slower` | 配備が Payment の network をいつもどおりに読めていない間 `true`。確認にいつもより時間がかかります |
+| `attempt` | 有効な支払い試行（`attempt`）の署名の材料。無ければ `null` |
+| `result` | その支払いに見つかった送金。無ければ `null` |
+| `reason` | 署名するものを出せない理由。出せる間は `null`。語は下の表 |
+| `slower` | インスタンスが支払いの `network` をいつもどおりに読めていない間 `true`。確認にいつもより時間がかかる |
 
 `result` は支払者が自分で調べられる形の送金です。`tx`、`block_height`、`block_time`、資産の
-最小単位の `value`、`confirming`、`received_at` です。`confirming` は Payment が `succeeded` に
+最小単位の `value`、`confirming`、`received_at` です。`confirming` は支払いが `succeeded` に
 なるまで `true` で、なると `received_at` が入ります。
 
-| `reason` | |
+| `reason` | 意味 |
 |---|---|
 | `expired` | 期限を過ぎた |
 | `closing` | 残りが 2 分未満で、署名にかかる時間より短い |
 | `paid` | 送金が見つかり、確定を待っている |
-| `done` | Payment が終わった |
-| `not_ready` | 配備が Payment の network をまだ読んでいない |
+| `done` | 支払いが終わった |
+| `not_ready` | インスタンスが支払いの `network` をまだ読んでいない |
 | `reissued` | 1 回の新しい鍵をもう渡した |
-| `again` | 同じページの 2 つの要求が競い、答えに使える attempt が無い。もう一度求めれば答えます。attempts の経路だけが返します |
+| `again` | 同じページの 2 つのリクエストが競い、答えに使える支払い試行が無い。もう一度求めれば答える。attempts の API エンドポイントだけが返す |
 
 ### attempts
 
 `POST /checkout/{token}/attempts` の本文は空か、有効な鍵の代わりに新しい鍵を求める
 `{"reissue": "<attempt の id>"}` です。それ以外は `400` です。
 
-1. 有効な attempt があり、`reissue` が無ければ、それを `200` で返します。
-2. `reissue` が有効な attempt を指していなければ `400` です。
-3. 署名するものを出せない理由があれば、`409` で `{"error": "<reason>"}` を返し、Payment は
+1. 有効な支払い試行があり、`reissue` が無ければ、それを `200` で返します。
+2. `reissue` が有効な支払い試行を指していなければ `400` です。
+3. 署名するものを出せない理由があれば、`409` で `{"error": "<reason>"}` を返し、支払いは
    そのままです。
-4. それ以外は attempt を発行して `201` で返します。まだ `created` の Payment は、先に
+4. それ以外は支払い試行を発行して `201` で返します。まだ `created` の支払いは、先に
    `awaiting_payment` に移します。
 
-ページを読み直しても鍵は増えません。2 度目の要求は 1 度目の attempt を読み返します。
+ページを読み直しても鍵は増えません。2 度目のリクエストは 1 度目の支払い試行を読み返します。
 
-### 支払者が署名するもの
+### 失敗
 
-attempt は、ページが `eth_signTypedData_v4` に渡す typed data から `from` を除いたもので、
+| ステータス | `error` | いつ | 対処 |
+|---|---|---|---|
+| 400 | `invalid` | `attempts` の本文が空でも `reissue` でもない | 空の本文か `{"reissue": "<attempt の id>"}` を送る |
+| 404 | `not_found` | token が無い、期限が過ぎた、形を成さない。HTML の API エンドポイントはページで答える | `GET /payments/{id}` が返す `checkout_url` と照らす |
+| 409 | `reason` の語 | 署名するものを出せない | `reason` に応じて動く。語は上の表 |
+| 413 | `too_large` | `attempts` の本文が 1 KiB を越えた | 空の本文か、支払い試行を 1 つ指す `reissue` を送る |
+| 503 | `unavailable` | suco がデータベースに届かない | 運用者に頼む。[operating.ja.md](operating.ja.md) |
+
+## 署名
+
+支払い試行は、ページが `eth_signTypedData_v4` に渡す typed data から `from` を除いたもので、
 `from` はページが支払者のアドレスで埋めます。`domain` と `message` のキーは仕様のとおり
-camelCase です。`id` は attempt の名前で、表示と `reissue` に使い、署名には入りません。
+camelCase です。`id` は支払い試行の名前で、表示と `reissue` に使い、署名には入りません。
 
 ```json
 {
@@ -154,16 +150,35 @@ camelCase です。`id` は attempt の名前で、表示と `reissue` に使い
 }
 ```
 
-`value` は `amount` と違って資産の最小単位です。`validBefore` は Payment の期限を秒で書いたもの
-です。`nonce` が鍵で、`domain` は資産のコントラクトが署名に使うものです。`suco.yaml` の `eip712`
-に書き、`suco asset accept` がコントラクトと照合したものです。
+`value` は `amount` と違って資産の最小単位です。`validBefore` は支払いの期限を秒で書いた
+ものです。`nonce` が鍵です。`domain` は資産のコントラクトが署名に使うもので、`suco.yaml` の
+`eip712` に書き、`suco asset accept` がコントラクトと照合したものです。
 
-## 応答
+支払者が署名する鍵は 1 回だけ使えます。ウォレットがその鍵を届かないものに使ってしまったとき、
+ページは新しい鍵を求めます。支払いごとに 1 回です。それ以上要る支払者は加盟店へ戻します。
 
-| 状態 | `error` | いつ |
+## 期限
+
+| 期限 | いつ | 過ぎると |
 |---|---|---|
-| 400 | `invalid` | `attempts` の本文が空でも `reissue` でもない |
-| 404 | `not_found` | token が無い、期限が過ぎた、形を成さない。HTML の経路はページで答えます |
-| 409 | `reason` の語 | 署名するものを出せない |
-| 413 | `too_large` | `attempts` の本文が 1 KiB を越えた |
-| 503 | `unavailable` | suco がデータベースに届かない |
+| 支払いの期限 | `expires_at` | もう署名するものを出しません。ページはそう言い、送信済みのものがあればその結果を見せます |
+| ページの期限 | 支払いが終わってから 30 日 | URL が `404` になります |
+
+支払いは `succeeded`、`expired`、`failed` のどれかで終わります。ページはそれまでと、その後
+30 日のあいだ読めます。URL を持っている支払者が結果を読めるようにするためです。終わっていない
+支払いにこの期限は無く、期限の後に `expired` か `succeeded` になります。
+
+## セキュリティ
+
+ウォレットとやりとりする script と style は別の module で、まだ公開していません。公開するまで、
+ページは支払いを見せるだけで受け付けません。module の無いインスタンスは素のページを配信します。
+加盟店の名前、金額、期限、状態、戻り先です。module が呼ぶ API エンドポイントは今でも配信して
+います。
+
+ページは iframe の中では開きません。ページとして開いてください。
+
+## 関連
+
+- [api.ja.md](api.ja.md): ページが見せる支払いと、それを作り読み戻す API エンドポイント
+- [refunds.ja.md](refunds.ja.md): 加盟店が返金に署名するページ。同じ仕組みです
+- [webhooks.ja.md](webhooks.ja.md): 支払いが変わったときに suco が加盟店のサーバーへ送るもの
