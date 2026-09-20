@@ -157,6 +157,38 @@ func TestResolve_NamesTheVariableWhenItsValueHasTheWrongType(t *testing.T) {
 	}
 }
 
+// A document may put a variable at any setting, and the variable may hold a
+// secret the document meant for another one. A problem about the setting then
+// says which variable to look at, and nothing of what it holds.
+func TestResolve_NamesTheVariableRatherThanWhatItHoldsInAProblem(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		path  string
+		doc   map[string]any
+		value string
+	}{
+		{"database.managed", map[string]any{"database": map[string]any{"managed": "${SECRET}"}}, "hunter2"},
+		{"listen.port", map[string]any{"listen": map[string]any{"port": "${SECRET}"}}, "hunter2"},
+		{"listen.base_url", map[string]any{"listen": map[string]any{"base_url": "${SECRET}"}}, "gopher://hunter2"},
+	}
+	for _, c := range cases {
+		t.Run(c.path, func(t *testing.T) {
+			t.Parallel()
+			env := envOf(map[string]string{"SECRET": c.value})
+
+			_, err := config.Resolve(c.doc, env)
+
+			p := wantProblemAt(t, err, c.path)
+			if !strings.Contains(p.Message, "SECRET") {
+				t.Errorf("message %q does not name the variable", p.Message)
+			}
+			if strings.Contains(p.Message, "hunter2") {
+				t.Errorf("message %q carries what the variable holds", p.Message)
+			}
+		})
+	}
+}
+
 func TestResolve_RecordsWhereEachValueCameFrom(t *testing.T) {
 	t.Parallel()
 	doc := map[string]any{

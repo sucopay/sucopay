@@ -79,6 +79,11 @@ func TestDecode_RefusesADocumentPastTheSizeLimit(t *testing.T) {
 	if !errors.Is(err, config.ErrDocumentTooLarge) {
 		t.Fatalf("err = %v, want ErrDocumentTooLarge", err)
 	}
+	// The one refusal the fuzzer never reaches: 256 KiB is past what it
+	// writes, so its list of Decode's messages is held to this one here.
+	if !said.MatchString(err.Error()) {
+		t.Errorf("err = %q, which FuzzDecode's said does not know", err)
+	}
 }
 
 func TestDecode_AcceptsADocumentAtTheSizeLimit(t *testing.T) {

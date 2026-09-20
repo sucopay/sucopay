@@ -12,8 +12,20 @@ import (
 // else wrote, and it has held a database password twice. What is checked here
 // is not that a document parses: most of these will not. It is that failing to
 // parse one never crashes the process and never repeats what it read.
-// position is the [line:column] a parse error carries.
-var position = regexp.MustCompile(`\[\d+:\d+\]`)
+
+// said is every message Decode composes when it refuses a document: its own
+// words, a position or a byte count, and nothing of the parser's, which
+// quotes the document (see where).
+//
+// The check is against these, and not for lines of the document inside the
+// message: a short line is inside one by coincidence, as "n d" is inside
+// "configuration document", and the fuzzer writes such a line sooner or
+// later. A threshold on length would not do either: `x: hunter2` is an
+// ordinary shape, and the parser has been seen quoting fragments as short as
+// three characters.
+var said = regexp.MustCompile(`^configuration document(: (\[\d+:\d+\]|the document) is not valid YAML` +
+	`|: configuration document uses anchors or aliases: at (\[\d+:\d+\]|an unknown position)` +
+	`| is too large: \d+ bytes, limit is \d+)$`)
 
 func FuzzDecode(f *testing.F) {
 	for _, seed := range []string{
@@ -25,6 +37,9 @@ func FuzzDecode(f *testing.F) {
 		"\x00\x01\x02",
 		strings.Repeat("a:\n ", 200),
 		"listen:\n  host: \"\\u202e\"\n",
+		// A line of the document that is inside every message: a check for
+		// the document in the message takes it for a leak.
+		"n d",
 	} {
 		f.Add(seed)
 	}
@@ -38,25 +53,8 @@ func FuzzDecode(f *testing.F) {
 			}
 			return
 		}
-		// The document may hold a password. An error made from one reaches a
-		// terminal and a log, so nothing of it may be quoted back.
-		//
-		// Any line holding a colon is a setting, and a short secret under a
-		// short key is an ordinary shape: a threshold on length would let
-		// `x: hunter2` through.
-		// Nothing of the document may come back. The position the parser
-		// reports is [line:column], which a document line of "1:1" matches by
-		// coincidence rather than by leaking, so it is taken out first.
-		//
-		// A threshold on length would not do: `x: hunter2` is an ordinary
-		// shape, and the parser has been seen quoting fragments as short as
-		// three characters into a message of its own.
-		message := position.ReplaceAllString(err.Error(), "")
-		for _, line := range strings.Split(document, "\n") {
-			line = strings.TrimSpace(line)
-			if len(line) > 2 && strings.Contains(message, line) {
-				t.Errorf("the error repeats part of the document:\n%q\nin\n%q", line, message)
-			}
+		if !said.MatchString(err.Error()) {
+			t.Errorf("Decode said %q, which is not one of its own messages, so part of the document may be in it", err)
 		}
 	})
 }
@@ -104,6 +102,10 @@ func FuzzResolve(f *testing.F) {
 		"networks:\n  polygon:\n    chain_id: 137\n    rpc:\n      own: ${SECRET}\n",
 		"networks:\n  local:\n    kind: simulated\nassets:\n  jpyc:\n    network: local\n    reference: \"0x1\"\n    symbol: JPYC\n    decimals: 18\n",
 		"listen:\n  host: ${SECRET}\n",
+		// A variable at a setting of another type. The problem names the
+		// variable and not what it holds, whichever path the document put it
+		// under: a secret in the wrong place is the mistake to expect.
+		"database:\n  managed: ${SECRET}\n",
 		"listen:\n  host: [\"a\\nb\"]\n",
 		"listen:\n  port: [\"a\\u001b[31mb\"]\n",
 		"database:\n  managed: {a: \"a\\nb\"}\n",

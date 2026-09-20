@@ -1,6 +1,7 @@
 package payment_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -246,9 +247,11 @@ func rebound(t *testing.T, r *payment.Refund, id payment.ID) *payment.Refund {
 
 func TestRefund_LetsNoTwoRequestsMeasureAgainstTheSameRemainder(t *testing.T) {
 	t.Parallel()
-	s, pool := store(t)
-	p := paidFor(t, s, pool, first)
 	const racing = 3
+	// One connection holds the payment, one each waits for it, and one
+	// watches them wait.
+	s, pool := storeHolding(t, racing+2)
+	p := paidFor(t, s, pool, first)
 
 	// The payment is held here so that every request reaches the ceiling
 	// before any of them writes. A store that reads the remainder without
@@ -257,6 +260,9 @@ func TestRefund_LetsNoTwoRequestsMeasureAgainstTheSameRemainder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Released on any exit, so that a failure before the commit below does
+	// not leave the requests waiting on the row and the pool waiting on them.
+	defer func() { _ = held.Rollback(t.Context()) }()
 	if _, err := held.Exec(t.Context(),
 		`select id from payments where account_id = $1 and id = $2 for update`, first, p.ID()); err != nil {
 		t.Fatal(err)
@@ -305,12 +311,18 @@ func TestRefund_LetsNoTwoRequestsMeasureAgainstTheSameRemainder(t *testing.T) {
 // test is about.
 func blocking(t *testing.T, pool *pgxpool.Pool, n int) {
 	t.Helper()
-	for until := time.Now().Add(2 * time.Second); time.Now().Before(until); {
+	until := time.Now().Add(2 * time.Second)
+	// The count needs a connection of the same pool. Bounded, so that a pool
+	// with none to spare fails here and says so, rather than in the requests
+	// being watched when they time out.
+	ctx, cancel := context.WithDeadline(t.Context(), until)
+	defer cancel()
+	for time.Now().Before(until) {
 		var blocked int
-		if err := pool.QueryRow(t.Context(), `
+		if err := pool.QueryRow(ctx, `
 			select count(*) from pg_stat_activity
 			 where datname = current_database() and wait_event_type = 'Lock'`).Scan(&blocked); err != nil {
-			t.Fatal(err)
+			t.Fatalf("counting the backends waiting on a lock: %v; a pool with no connection to spare looks like this", err)
 		}
 		if blocked >= n {
 			return
