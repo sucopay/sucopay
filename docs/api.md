@@ -32,8 +32,7 @@ Every path below is relative to the `base_url` `suco.yaml` gives under `listen`,
    [checkout.md](checkout.md) says what it does.
 3. The page issues what the payer signs for the first time, and the payment becomes payable. An
    operator's `suco payment await <id>` does the same. Until the page's script is released, that
-   command is the way a payer is given anything to sign, and [ROADMAP.md](../ROADMAP.md) says
-   what else is not built.
+   command is the way a payer is given anything to sign.
 4. The payer's wallet signs an EIP-3009 `TransferWithAuthorization` of the exact amount to
    `destination`. The wallet sends the transaction.
 5. suco reads the chain, sees the transfer, and answers it in `transfer`. The payment has not
@@ -378,3 +377,4 @@ a payment's route answers them.
 - [refunds.md](refunds.md): refunds, their states, and the page you sign them on
 - [webhooks.md](webhooks.md): what suco sends your server, and what a receiver does with it
 - [operating.md](operating.md): what an operator runs, and what `suco doctor` says
+- [ROADMAP.md](../ROADMAP.md): what works today and what does not

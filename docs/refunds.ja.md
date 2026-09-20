@@ -16,10 +16,10 @@ English: [refunds.md](refunds.md)
 | 署名ページ（`refund_url`） | 加盟店が返金に署名するページ。suco が配信する |
 | 署名データ（`authorization`） | 署名ページが渡す typed data。支払いを受け取ったウォレットが署名する |
 | 返金先アドレス（`destination`） | 返金が額を戻すアドレス。suco が支払いを払った送金から読み取る |
-| token | `refund_url` に入る文字列。持っている人を署名ページに通す |
+| token | `refund_url` に入る文字列。署名ページを開けるのは token を持つ人だけ |
 | 残り | 支払いがまだ返せる額。`received` から `refunded` を引いた額 |
 | `nonce` | 署名データに 1 つ入る値。資産は 1 度だけ受け付ける |
-| module | ウォレットとやりとりする script と style。まだ公開していない |
+| module | ウォレットとやりとりする script と style |
 
 ## 署名ページでの流れ
 
@@ -113,15 +113,15 @@ Content-Type: application/json
 | `refund_url` | string | 署名ページの URL。Webhook の event には載らない |
 
 `GET /payments/{id}/refunds/{refund}` が 1 つ読み返し、同じ本文を答えます。一覧を返す
-API エンドポイントはありません。レスポンスが返す識別子を控えるか、Webhook の event から
+API エンドポイントはありません。レスポンスが返す識別子を記録するか、Webhook の event から
 読んでください。
 
 `Idempotency-Key` は `POST /payments` と同じ規則で読みます（[api.ja.md](api.ja.md)）。キーは
 1 つのリクエストを指し、支払いもリクエストの一部です。支払いを本文ではなくパスが持っていても
-同じです。同じ account がほかの支払いに使ったキーは断り、header を名指す problem を返します。
+同じです。同じ account がほかの支払いに使ったキーは拒否し、header を指す problem を返します。
 同じ支払いへ同じキーと同じ本文をもう一度送ると、キーが作った返金を答えます。
 
-`refund_url` は `<listen.base_url>/refund/<token>` で、開いた人を通すのは token です。
+`refund_url` は `<listen.base_url>/refund/<token>` で、署名ページを開けるのは token を持つ人です。
 `refund_url` を持つ人は返金を読めます。`refund_url` をログに残さないでください。suco も自分の
 ログと Webhook の event には載せません。`refund_url` の項目は、返金を作った account の
 資格情報にだけ返します。
@@ -135,37 +135,37 @@ API エンドポイントはありません。レスポンスが返す識別子�
 ### 残り
 
 支払いは着金した額まで返せます。着金した額には、期限切れでない返金の額も数に入ります。返金は
-作った時点から額を押さえます。誰かが署名したかどうかは関係ありません。
+作った時点から額を確保します。誰かが署名したかどうかは関係ありません。
 
-`GET /payments/{id}` は、期限切れでない返金が押さえている合計を、資産の単位で `refunded` に
+`GET /payments/{id}` は、期限切れでない返金が確保している合計を、資産の単位で `refunded` に
 答えます。
 
 ```json
 {"amount": "1000", "received": "1000", "refunded": "250"}
 ```
 
-まだ返せる残りは、`received` から `refunded` を引いた額です。残りを超えるリクエストは断り、
-断りが残りを言います。期限切れになった返金は額を戻します。ただし、`nonce` が支払いの
-`destination` から既にチェーンで使われている返金は、使われた送金を
-規則がどう判定したかに関わらず、期限切れになりません。
+まだ返せる残りは、`received` から `refunded` を引いた額です。残りを超えるリクエストは拒否し、
+拒否のレスポンスが残りを示します。期限切れになった返金は額を戻します。ただし、`nonce` が支払いの
+`destination` から既にチェーンで使われている返金は、使われた送金を規則がどう判定したかに関わらず、
+期限切れになりません。
 
 ### 失敗
 
-断りの形と、リクエストが守る規則の全ては [api.ja.md](api.ja.md) にあります。返金が足すのは
+拒否の形と、リクエストが守る規則の全ては [api.ja.md](api.ja.md) にあります。返金が足すのは
 次です。
 
 | ステータス | `error` | いつ | 対処 |
 |---|---|---|---|
-| 400 | `invalid` | 支払いが `succeeded` でない、何も見つかっていない、額が残りより多い、`Idempotency-Key` をほかの支払いの返金に使った。`problems` がどれかを言う | `problems` が名指す項目を直して送り直す |
+| 400 | `invalid` | 支払いが `succeeded` でない、何も見つかっていない、額が残りより多い、`Idempotency-Key` をほかの支払いの返金に使った。`problems` がどれかを示す | `problems` が指す項目を直して送り直す |
 | 404 | `not_found` | 指定した識別子の支払いも返金も account に無い | 識別子と、資格情報が支払いを作った account に属するかを確かめる |
 | 413 | `too_large` | 本文が 64 KiB を越えた | `amount` だけの本文か、空の本文を送る |
 | 503 | `unavailable` | suco がデータベースに届かない | 運用者に頼む。[operating.ja.md](operating.ja.md) |
 
 ## 署名ページの API エンドポイント
 
-`/refund/` の下の API エンドポイントは、パスの中の token が呼ぶ人を通します。資格情報は
-求めません。レスポンスに付く header と Content-Security-Policy は [api.ja.md](api.ja.md) に
-あります。`/refund-assets/` の下の script と style は token を取らず、付くのは
+`/refund/` の下の API エンドポイントは、パスの中の token を持つ人からの呼び出しを受け付けます。
+資格情報は求めません。レスポンスに付く header と Content-Security-Policy は [api.ja.md](api.ja.md)
+にあります。`/refund-assets/` の下の script と style は token を取らず、付くのは
 `X-Content-Type-Options: nosniff` だけです。
 
 | パス | 説明 |
@@ -177,7 +177,7 @@ API エンドポイントはありません。レスポンスが返す識別子�
 module が呼ぶ API エンドポイントは今でも配信しています。
 
 通らない token は、署名ページのどの API エンドポイントでも `404` です。答え方はそれぞれ
-違います。`GET /refund/{token}` は署名ページを、`GET /refund/{token}/state` は断りの本文を、
+違います。`GET /refund/{token}` は署名ページを、`GET /refund/{token}/state` は拒否の本文を、
 `/refund-assets/` は平文を返します。
 
 ### state
@@ -241,7 +241,7 @@ module が呼ぶ API エンドポイントは今でも配信しています。
 返金の署名データは `from` を持ちます。支払者は額を持っているところから払えますが、返金は
 支払いが払われたウォレットからしか署名できないからです。`validBefore` は、返金の `expires_at`
 を秒で書いた値です。`id` は無く、作り直せる署名データもありません。`nonce` は返金が使う 1 つの
-値で、資産は 1 度だけ受け付けます。2 つ目の `nonce` が要るなら、別の返金を作ります。
+値で、資産は 1 度だけ受け付けます。2 つ目の `nonce` が必要なら、別の返金を作ります。
 
 `value` は返金でも資産の最小単位で、`amount` は資産の単位です。
 
@@ -261,7 +261,7 @@ module が呼ぶ API エンドポイントは今でも配信しています。
 署名ページは支払いページと同じ規則の下にあります。規則は [checkout.ja.md](checkout.ja.md) に
 あります。ウォレットとやりとりする module はまだ公開しておらず、署名ページは iframe の中では
 開きません。公開するまで、署名ページは返金を見せるだけで、署名を受け付けません。module が
-無いと、素の署名ページが見せるのは、金額、2 つのアドレス、期限、状態です。
+無いと、標準の署名ページが見せるのは、金額、2 つのアドレス、期限、状態です。
 
 ## 関連
 

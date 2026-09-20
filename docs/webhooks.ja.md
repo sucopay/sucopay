@@ -39,7 +39,7 @@ suco は、支払いか返金が変わるたびに、加盟店が登録した UR
    event が先の event より前に届くことがあります。迷ったら `GET /payments/{id}` で支払いを
    読んでください。
 7. **Webhook エンドポイントのパスを CSRF の保護から外してください。** リクエストは cookie も
-   form も持ちません。CSRF の検査は、cookie も form も無いリクエストを断ります。
+   form も持ちません。CSRF の検査は、cookie も form も無いリクエストを拒否します。
 8. **署名シークレットは保管してください。** 署名シークレットは、登録のレスポンスに 1 度だけ
    出ます。失くしたら更新してください。更新のレスポンスに、新しい署名シークレットが 1 度だけ
    出ます。
@@ -70,7 +70,7 @@ event は 1 つの `POST` で、本文は 1 つの形の JSON です。
 `GET /payments/{id}/refunds/{refund}` が返すのと同じ形の返金です。同じ理由で `refund_url` も
 入りません。返金の項目は [refunds.ja.md](refunds.ja.md) にあります。
 
-項目は増えるだけで、消えたり名前が変わったりしません。要る項目だけを読み、ほかは
+項目は増えるだけで、消えたり名前が変わったりしません。必要な項目だけを読み、ほかは
 無視してください。
 
 | `type` | いつ | `data` |
@@ -87,8 +87,8 @@ event は 1 つの `POST` で、本文は 1 つの形の JSON です。
 送金が見つかると、`data` は `transfer` を持ちます。`transfer` は `tx`、`block_height`、
 `block_hash`、`block_time`、`from`、`value` で、加盟店が自分のノードで確かめられる値です。
 `transfer` を最初に持つ event が `attempt.confirming` です。`attempt.confirming` は送金が
-見えたことだけを言い、確定したとは言いません。送金は再編成（reorg）で消えることがあります。
-額が加盟店のものになったと言うのは `payment.succeeded` です。`value` は `amount` や
+見えたことだけを示し、確定したことは示しません。送金は再編成（reorg）で消えることがあります。
+額が加盟店のものになったことを示すのは `payment.succeeded` です。`value` は `amount` や
 `received` と同じ単位ではありません。項目の意味と単位の規則は [api.ja.md](api.ja.md) に
 あります。
 
@@ -101,7 +101,7 @@ POST /webhook_endpoints
 
 | パラメータ | 型 | 必須 | 説明 |
 |---|---|---|---|
-| `url` | string | 必須 | `https` だけ。2048 バイトまで。ユーザー名とパスワードは入れられません。suco Pay が動いているネットワークの内側のアドレスに解決する URL は断ります |
+| `url` | string | 必須 | `https` だけ。2048 バイトまで。ユーザー名とパスワードは入れられません。suco Pay が動いているネットワークの内側のアドレスに解決する URL は拒否します |
 | `description` | string | 任意 | 自分のための覚え書き。200 バイトまで |
 | `events` | string の配列 | 任意 | 受ける種類。省くと、後から足される種類も含めて全部受けます |
 
@@ -120,15 +120,15 @@ Webhook エンドポイントは 8 つまでです。
 | `GET /webhook_endpoints` | read-only | 一覧。署名シークレットは入らない |
 | `GET /webhook_endpoints/{id}` | read-only | 1 つ読む |
 | `PATCH /webhook_endpoints/{id}` | read-write | `url`、`description`、`events`、`enabled` を変える |
-| `POST /webhook_endpoints/{id}/secret` | read-write | 署名シークレットを更新する。古い署名シークレットはあと 24 時間、検証に通る |
+| `POST /webhook_endpoints/{id}/secret` | read-write | 署名シークレットを更新する。古い署名シークレットはあと 24 時間、検証に使える |
 | `DELETE /webhook_endpoints/{id}` | read-write | 消す。待っていた通知は `failed` になる |
-| `POST /webhook_endpoints/{id}/test` | read-write | `endpoint.test` を 1 つ送る。`202` で通知の id を返す。前の test が pending の間は次を断る |
+| `POST /webhook_endpoints/{id}/test` | read-write | `endpoint.test` を 1 つ送る。`202` で通知の id を返す。前の test が pending の間は次を拒否する |
 | `GET /webhook_endpoints/{id}/deliveries` | read-only | 新しい順に 100 件の通知と、それぞれの全部の試行 |
 | `POST /webhook_endpoints/{id}/deliveries/{delivery}/resend` | read-write | delivered か failed の通知をもう 1 度送る。`202` |
 
 署名シークレットを更新してから 24 時間の間は、`webhook-signature` に 2 つの署名が空白で
 区切って並びます。古い署名シークレットによる署名と、新しい署名シークレットによる署名です。
-ライブラリはどちらか一方で検証に通します。
+ライブラリは、どちらか一方の署名が合えば検証に成功します。
 
 ## 再送
 
@@ -205,7 +205,7 @@ delivered と failed の通知は 30 日残ります。
 
 `POST /webhook_endpoints/{id}/deliveries/{delivery}/resend` は、delivered か failed の通知を
 もう 1 度送ります。同じ `webhook-id` で、新しい `webhook-timestamp` と署名を付け、試行の数は
-続きから数えます。落ちていた受信側が戻ったときや、`2xx` を返した後に受け取った通知を失った
+続きから数えます。止まっていた受信側が戻ったときや、`2xx` を返した後に受け取った通知を失った
 ときに使います。受け取った `webhook-id` を覚えている受信側は、受け取り済みの通知の再送を
 捨てます。pending の通知は再送できません。送る途中だからです。
 
