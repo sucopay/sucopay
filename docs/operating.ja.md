@@ -17,13 +17,13 @@ English: [operating.md](operating.md)
 
 ```json
 {"status":"ok","database":"reachable","credentials":"read-write",
- "networks":{"polygon":"observing"},"assets":{"jpyc":"unchanged"},
+ "networks":{"polygon":"observing"},"assets":{"jpyc":"unchanged"},"paused":{"jpyc":false},
  "finality":{"polygon":"deciding"},"webhooks":"delivering"}
 ```
 
 データベースを設定していないインスタンスはチェーンを読まず、確定も判定せず、Webhook も送ら
-ないので、`networks` と `assets` と `finality` と `webhooks` は出ません。資格情報の store が
-無ければ `credentials` も出ません。
+ないので、`networks` と `assets` と `paused` と `finality` と `webhooks` は出ません。資格情報の
+store が無ければ `credentials` も出ません。
 
 network ごとに 1 語です。
 
@@ -58,6 +58,15 @@ network ごとに 1 語です。
 
 asset ごとにも 1 語で、`unchanged` か `changed` です。そのチェーンが asset に対して動かすコードが、
 インスタンスの起動時のものと違えば `changed` になります。proxy の差し替えがこれにあたります。
+
+`paused` は asset ごとに、発行者がその asset の送金を全部止めているかを、契約が答えたとおりに
+言います。1 分に 1 度読みます。欄に無い asset は、この 2 分のあいだに読めなかったものです。
+契約が答えなかったのか、provider が呼び出しを運ばなかったのか、このインスタンスが読んでいない
+のかは分けません。無いことは「止まっていない」ではありません。止まっている asset があっても
+`status` は変わりません。API は動いていて、動けるのは発行者だけだからです。
+
+probe は公開です。`paused` は発行者の操作で動くので、見ている人はこの配備がどの契約の状態を
+追っているかを知れます。asset の名前が既にそれを言っています。
 
 `status` は、データベースに届かないとき、または設定した network の全部が `unreachable`、
 `stalled`、`chain-mismatch`、`no-finalized` のどれかであるときに `unavailable` になり、応答は
@@ -132,11 +141,32 @@ serve のプロセスの中にいるので、報告は worker に訊く代わり
 読めなかった network は、数字の代わりにその旨を出します。プロバイダ自身の code と文言が入り、
 長さは切られていて、エンドポイントの断片は入りません。
 
+asset の行は、発行者が止めていれば `paused`、契約が答えなければ `paused not read` を足します。
+止まっていない asset には何も足しません。配備の唯一の account がその asset を受け付けていれば、
+その宛先への送金を契約が拒むかを訊き、拒めば `paid to 0x…, which is blocklisted, the provider
+says` と書きます。読めなかった network の宛先は訊かず、account が 2 つあるデータベースでも
+訊きません。名指しは実装していません。訊くときは宛先のアドレスが network の endpoint に渡ります。
+運用者の own の node か、others の最初の 1 つです。
+
 チェーンは、起動時と同じアダプタで読みます。ここで出るものが、インスタンスが実際に出会うもの
 です。何も書きません。
 
 データベースの無い配備でも、schema を当てていない配備でも、チェーンは読みます。言えなくなるのは
 それぞれをどこまで読んだかだけです。
+
+## suco asset accept
+
+```bash
+suco asset accept <name> <address>
+```
+
+account がその名前の asset を、そのアドレスへの支払いとして受け付けることを記録します。先に
+asset の契約に 2 つ訊きます。何に対して署名するかと、そのアドレスへの送金を拒むかです。前者は
+支払者のウォレットが同じものに署名するため、後者は発行者が account ごとに止められるためです。
+署名するものが文書の値と違えば登録を断り、契約がそのアドレスを拒んでも断ります。どちらかの
+問いに答えが無くても断ります。問いを運ばない provider を根拠に、アドレスを登録しません。訊く
+先は network の endpoint で、運用者の own の node か others の最初の 1 つです。
+アドレスはその問いの中で provider に渡ります。支払いが 1 つ届けば公開になるものです。
 
 ## 配備の内側の webhook の宛先を許す
 

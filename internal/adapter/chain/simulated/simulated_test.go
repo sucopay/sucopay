@@ -396,3 +396,48 @@ func TestUpgrade_IsReportedByTheScanOverTheBlockItHappenedIn(t *testing.T) {
 		t.Errorf("a scan of another asset says %v changed", nobody.Changed)
 	}
 }
+
+// An issuer stops a token, or one account of it, and a simulated issuer stops
+// nothing until a test says so. The flags are the asset's own: pausing one
+// asset says nothing about another, which is what makes a field that answers
+// per asset worth having.
+func TestPausedAndBlocklisted_AreFalseUntilAnIssuerSaysOtherwiseForThatAsset(t *testing.T) {
+	t.Parallel()
+	c := simulated.New()
+	ctx := context.Background()
+	for _, asset := range []string{"jpyc", "other"} {
+		if paused, err := c.Paused(ctx, asset); err != nil || paused {
+			t.Errorf("Paused(%s) = %v, %v before anything was paused", asset, paused, err)
+		}
+		if listed, err := c.Blocklisted(ctx, asset, "0xab"); err != nil || listed {
+			t.Errorf("Blocklisted(%s, 0xab) = %v, %v before anything was listed", asset, listed, err)
+		}
+	}
+
+	c.Pause("jpyc")
+	c.Blocklist("jpyc", "0xab")
+
+	if paused, _ := c.Paused(ctx, "jpyc"); !paused {
+		t.Error("jpyc is not paused after Pause")
+	}
+	if paused, _ := c.Paused(ctx, "other"); paused {
+		t.Error("pausing jpyc paused another asset")
+	}
+	if listed, _ := c.Blocklisted(ctx, "jpyc", "0xab"); !listed {
+		t.Error("0xab is not listed after Blocklist")
+	}
+	if listed, _ := c.Blocklisted(ctx, "jpyc", "0xcd"); listed {
+		t.Error("listing 0xab listed another account")
+	}
+	if listed, _ := c.Blocklisted(ctx, "other", "0xab"); listed {
+		t.Error("listing 0xab on jpyc listed it on another asset")
+	}
+	c.Unpause("jpyc")
+	if paused, _ := c.Paused(ctx, "jpyc"); paused {
+		t.Error("jpyc is still paused after Unpause")
+	}
+	c.Fail(errors.New("the provider is away"))
+	if _, err := c.Paused(ctx, "jpyc"); err == nil {
+		t.Error("a failure left for the next call was not delivered to Paused")
+	}
+}

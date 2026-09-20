@@ -17,6 +17,12 @@ import (
 // checked here: an adapter decides what an address on its network looks like.
 const theAddress = "0x00000000000000000000000000000000000000aa"
 
+// What a contract answers for a flag that is not set, and for one that is.
+const (
+	clear = "0x0000000000000000000000000000000000000000000000000000000000000000"
+	set   = "0x0000000000000000000000000000000000000000000000000000000000000001"
+)
+
 // accepting is a deployment whose document lists jpyc on a simulated network,
 // and after it whatever more is written into the assets section.
 func accepting(t *testing.T, more string) deployment {
@@ -229,7 +235,7 @@ func TestRun_AssetAcceptStoresAnAddressTheWayTheChainWritesIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	endpoint := answering(t, map[string]any{"eth_call": "0x" + hex.EncodeToString(onChain[:])})
+	endpoint := answering(t, map[string]any{"eth_call": "0x" + hex.EncodeToString(onChain[:]), "eth_call 0x8e204c43": clear})
 	document(t, evmDocument(endpoint, 137, "    eip712:\n      name: JPY Coin\n      version: \"1\"\n"))
 
 	if _, _, err := runArgs(t, "asset", "accept", "jpyc", theChecksummed); err != nil {
@@ -278,7 +284,7 @@ func TestRun_AssetAcceptChecksTheDomainAgainstTheContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	endpoint := answering(t, map[string]any{"eth_call": "0x" + hex.EncodeToString(onChain[:])})
+	endpoint := answering(t, map[string]any{"eth_call": "0x" + hex.EncodeToString(onChain[:]), "eth_call 0x8e204c43": clear})
 	given := "    eip712:\n      name: JPY Coin\n      version: \"1\"\n"
 
 	document(t, evmDocument(endpoint, 137, given))
@@ -299,5 +305,48 @@ func TestRun_AssetAcceptChecksTheDomainAgainstTheContract(t *testing.T) {
 	}
 	if _, ok, err := accepted.NewPostgres(d.pool.Conns()).Destination(t.Context(), theAccount(t, d), jpyc(t)); err != nil || !ok {
 		t.Errorf("the first, accepted registration is gone: %t, %v", ok, err)
+	}
+}
+
+// An address the contract refuses transfers to is one nothing paid would
+// arrive at, and it is refused at registration rather than at the first
+// payment that goes nowhere. A contract that will not say is refused too: the
+// answer is the contract's to give, and an address is not registered on the
+// strength of a provider that would not carry it.
+func TestRun_AssetAcceptRefusesAnAddressTheContractRefusesTransfersTo(t *testing.T) {
+	onChain, err := evm.Domain("JPY Coin", "1", 137, "0x0000000000000000000000000000000000000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	given := "    eip712:\n      name: JPY Coin\n      version: \"1\"\n"
+	for name, c := range map[string]struct {
+		answer any
+		want   string
+	}{
+		"one the contract refuses":                    {set, "refuses transfers to " + theAddress},
+		"one the contract will not say about":         {"0x", "answered nothing"},
+		"one the provider answers something else for": {nil, "asking whether"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := deployed(t)
+			answers := map[string]any{"eth_call": "0x" + hex.EncodeToString(onChain[:])}
+			if c.answer != nil {
+				answers["eth_call 0x8e204c43"] = c.answer
+			} else {
+				// Not a word at all, which is what a provider that has lost the
+				// shape of the call answers with.
+				answers["eth_call 0x8e204c43"] = map[string]any{"not": "a word"}
+			}
+			document(t, evmDocument(answering(t, answers), 137, given))
+
+			_, _, err := runArgs(t, "asset", "accept", "jpyc", theAddress)
+
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Errorf("err = %v, want a refusal saying %q", err, c.want)
+			}
+			if n := rowsAccepted(t, d); n != 0 {
+				t.Errorf("%d addresses were accepted, want none", n)
+			}
+		})
 	}
 }

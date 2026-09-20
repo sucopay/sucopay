@@ -1835,3 +1835,102 @@ func TestRun_TakesOverANetworkWhoseLeaseHasLapsed(t *testing.T) {
 		t.Errorf("the rounds wrote %+v", rows)
 	}
 }
+
+// pausing is a chain whose issuer has stopped some assets, and whose contract
+// does not answer for an asset the table leaves out.
+type pausing struct {
+	chain.Chain
+	flags map[string]bool
+}
+
+func (p *pausing) Paused(_ context.Context, asset string) (bool, error) {
+	paused, answered := p.flags[asset]
+	if !answered {
+		return false, errors.New("pausing: the contract did not answer")
+	}
+	return paused, nil
+}
+
+// A contract that will not say whether it is paused is a line of the report
+// missing, and not the report missing: what the probe has read of the network
+// is worth as much without that line.
+func TestProbe_ReportsPausedForTheAssetsThatAnsweredAndTheRestRegardless(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	w.observer.network.Chain = &pausing{Chain: w.chain, flags: map[string]bool{w.asset.Reference(): true}}
+
+	report, err := Probe(t.Context(), w.observer.network, w.observer.cursors)
+
+	if err != nil {
+		t.Fatalf("Probe failed over an asset that would not say whether it is paused: %v", err)
+	}
+	if want := map[string]bool{"jpyc": true}; !reflect.DeepEqual(report.Paused, want) {
+		t.Errorf("paused = %v, want %v", report.Paused, want)
+	}
+	if len(report.Behind) != 2 {
+		t.Errorf("the report says what is behind %d assets, want both", len(report.Behind))
+	}
+}
+
+// Whether an issuer has stopped a token is read once a minute with the code
+// behind the token, and each asset on its own: one whose contract will not
+// say is taken out of the answer, and the others are read all the same.
+func TestRun_ReadsWhetherEachAssetIsPausedOnceAMinuteEachOnItsOwn(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	w.observer.start(t.Context())
+	w.observer.round(t.Context())
+	if want := map[string]bool{"jpyc": false, "other": false}; !reflect.DeepEqual(w.observer.Paused(), want) {
+		t.Fatalf("paused = %v after starting, want %v", w.observer.Paused(), want)
+	}
+
+	w.chain.Pause(w.asset.Reference())
+	w.observer.round(t.Context())
+	if w.observer.Paused()["jpyc"] {
+		t.Error("the pause was read before the minute was up")
+	}
+	w.observer.now = func() time.Time { return time.Now().Add(ReadImplementationEvery) }
+	w.observer.round(t.Context())
+	if want := map[string]bool{"jpyc": true, "other": false}; !reflect.DeepEqual(w.observer.Paused(), want) {
+		t.Errorf("paused = %v a minute on, want %v", w.observer.Paused(), want)
+	}
+
+	// The first asset by name stops answering, and the one after it changes:
+	// the change is read only if the failure did not end the reading.
+	answering := &pausing{Chain: w.chain, flags: map[string]bool{w.other.Reference(): true}}
+	w.observer.network.Chain = answering
+	w.observer.now = func() time.Time { return time.Now().Add(2 * ReadImplementationEvery) }
+	w.observer.round(t.Context())
+	if want := map[string]bool{"other": true}; !reflect.DeepEqual(w.observer.Paused(), want) {
+		t.Errorf("paused = %v with the first contract not answering, want %v", w.observer.Paused(), want)
+	}
+	answering.flags[w.other.Reference()] = false
+	w.observer.now = func() time.Time { return time.Now().Add(3 * ReadImplementationEvery) }
+	w.observer.round(t.Context())
+	if want := map[string]bool{"other": false}; !reflect.DeepEqual(w.observer.Paused(), want) {
+		t.Errorf("paused = %v after the second asset was unpaused, want %v", w.observer.Paused(), want)
+	}
+}
+
+// An instance that has stopped reading says nothing about whether a token is
+// paused, rather than what it read once. The one that never held the lease
+// read it at its start and never again, and two minutes on that reading is
+// not an answer.
+func TestPaused_SaysNothingOfAnAssetNotReadForTwoMinutes(t *testing.T) {
+	t.Parallel()
+	w := watch(t)
+	w.observer.start(t.Context())
+	if len(w.observer.Paused()) != 2 {
+		t.Fatalf("paused = %v after starting, want both assets", w.observer.Paused())
+	}
+
+	w.observer.now = func() time.Time { return time.Now().Add(HoldPausedFor + time.Second) }
+
+	if got := w.observer.Paused(); len(got) != 0 {
+		t.Errorf("paused = %v two minutes on with nothing read since, want nothing", got)
+	}
+	w.observer.round(t.Context())
+	if got := w.observer.Paused(); len(got) != 2 {
+		t.Errorf("paused = %v after reading again, want both assets", got)
+	}
+}

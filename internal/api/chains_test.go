@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -18,6 +19,7 @@ import (
 type words struct {
 	networks map[string]string
 	assets   map[string]string
+	paused   map[string]bool
 	asked    atomic.Int64
 }
 
@@ -25,6 +27,8 @@ func (w *words) Words() (networks, assets map[string]string) {
 	w.asked.Add(1)
 	return w.networks, w.assets
 }
+
+func (w *words) Paused() map[string]bool { return w.paused }
 
 // reading is a deployment reading one network, for the tests that are about
 // something else.
@@ -67,6 +71,7 @@ type answered struct {
 	Credentials string            `json:"credentials"`
 	Networks    map[string]string `json:"networks"`
 	Assets      map[string]string `json:"assets"`
+	Paused      map[string]bool   `json:"paused"`
 	Finality    map[string]string `json:"finality"`
 	Webhooks    string            `json:"webhooks"`
 }
@@ -115,7 +120,7 @@ func TestReadyz_SaysNothingOfNetworksWhereNothingReadsOne(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("/readyz = %d, want %d", rec.Code, http.StatusOK)
 	}
-	for _, key := range []string{"networks", "assets"} {
+	for _, key := range []string{"networks", "assets", "paused"} {
 		if strings.Contains(rec.Body.String(), key) {
 			t.Errorf("body = %s, want nothing said of %s", rec.Body, key)
 		}
@@ -251,5 +256,40 @@ func TestReadyz_SaysWhatTheWebhookDeliveringHasComeToAndNothingWhereThereIsNone(
 	}
 	if rec := probe(nil); strings.Contains(rec.Body.String(), "webhooks") {
 		t.Errorf("body = %s, want no webhooks where nothing delivers", rec.Body)
+	}
+}
+
+// An issuer stopping a token is a fact about the token, and one the
+// deployment can do nothing about: the API is up, payments are recorded, and
+// the funds that arrive are the merchant's. So the probe says which assets
+// are paused, and the deployment stays in service while it does.
+func TestReady_SaysWhichAssetsArePausedAndStaysInServiceWhileOneIs(t *testing.T) {
+	t.Parallel()
+	chains := reading()
+	chains.paused = map[string]bool{"jpyc": true, "other": false}
+
+	rec := probing(t, chains)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("answered %d, want 200: a paused token does not take a deployment out", rec.Code)
+	}
+	body := answer(t, rec)
+	if body.Status != "ok" {
+		t.Errorf("status = %q, want ok", body.Status)
+	}
+	if want := map[string]bool{"jpyc": true, "other": false}; !reflect.DeepEqual(body.Paused, want) {
+		t.Errorf("paused = %v, want %v", body.Paused, want)
+	}
+}
+
+// An asset nothing has read lately is left out, and a deployment where that
+// is every asset has no field at all: a field a reader finds is one with
+// something in it.
+func TestReady_LeavesPausedOutWhereNoAssetWasRead(t *testing.T) {
+	t.Parallel()
+	rec := probing(t, reading())
+
+	if strings.Contains(rec.Body.String(), "paused") {
+		t.Errorf("the body carries a paused field with nothing to say:\n%s", rec.Body)
 	}
 }
