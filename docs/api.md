@@ -7,6 +7,20 @@ and the routes that manage where suco tells your server about all three.
 
 It is written for the developer calling it, and assumes a credential `suco credential new` wrote.
 
+## Terms
+
+| Term | Meaning |
+|---|---|
+| payment | The record of one receipt of money, which you create over the API. It has an `id` and a `status` |
+| credential | The token sent in `Authorization` on every call to a route that asks for one. `suco credential new` writes one |
+| payment page | The page a payer pays on, served by suco. Its URL is the payment's `checkout_url` |
+| attempt | What the payment page issues for the payer to sign, with an id. The payer's wallet signs the EIP-3009 `TransferWithAuthorization` inside it |
+| `destination` | The wallet address a payment is paid to. `suco asset accept` records one per asset |
+| transfer | A movement of the asset on the chain, as suco reads it |
+| settled | The chain will no longer take the transfer back |
+| account | What credentials, payments, refunds and webhook endpoints belong to. One per instance |
+| asset | One token on one network. `suco.yaml` gives it a name |
+
 ## Payment flow
 
 Every path below is relative to the `base_url` `suco.yaml` gives under `listen`, which is
