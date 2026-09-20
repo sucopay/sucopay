@@ -18,7 +18,7 @@ It is written for the developer integrating it. It assumes you can already open 
 | signing data | The typed data an attempt carries, which the payer's wallet signs |
 | `nonce` | The one value in the signing data. It can be spent once |
 | `return_url` | Where the payment page sends the payer when they are done, and when they cannot pay |
-| module | The script and style that talk to a wallet. It is not released |
+| module | The script and style that talk to a wallet |
 
 ## Payment flow on the page
 

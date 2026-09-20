@@ -2,7 +2,7 @@
 
 English: [checkout.md](checkout.md)
 
-このページは、支払者が払う支払いページ suco Checkout の仕組みと、組み込みに要ることを
+このページは、支払者が払う支払いページ suco Checkout の仕組みと、組み込みに必要なことを
 説明します。
 
 組み込む加盟店の開発者向けです。[api.ja.md](api.ja.md) のとおりに支払い（`payment`）を作れる
@@ -13,12 +13,12 @@ English: [checkout.md](checkout.md)
 | 語 | 意味 |
 |---|---|
 | 支払いページ（`checkout_url`） | 支払者が払うページ。suco が配信する |
-| token | `checkout_url` に入る文字列。持っている人を支払いページに通す |
+| token | `checkout_url` に入る文字列。支払いページを開けるのは token を持つ人だけ |
 | 支払い試行（`attempt`） | 支払者が払おうとする 1 回。支払いページが発行する |
 | 署名データ | 支払い試行が持つ typed data。支払者のウォレットが署名する |
 | `nonce` | 署名データに 1 つ入る値。1 回だけ使える |
 | 戻り先（`return_url`） | 支払者が払い終えたときと払えないときに、支払いページが支払者を送る URL |
-| module | ウォレットとやりとりする script と style。まだ公開していない |
+| module | ウォレットとやりとりする script と style |
 
 ## 支払いページでの流れ
 
@@ -33,7 +33,7 @@ English: [checkout.md](checkout.md)
    状態は [api.ja.md](api.ja.md) にあります。
 7. `return_url` があれば、支払いページが支払者を戻り先へ送ります。
 
-支払者には、支払いの `network` で、鍵を持ち typed data に署名できるウォレットが要ります。
+支払者には、支払いの `network` で、鍵を持ち typed data に署名できるウォレットが必要です。
 ウォレットが正しい `network` にいるか、残高が足りるか、送金を許されているかは、支払いページが
 ウォレットから読みます。suco は読みません。
 
@@ -49,8 +49,8 @@ English: [checkout.md](checkout.md)
 
 `POST /payments` のレスポンスに `checkout_url` があり、`GET /payments/{id}` も同じ
 `checkout_url` を返します。`checkout_url` へ支払者を送ってください。リダイレクトでもリンクでも
-構いません。`checkout_url` は `<listen.base_url>/checkout/<token>` で、token が支払者を
-通します。token を知らない人は支払いページを読めず、資格情報は求めません。
+構いません。`checkout_url` は `<listen.base_url>/checkout/<token>` で、支払いページを開けるのは
+token を持つ人です。token を知らない人は支払いページを読めず、資格情報は求めません。
 
 1 つの支払いが持つ `checkout_url` は 1 つで、suco は作り直しません。失くしたら
 `GET /payments/{id}` で読み直してください。インスタンスが支払いページを配信する前に作った
@@ -61,17 +61,17 @@ English: [checkout.md](checkout.md)
 支払いページが支払者を `return_url` へ送ります。払えないのは、期限の後と、支払いページが
 対応しないウォレットのときです。`return_url` は任意です。`https` の URL で、2048 バイトまで、
 username と password を持ちません。`http://localhost` と `http://127.0.0.1` も開発のために
-通します。
+受け付けます。
 
-suco は `return_url` へ何も送らず、何も付け足しません。支払者が払ったかどうかを言うのは
+suco は `return_url` へ何も送らず、何も付け足しません。支払者が払ったかどうかを示すのは
 Webhook と `GET /payments/{id}` です。支払者が戻り先に来たことではなく、加盟店のサーバーが
 読んだ支払いで判断してください。
 
 ## 支払いページの API エンドポイント
 
-`/checkout/` の下の API エンドポイントは、パスの中の token が呼ぶ人を通します。資格情報は
-求めません。レスポンスに付く header と Content-Security-Policy は [api.ja.md](api.ja.md) に
-あります。`/checkout-assets/` の下の script と style は token を取らず、付くのは
+`/checkout/` の下の API エンドポイントは、パスの中の token を持つ人からの呼び出しを受け付けます。
+資格情報は求めません。レスポンスに付く header と Content-Security-Policy は [api.ja.md](api.ja.md)
+にあります。`/checkout-assets/` の下の script と style は token を取らず、付くのは
 `X-Content-Type-Options: nosniff` だけです。
 
 | パス | 説明 |
@@ -173,7 +173,7 @@ Webhook と `GET /payments/{id}` です。支払者が戻り先に来たこと�
 
 支払者が署名する `nonce` は 1 回だけ使えます。ウォレットが `nonce` を、届かなかった取引に
 使ってしまったとき、支払いページは新しい支払い試行を求めます。求められるのは支払いごとに
-1 回です。支払いページは、2 回目が要る支払者を加盟店へ戻します。
+1 回です。支払いページは、2 回目が必要な支払者を加盟店へ戻します。
 
 ## 期限
 
@@ -190,8 +190,8 @@ Webhook と `GET /payments/{id}` です。支払者が戻り先に来たこと�
 ## セキュリティ
 
 ウォレットとやりとりする script と style は別の module で、まだ公開していません。公開するまで、
-支払いページは支払いを見せるだけで、支払いを受け付けません。module の無いインスタンスは素の
-支払いページを配信します。素の支払いページが見せるのは、加盟店の名前、金額、期限、状態、
+支払いページは支払いを見せるだけで、支払いを受け付けません。module の無いインスタンスは標準の
+支払いページを配信します。標準の支払いページが見せるのは、加盟店の名前、金額、期限、状態、
 戻り先です。module が呼ぶ API エンドポイントは今でも配信しています。
 
 支払いページは iframe の中では開きません。ページとして開いてください。

@@ -19,7 +19,7 @@ read it back, as [api.md](api.md) describes.
 | token | The string in `refund_url`. Whoever has it is admitted to the page |
 | what is left | What a payment can still be refunded, which is `received` less `refunded` |
 | `nonce` | The one value in the signing data. The asset honours it once |
-| module | The script and style that talk to a wallet. It is not released |
+| module | The script and style that talk to a wallet |
 
 ## Refund flow on the page
 

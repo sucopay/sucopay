@@ -120,7 +120,7 @@ export LC_ALL=C.UTF-8
 if ! printf 'サーバが\n' | grep -qP 'サーバ(?!ー)'; then
   note "grep cannot read UTF-8 under this locale, so the documents were not checked"
 fi
-forbidden='印字(?!可能)|訊|配備|宛先|経路|要求|応答|契約|配送|周(?=[がをはにのとでも、。]|$)|[0-9] ?周|(サーバ|ユーザ|インタフェース|アダプタ|エクスプローラ|プロバイダ)(?!ー)|(?<![A-Za-z/._])(Payment|Refund)s?(?![A-Za-z_])|(?<!API )(?<!RPC )(?<!Webhook )(?<![A-Za-z])エンドポイント'
+forbidden='印字(?!可能)|訊|配備|宛先|経路|要求|応答|契約|配送|要り|要る|断(り|る|っ|れ)|名指|押さえ|落ち(た|る|て|れ)|控え|素の|周(?=[がをはにのとでも、。]|$)|[0-9] ?周|(サーバ|ユーザ|インタフェース|アダプタ|エクスプローラ|プロバイダ)(?!ー)|(?<![A-Za-z/._])(Payment|Refund)s?(?![A-Za-z_])|(?<!API )(?<!RPC )(?<!Webhook )(?<![A-Za-z])エンドポイント'
 # A sentence that opens with a demonstrative points at the sentence before it,
 # and a thing named by a verb and もの has no name. Both are ruled out by the
 # sentence rules in WRITING-STYLE.ja.md; the lead's このページは is the one

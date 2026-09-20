@@ -24,10 +24,7 @@ suco Pay is software you run on your own infrastructure. It holds no keys and ch
 A payment goes from the customer's wallet to yours with nothing in between. suco Pay watches the
 chain and tells you it arrived.
 
-> **Pre-alpha.** A transfer is seen, matched, recorded and settled, and a payment reaches
-> `succeeded`. That path has run end to end against a chain inside the process, and step by
-> step against Polygon on one real payment. [ROADMAP.md](ROADMAP.md) says what works today and
-> what does not.
+> **Pre-alpha.** What works today is under *Where things stand*, below.
 
 ## Getting started
 
@@ -103,6 +100,12 @@ and refuses an address the contract refuses. [docs/operating.md](docs/operating.
 
 Your server opens payments and reads them back over the API. `suco serve` reads the chain round
 after round and records the transfers that pay them.
+
+## Where things stand
+
+A transfer is seen, matched, recorded and settled, and a payment reaches `succeeded`. That
+path has run end to end against a chain inside the process, and step by step against Polygon
+on one real payment. [ROADMAP.md](ROADMAP.md) says what works today and what does not.
 
 ## Documentation
 
