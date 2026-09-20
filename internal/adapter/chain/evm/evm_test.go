@@ -95,6 +95,13 @@ func answered(result string) string {
 	return `{"jsonrpc":"2.0","id":1,"result":` + result + `}`
 }
 
+// failedWith is a provider's answer carrying an error with data in it, which
+// is where a contract's revert carries its reason. The data is written as
+// JSON.
+func failedWith(code int, message, data string) string {
+	return fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"error":{"code":%d,"message":%q,"data":%s}}`, code, message, data)
+}
+
 // failed is a provider's answer carrying an error of its own.
 func failed(code int, message string) string {
 	return fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"error":{"code":%d,"message":%q}}`, code, message)

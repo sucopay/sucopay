@@ -445,3 +445,42 @@ func TestCall_RefusesACertificateNobodyIssued(t *testing.T) {
 		t.Fatal("a certificate nobody issued was accepted")
 	}
 }
+
+// A revert with nothing to say is told apart only on eth_call, the one method
+// a contract answers: on any other, a 400 stays a span to narrow whatever
+// words come with it, and on eth_call a 400 is never one, a call to a
+// contract asking for no span. And a body that is not JSON under a failing
+// status is a refusal with no error in it, which the telling apart has to
+// survive.
+func TestCall_TellsABareRevertApartOnlyForACallToAContract(t *testing.T) {
+	t.Parallel()
+	for name, c := range map[string]struct {
+		method   string
+		status   int
+		body     string
+		reverted bool
+		wide     bool
+	}{
+		"a contract's revert under 400":    {"eth_call", http.StatusBadRequest, failed(3, "execution reverted"), true, false},
+		"a contract's revert under 200":    {"eth_call", http.StatusOK, failed(3, "execution reverted"), true, false},
+		"a reason for it under 400":        {"eth_call", http.StatusBadRequest, failed(3, "execution reverted: Pausable: paused"), false, false},
+		"logs refused with the same words": {"eth_getLogs", http.StatusBadRequest, failed(3, "execution reverted"), false, true},
+		"a body that is not JSON":          {"eth_call", http.StatusBadGateway, "<html>", false, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var result json.RawMessage
+			err := answering(t, c.status, c.body, nil).call(t.Context(), c.method, nil, &result)
+
+			if err == nil {
+				t.Fatal("the call went through")
+			}
+			if got := errors.Is(err, errReverted); got != c.reverted {
+				t.Errorf("reverted = %v, want %v: %v", got, c.reverted, err)
+			}
+			if got := errors.Is(err, chain.ErrTooWide); got != c.wide {
+				t.Errorf("too wide = %v, want %v: %v", got, c.wide, err)
+			}
+		})
+	}
+}

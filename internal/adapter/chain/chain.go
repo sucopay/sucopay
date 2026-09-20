@@ -11,6 +11,12 @@ import (
 // is one where there is nothing to check a document's domain against.
 var ErrNoDomain = errors.New("chain: the asset signs under no domain")
 
+// ErrNoSeparator is a contract with no DOMAIN_SEPARATOR() to answer, though
+// the asset may still sign under a domain. What it signs under is then
+// checked piece by piece, as far as the contract answers. Different from
+// [ErrNoDomain], which is a chain with no domain to speak of.
+var ErrNoSeparator = errors.New("chain: the contract answers no domain separator")
+
 // Chain is what a network is read through. An adapter implements it for one
 // kind of chain.
 //
@@ -56,8 +62,13 @@ type Chain interface {
 	// DomainSeparator is what an asset's contract signs under, as EIP-712
 	// names it, for checking that the name and version a document gives
 	// are the contract's. A chain whose assets sign under nothing answers
-	// [ErrNoDomain].
+	// [ErrNoDomain]. A contract with no function to answer it with answers
+	// [ErrNoSeparator], and is checked by what it does answer.
 	DomainSeparator(ctx context.Context, asset string) ([32]byte, error)
+	// Name is what the asset's contract calls itself, which is what ERC-20
+	// has it answer. Where a contract answers no separator, this is what a
+	// document's domain name is held against.
+	Name(ctx context.Context, asset string) (string, error)
 	// Paused says whether the asset's contract has stopped every transfer,
 	// which an issuer does to the whole token at once.
 	//
