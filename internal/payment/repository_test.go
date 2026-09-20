@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"reflect"
 	"slices"
@@ -30,7 +31,29 @@ const (
 // the tests that have to look at a row this package would not hand back.
 func store(t *testing.T) (*payment.Postgres, *pgxpool.Pool) {
 	t.Helper()
-	pool, err := postgres.Open(t.Context(), postgrestest.Fresh(t))
+	return opened(t, postgrestest.Fresh(t))
+}
+
+// storeHolding is store with a pool of conns connections, for a test that
+// holds more at once than the driver's default of max(4, NumCPU) gives it on
+// a 4-CPU runner: the call that would let the others go waits for a
+// connection behind them until they time out.
+func storeHolding(t *testing.T, conns int) (*payment.Postgres, *pgxpool.Pool) {
+	t.Helper()
+	u, err := url.Parse(postgrestest.Fresh(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := u.Query()
+	q.Set("pool_max_conns", strconv.Itoa(conns))
+	u.RawQuery = q.Encode()
+	return opened(t, u.String())
+}
+
+// opened is store over the database dsn names.
+func opened(t *testing.T, dsn string) (*payment.Postgres, *pgxpool.Pool) {
+	t.Helper()
+	pool, err := postgres.Open(t.Context(), dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
