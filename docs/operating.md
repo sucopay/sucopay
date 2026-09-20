@@ -20,7 +20,7 @@ It is written for the operator running the instance. It assumes `suco.yaml` is w
 | delivery | One change to a payment or a refund, sent once to one webhook endpoint |
 | round | One read of a chain |
 | RPC endpoint | The URL an instance calls to read a chain |
-| provider | The third party running an RPC endpoint |
+| provider | Whoever runs an RPC endpoint: your own node, or a third party |
 | cursor | How far a round has read a chain |
 | lease | What one instance holds to work a network. The others are spares |
 | worker | The loop inside an instance that runs the rounds |

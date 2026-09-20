@@ -14,7 +14,8 @@ It is written for the developer calling it, and assumes a credential `suco crede
 | payment | The record of one receipt of money, which you create over the API. It has an `id` and a `status` |
 | credential | The token sent in `Authorization` on every call to a route that asks for one. `suco credential new` writes one |
 | payment page | The page a payer pays on, served by suco. Its URL is the payment's `checkout_url` |
-| attempt | What the payment page issues for the payer to sign, with an id. The payer's wallet signs the EIP-3009 `TransferWithAuthorization` inside it |
+| attempt | What the payment page issues to the payer: signing data and an id |
+| signing data | The typed data inside an attempt, which the payer's wallet signs. It carries the EIP-3009 `TransferWithAuthorization` |
 | `destination` | The wallet address a payment is paid to. `suco asset accept` records one per asset |
 | transfer | A movement of the asset on the chain, as suco reads it |
 | settled | The chain will no longer take the transfer back |

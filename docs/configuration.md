@@ -19,7 +19,7 @@ document, and that you can run `suco doctor` against it.
 | asset | One token on one network. Its name is a key of `suco.yaml` |
 | round | One read of a chain |
 | RPC endpoint | The URL an instance calls to read a chain |
-| provider | The third party running an RPC endpoint |
+| provider | Whoever runs an RPC endpoint: your own node, or a third party |
 | transfer | A movement of an asset on the chain, as suco reads it |
 | settled | The chain will no longer take a transfer back |
 | cursor | How far a round has read a chain |

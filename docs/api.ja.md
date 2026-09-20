@@ -15,7 +15,8 @@ API を呼ぶ加盟店の開発者向けです。`suco credential new` が書い
 | 支払い（`payment`） | 加盟店が API で作る、受け取り 1 回分の記録。`id` と `status` を持つ |
 | 資格情報（`credential`） | 資格情報を求める API エンドポイントを呼ぶときに `Authorization` に載せるトークン。`suco credential new` が書く |
 | 支払いページ | 支払者が払うページ。suco が配信し、URL は支払いの `checkout_url` |
-| 支払い試行（`attempt`） | 支払いページが発行する、支払者が署名する typed data と、その id。支払者のウォレットは、typed data の中の EIP-3009 の `TransferWithAuthorization` に署名する |
+| 支払い試行（`attempt`） | 支払いページが支払者に発行する、署名データと id の組 |
+| 署名データ | 支払い試行が持つ typed data。支払者のウォレットが署名する。中身は EIP-3009 の `TransferWithAuthorization` |
 | 受取アドレス（`destination`） | 支払者が払う先のウォレットのアドレス。`suco asset accept` が資産ごとに記録する |
 | 送金（`transfer`） | チェーン上で資産が動いた記録。suco がチェーンから読む |
 | 確定 | チェーンが送金をもう取り消さないと分かった状態 |
@@ -35,8 +36,8 @@ API を呼ぶ加盟店の開発者向けです。`suco credential new` が書い
    なります。運用者が `suco payment await <id>` を実行しても同じです。支払いページの script を
    公開するまでは、`suco payment await` だけが支払者に署名する値を渡せます。未実装の機能は
    [ROADMAP.ja.md](../ROADMAP.ja.md) にあります。
-4. 支払者のウォレットが、支払い試行の typed data に署名し、取引を送ります。署名するのは、
-   ちょうどの金額を受取アドレスへ送る EIP-3009 の `TransferWithAuthorization` です。
+4. 支払者のウォレットが署名データに署名し、取引を送ります。署名データの中身は、ちょうどの
+   金額を受取アドレスへ送る EIP-3009 の `TransferWithAuthorization` です。
 5. suco がチェーンを読んで送金を見つけ、支払いの `transfer` に書きます。送金はまだ確定して
    いません。
 6. チェーンが送金を確定させると、支払いは `succeeded` になります。品物を渡すのは `succeeded`
@@ -378,7 +379,7 @@ CORS の header は付きません。呼ぶのはページ自身だけです。`
 
 ## 関連
 
-- [checkout.ja.md](checkout.ja.md): 支払いページと支払い試行
+- [checkout.ja.md](checkout.ja.md): 支払いページ、支払い試行、署名データ
 - [refunds.ja.md](refunds.ja.md): 返金、返金の状態、加盟店が署名する署名ページ
 - [webhooks.ja.md](webhooks.ja.md): suco が加盟店のサーバーに送る通知と、受信側の要件
 - [operating.ja.md](operating.ja.md): 運用者が実行するコマンドと、`suco doctor` の出力
