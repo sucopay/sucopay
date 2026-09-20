@@ -93,7 +93,7 @@ assets:
 ```bash
 ./suco credential new --read-write          # API の資格情報のファイルを書き出します
 ./suco asset accept jpyc 0xYourWalletHere   # jpyc の受取アドレス
-./suco payment await <id>                   # 支払いページができるまで、支払者が署名する値を出力します
+./suco payment await <id>                   # suco Checkout が払えるようになるまで、支払者が署名する値を出力します
 ```
 
 `asset accept` には、EIP-712 の typed data に署名できるウォレットを渡してください。返金は、
@@ -110,7 +110,7 @@ assets:
 |---|---|
 | [docs/api.ja.md](docs/api.ja.md) | 加盟店のサーバーが呼ぶ HTTP API（支払い、返金、Webhook エンドポイント） |
 | [docs/webhooks.ja.md](docs/webhooks.ja.md) | suco が加盟店のサーバーに送るものと、受信側がすること |
-| [docs/checkout.ja.md](docs/checkout.ja.md) | 支払者が払うページと、支払者をどこへ送るか、組み込み方 |
+| [docs/checkout.ja.md](docs/checkout.ja.md) | 支払者が払うページ suco Checkout。支払者をどこへ送るかと、組み込み方 |
 | [docs/refunds.ja.md](docs/refunds.ja.md) | 支払いを送り返すことと、加盟店が署名するページ |
 | [docs/configuration.ja.md](docs/configuration.ja.md) | `suco.yaml` の設定の全部 |
 | [docs/operating.ja.md](docs/operating.ja.md) | `/readyz`、`suco doctor`、止まったインスタンスの直し方 |

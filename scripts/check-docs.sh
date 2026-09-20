@@ -93,7 +93,7 @@ done
 #
 # Documents not rewritten to the glossary yet are skipped here, and leave this
 # list as each is rewritten.
-unwritten="docs/api.ja.md docs/checkout.ja.md docs/configuration.ja.md docs/operating.ja.md docs/refunds.ja.md README.ja.md"
+unwritten=""
 for doc in $unwritten; do
   [ -e "$doc" ] || note "$doc is listed as not rewritten yet, and does not exist"
 done

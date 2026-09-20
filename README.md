@@ -93,7 +93,7 @@ credential for the API and the wallet payments are paid to, and try a payment:
 ```bash
 ./suco credential new --read-write          # writes a token file for the API
 ./suco asset accept jpyc 0xYourWalletHere   # where a payment in jpyc is paid to
-./suco payment await <id>                   # prints what a payer signs, until the payment page takes payments
+./suco payment await <id>                   # prints what a payer signs, until suco Checkout takes payments
 ```
 
 Give `asset accept` a wallet that can sign EIP-712 typed data. Refunds are signed by the wallet
@@ -110,7 +110,7 @@ after round and records the transfers that pay them.
 |---|---|
 | [docs/api.md](docs/api.md) | The HTTP API your server calls: payments, refunds and webhook endpoints |
 | [docs/webhooks.md](docs/webhooks.md) | What suco sends your server, and what a receiver has to do |
-| [docs/checkout.md](docs/checkout.md) | The page a payer pays on, where to send a payer, and how to integrate it |
+| [docs/checkout.md](docs/checkout.md) | suco Checkout, the page a payer pays on: where to send a payer, and how to integrate it |
 | [docs/refunds.md](docs/refunds.md) | Sending a payment back, and the page you sign on |
 | [docs/configuration.md](docs/configuration.md) | Every setting in `suco.yaml` |
 | [docs/operating.md](docs/operating.md) | `/readyz`, `suco doctor`, and putting a stopped instance right |
