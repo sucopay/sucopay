@@ -2,16 +2,20 @@
 
 日本語: [operating.ja.md](operating.ja.md)
 
-What an instance says about itself, and the two commands for putting it right.
+What an instance says about itself, and the four commands for putting it right.
 
 ## /healthz and /readyz
 
-Neither asks for a credential. Both are read by whoever can reach the port, so neither carries a
-reason, a hostname, or anything of an endpoint.
+Neither route asks for a credential. Anyone who can reach the port can read them, so neither
+carries a reason, a hostname, or any part of an RPC endpoint.
 
-`GET /healthz` answers `200` as long as the process is running. It consults nothing: a liveness
-probe that failed because a database was unreachable would have an orchestrator restart an
-instance that is working, which does not bring the database back.
+### /healthz
+
+`GET /healthz` answers `200` while the process runs. It consults nothing. Point a liveness probe
+here and nowhere else: a probe that failed because the database was unreachable would have the
+orchestrator restart a working instance, which does not bring the database back.
+
+### /readyz
 
 `GET /readyz` answers whether the instance can serve.
 
@@ -21,82 +25,89 @@ instance that is working, which does not bring the database back.
  "finality":{"polygon":"deciding"},"webhooks":"delivering"}
 ```
 
-`networks`, `assets`, `paused`, `finality` and `webhooks` are left out by an instance configured
-without a database, which reads no chain, settles nothing and delivers nothing. `credentials` is
-left out where there is no store to ask.
-
-One word for each network:
-
-| | |
+| Field | Description |
 |---|---|
-| `observing` | A round finished within the last 60 seconds. Finishing is reading the finalised range and writing what it found; a failure ahead of finality does not count |
-| `no-cursor` | The chain answers and is the one the document names, and no round has finished yet |
-| `unreachable` | The last read of the head failed |
-| `stalled` | No round has finished for 60 seconds. A provider that has dropped the history the cursor sits in leaves a network here |
-| `chain-mismatch` | `eth_chainId` is not what the document names. Nothing is read or written |
-| `no-finalized` | The provider will not say which block is final. Nothing is read or written |
-| `finalized-changed` | The chain no longer holds the block the cursor sits on. Nothing moves until somebody puts the cursor where it does |
-| `finalized-behind` | The provider's final block is below the cursor. It is behind, and reading resumes when it catches up |
+| `status` | `ok` or `unavailable` |
+| `database` | `reachable`, `unreachable`, or `none configured` for an instance without a database |
+| `credentials` | What the store of credentials holds. Left out where there is no store |
+| `networks` | One word per network, below |
+| `assets` | One word per asset, below |
+| `paused` | Per asset, whether its issuer has stopped every transfer of it |
+| `finality` | One word per network, below |
+| `webhooks` | One word for the deployment, below |
 
-Sixty seconds is twice the term of the lease one instance holds on a network, which leaves whoever
-takes over time to finish a round of their own.
+An instance configured without a database reads no chain, settles nothing and delivers nothing,
+so it leaves out `networks`, `assets`, `paused`, `finality` and `webhooks`.
+
+`status` is `unavailable`, and the response `503`, when the database cannot be reached or when
+every configured network is `unreachable`, `stalled`, `chain-mismatch` or `no-finalized`. The
+other four words leave it `ok`: the API is running, and the one who can act is you or the
+provider. No word under `finality` or `webhooks` makes it `unavailable`. An instance that
+settles nothing still sees payments arrive and records them, and the funds are at the merchant's
+address either way.
+
+### networks
+
+| Word | Meaning | What to do |
+|---|---|---|
+| `observing` | A round finished within the last 60 seconds. Finishing is reading the finalised range and writing what it found. A failure ahead of finality does not count | Nothing |
+| `no-cursor` | The chain answers and is the one `suco.yaml` names, and no round has finished yet | Wait for the first round |
+| `unreachable` | The last read of the head failed | Check the provider and the RPC endpoint. `suco doctor` says what the instance reaches |
+| `stalled` | No round has finished for 60 seconds. A provider that has dropped the history the cursor sits in leaves a network here | Check the provider. If the history is gone, move the cursor with `suco network cursor`, below |
+| `chain-mismatch` | `eth_chainId` is not what `suco.yaml` names. Nothing is read or written | Fix the network's `chain_id` or its RPC endpoint |
+| `no-finalized` | The provider will not say which block is final. Nothing is read or written | Use a provider that answers for the `finalized` block |
+| `finalized-changed` | The chain no longer holds the block the cursor sits on. Nothing moves until somebody puts the cursor where it does | Move the cursor with `suco network cursor`, below |
+| `finalized-behind` | The provider's final block is below the cursor. The provider is behind, and reading resumes when it catches up | Wait, or switch to a provider that has caught up |
+
+The 60 seconds are twice the 30-second lease an instance holds on a network.
+
+While a network is not being read, no payment on it expires. That holds for `unreachable`,
+`stalled`, `chain-mismatch`, `no-finalized` and `finalized-changed` alike. Expiry follows the
+block time of the position read, not the clock. [configuration.md](configuration.md) describes
+the rule.
+
+### finality
 
 Reading a chain and deciding what settled are two things, and `finality` answers for the second.
-One word for each network:
 
-| | |
-|---|---|
-| `deciding` | A round asked the endpoints and wrote what their answers settled |
-| `no-round` | No round has finished since this instance started. Nothing is wrong; nothing has happened yet |
-| `waiting` | Another instance holds the network. This one is the spare, and the deployment is settling it |
-| `too-few` | Fewer endpoints answered the last round than agreement takes. What it asked about is left where it was until another answers, and `doctor` says how many answer |
-| `unreachable` | The last round did not finish. An endpoint that does not answer no longer ends a round, so what stopped it is on this side, which is the database, and `database` says so separately |
-| `stalled` | Rounds have stopped finishing. A round cannot end the loop it is in, so this is a worker stuck inside one |
+| Word | Meaning | What to do |
+|---|---|---|
+| `deciding` | A round asked the endpoints and wrote what their answers settled | Nothing |
+| `no-round` | No round has finished since this instance started. Nothing is wrong yet | Wait for the first round |
+| `waiting` | Another instance holds the network. This one is the spare, and the other is settling | Nothing |
+| `too-few` | Fewer endpoints answered the last round than agreement takes. What the round asked about stays where it was until another endpoint answers. `suco doctor` says how many answer | Add or repair endpoints under `rpc.others`. [configuration.md](configuration.md) says how many agreement takes |
+| `unreachable` | The last round did not finish. An endpoint that does not answer no longer ends a round, so what stopped it is the database, and `database` says so | See `database` |
+| `stalled` | Rounds have stopped finishing. A round cannot end the loop it is in, so this is a worker stuck inside one | Restart the instance |
 
-`deciding` and `too-few` stand for three rounds of `networks.<name>.finality.recheck`, so that one
-slow round does not take a working deployment out of its word.
+`deciding` and `too-few` hold for three rounds of `networks.<name>.finality.recheck`, so that one
+slow round does not change the word.
 
-One word for each asset, `unchanged` or `changed`. It is `changed` once the code the chain runs
-for that asset is not the code it ran when the instance started, which is what an upgrade of a
-proxy does.
+### assets and paused
 
-`paused` says, for each asset, whether its issuer has stopped every transfer of it, as the
-asset's contract answers. It is read once a minute. An asset missing from it was not read in the
-last two minutes, whichever way: the contract did not answer, the provider did not carry the
-call, or this instance has not been reading. Absence is never "not paused". A paused asset
+`assets` carries `unchanged` or `changed` for each asset. It is `changed` once the code the chain
+runs for that asset is not the code it ran when the instance started, which is what an upgrade
+of a proxy does. Confirm the change with the issuer before trusting the asset further.
+
+`paused` says, for each asset, whether its issuer has stopped every transfer of it, as the asset's
+contract answers. It is read once a minute. An asset missing from `paused` was not read in the
+last 2 minutes, for any of three reasons: the contract did not answer, the provider did not carry
+the call, or this instance has not been reading. Absence is never "not paused". A paused asset
 leaves `status` where it is: the API is up, and the one who can act is the issuer.
 
-The probe is public. `paused` moves as the issuer acts, so whoever watches it can tell which
-contract's state this deployment follows, as the asset names already tell them.
+### webhooks
 
-`status` is `unavailable`, and the response `503`, when the database cannot be reached, or when
-every configured network is `unreachable`, `stalled`, `chain-mismatch` or `no-finalized`. The
-other four words leave it `ok`: the API is running, and the one who can act is the operator or
-the provider.
+`webhooks` is one word for the deployment, since one worker sends every endpoint's deliveries.
 
-A payment past its deadline expires only once the network has been read past that deadline. It
-is the block time of the position, not the clock, that decides: a deployment that has stopped
-reading expires nothing, however long it has been stopped, because a transfer carried before the
-deadline may still be in a block it has not read. `doctor` shows how many payments each network
-holds waiting.
+| Word | Meaning | What to do |
+|---|---|---|
+| `delivering` | A round turned what the payments produced into deliveries and sent what was due | Nothing |
+| `no-round` | No round has finished since this instance started | Wait for the first round |
+| `waiting` | Another instance holds the deliveries. This one is the spare | Nothing |
+| `unreachable` | The last round did not finish, which is the database. A receiver that does not answer is an attempt written down, not a round stopped | See `database` |
+| `stalled` | Rounds have stopped finishing | Restart the instance |
 
-No word under `finality` makes it `unavailable`. A deployment that settles nothing still sees
-payments arrive and still records them, and the funds are at the merchant's address either way.
-What is stuck is the judgement, and taking the API out of service over it would stop the payments
-that are still being made.
-
-`webhooks` is one word for the deployment, since one worker sends every endpoint's deliveries:
-
-| | |
-|---|---|
-| `delivering` | A round turned what the payments produced into deliveries and sent what was due |
-| `no-round` | No round has finished since this instance started |
-| `waiting` | Another instance holds the deliveries. This one is the spare |
-| `unreachable` | The last round did not finish, which is the database: a receiver that does not answer is an attempt written down, not a round stopped |
-| `stalled` | Rounds have stopped finishing |
-
-`delivering` stands for fifteen seconds, three of the five-second rounds. No word here makes the
-instance `unavailable` either: what a merchant was not told, they can still read.
+`delivering` holds for 15 seconds, three of the 5-second rounds. No word here makes the instance
+`unavailable`: what a merchant was not told, they can still read.
 
 ## suco doctor
 
