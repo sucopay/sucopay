@@ -48,6 +48,15 @@ func TestDescribeVersion_LeavesAnOrdinaryVersionAlone(t *testing.T) {
 	}
 }
 
+// refusal is an answer that is the provider's error rather than a result:
+// the code and message, and the data a contract's revert carries its reason
+// in, or nil for none.
+type refusal struct {
+	code    int
+	message string
+	data    any
+}
+
 // answering is a JSON-RPC endpoint that gives the answers named, by method,
 // and refuses anything else. It stands in for a provider, so that a document
 // can name an endpoint a test controls.
@@ -83,6 +92,14 @@ func answering(t *testing.T, answers map[string]any) string {
 				"jsonrpc": "2.0", "id": 1,
 				"error": map[string]any{"code": -32601, "message": "the method " + asked.Method + " is not here"},
 			})
+			return
+		}
+		if refused, ok := answer.(refusal); ok {
+			raised := map[string]any{"code": refused.code, "message": refused.message}
+			if refused.data != nil {
+				raised["data"] = refused.data
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "error": raised})
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": answer})

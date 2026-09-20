@@ -15,6 +15,7 @@ import (
 	"github.com/sucopay/sucopay/internal/adapter/chain"
 	"github.com/sucopay/sucopay/internal/adapter/chain/evm"
 	"github.com/sucopay/sucopay/internal/adapter/chain/kinds"
+	"github.com/sucopay/sucopay/internal/config"
 	"github.com/sucopay/sucopay/internal/invisible"
 	"github.com/sucopay/sucopay/internal/payment"
 )
@@ -62,7 +63,8 @@ func assetAccept(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := checkDomain(ctx, o, read, args[0], asset); err != nil {
+	caveat, err := checkDomain(ctx, o, read, args[0], asset)
+	if err != nil {
 		return err
 	}
 	if err := checkBlocklist(ctx, read, asset, destination); err != nil {
@@ -76,7 +78,7 @@ func assetAccept(ctx context.Context, args []string, stdout io.Writer) error {
 	if err := store.Accept(ctx, payment.AccountID(account), asset, destination, time.Now()); err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "Accepted %s, paying to %s\n", asset, destination)
+	fmt.Fprintf(stdout, "Accepted %s, paying to %s%s\n", asset, destination, caveat)
 	return nil
 }
 
@@ -139,28 +141,66 @@ func assetList(ctx context.Context, args []string, stdout io.Writer) error {
 // chain whose assets sign under no domain has nothing to compare, and a
 // document that gives none for an asset whose contract has one is refused
 // too.
-func checkDomain(ctx context.Context, o opened, read chain.Chain, name string, asset payment.Asset) error {
+//
+// A contract with no separator to answer is compared piece by piece,
+// as far as it answers, and what it does not answer is taken from the
+// document. What comes back is the tail of a sentence saying so, for the
+// line that confirms the registration, and nothing where everything was
+// checked.
+func checkDomain(ctx context.Context, o opened, read chain.Chain, name string, asset payment.Asset) (string, error) {
 	n := o.networks[string(asset.Network())]
 	onChain, err := read.DomainSeparator(ctx, asset.Reference())
 	if errors.Is(err, chain.ErrNoDomain) {
-		return nil
+		return "", nil
 	}
-	if err != nil {
-		return fmt.Errorf("reading what %s signs under: %w", asset, err)
+	unanswered := errors.Is(err, chain.ErrNoSeparator)
+	if err != nil && !unanswered {
+		return "", fmt.Errorf("reading what %s signs under: %w", asset, err)
 	}
 	given, ok := o.domains[name]
 	if !ok || !given.IsSet() {
-		return fmt.Errorf("%s gives no assets.%s.eip712 for %s, and a payer's wallet cannot sign a transfer of it without one", o.document, name, asset)
+		return "", fmt.Errorf("%s gives no assets.%s.eip712 for %s, and a payer's wallet cannot sign a transfer of it without one", o.document, name, asset)
+	}
+	if unanswered {
+		return checkPieces(ctx, o, read, name, asset, given)
 	}
 	expected, err := evm.Domain(given.Name, given.Version, n.ChainID, asset.Reference())
 	if err != nil {
-		return err
+		return "", err
 	}
 	if expected != onChain {
-		return fmt.Errorf("assets.%s.eip712 names %q version %q, which is not what the contract at %s signs under; check them, and the network's chain_id, against the contract",
+		return "", fmt.Errorf("assets.%s.eip712 names %q version %q, which is not what the contract at %s signs under; check them, and the network's chain_id, against the contract",
 			name, given.Name, given.Version, asset.Reference())
 	}
-	return nil
+	return "", nil
+}
+
+// checkPieces compares a document's domain with a contract that answers no
+// separator, one piece at a time: the chain the provider says it is against
+// the network's chain_id, and what the contract calls itself against the
+// domain's name, which the tokens read so far give as one string. The
+// contract is the address called. What is left is the version, which the
+// contract does not answer and the document is taken at its word on.
+func checkPieces(ctx context.Context, o opened, read chain.Chain, name string, asset payment.Asset, given config.EIP712) (string, error) {
+	n := o.networks[string(asset.Network())]
+	want := identity(n)
+	id, err := read.Identity(ctx)
+	if err != nil {
+		return "", fmt.Errorf("asking network %s which chain it is: %w", asset.Network(), err)
+	}
+	if id != want {
+		return "", fmt.Errorf("network %s gives chain_id %s, and the provider says it is chain %s; the contract at %s answers no separator, so the domain is checked against the chain it names",
+			asset.Network(), want, invisible.Quote(id), asset.Reference())
+	}
+	called, err := read.Name(ctx, asset.Reference())
+	if err != nil {
+		return "", fmt.Errorf("reading what the contract at %s calls itself: %w", asset.Reference(), err)
+	}
+	if called != given.Name {
+		return "", fmt.Errorf("assets.%s.eip712 names %q, and the contract at %s calls itself %s; it answers no separator, so the name is checked on its own",
+			name, given.Name, asset.Reference(), invisible.Quote(called))
+	}
+	return fmt.Sprintf(", taking eip712.version %q from %s: the contract answers no separator to check it against", given.Version, o.document), nil
 }
 
 // openNetwork opens the chain an asset settles on, at the endpoint a round
