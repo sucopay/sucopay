@@ -292,6 +292,17 @@ func (c *Chain) Receipt(_ context.Context, tx string) ([]chain.Transfer, error) 
 	return nil, fmt.Errorf("simulated: no transaction %s: %w", tx, chain.ErrNoTransaction)
 }
 
+// Name is the reference itself. A simulated asset has no contract to call
+// itself anything, so it goes by what the test called it.
+func (c *Chain) Name(_ context.Context, asset string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.enter("Name"); err != nil {
+		return "", err
+	}
+	return asset, nil
+}
+
 // DomainSeparator is nothing: a simulated asset is signed under no
 // domain, and a document's domain for one has nothing to be checked
 // against.

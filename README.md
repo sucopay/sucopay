@@ -18,37 +18,49 @@
 
 ---
 
-Create a payment, get paid on chain, know when it's final, refund it, and get a webhook.
+Create a payment, get paid on chain, know when it settled, refund it, and get a webhook.
 
 suco Pay is software you run on your own infrastructure. It holds no keys and charges no fee.
-A payment goes from the customer's wallet to yours with nothing in between; what suco Pay does is
-watch the chain and tell you it arrived.
+A payment goes from the customer's wallet to yours with nothing in between. suco Pay watches the
+chain and tells you it arrived.
 
-> **Pre-alpha.** A transfer is seen, matched, recorded, and decided, and a payment reaches
-> `succeeded`. That path has been run end to end against a chain inside the process, and one
-> step at a time against Polygon on a payment somebody made. [ROADMAP.md](ROADMAP.md) says
-> what works today and what does not.
+> **Pre-alpha.** What works today is under *Where things stand*, below.
 
 ## Getting started
 
-Requires Go 1.26+ and a PostgreSQL to point it at.
+You need Go 1.26 or later and a PostgreSQL to connect to.
 
 ```bash
 git clone https://github.com/sucopay/sucopay && cd sucopay
 go build -o suco ./cmd/suco
 ./suco init
+```
+
+`suco init` writes a `suco.yaml` you can read and commit, and a key file only its owner can
+read. Credentials are stored under that key. `suco.yaml` names the environment variable the key
+is read from and does not hold the key itself.
+
+Add the database to `suco.yaml`:
+
+```yaml
+database:
+  managed: false
+  url: ${SUCO_DATABASE_URL}
+```
+
+Then check the settings and start:
+
+```bash
+export SUCO_DATABASE_URL="postgres://suco:secret@localhost:5432/suco"
 export SUCO_CREDENTIALS_KEY="$(cat -- 'credentials-<key_id>.key')"   # init prints this line
 ./suco doctor
 ./suco serve
 ```
 
-- `suco init` writes a `suco.yaml` you can read and commit, and a key file only its owner can
-  read. Credentials are stored under that key, and the document names the environment variable it
-  is read from rather than holding it.
 - `suco doctor` prints every setting it resolved, where each value came from, and what the
-  instance reaches. Of a secret it says only whether it is set.
+  instance reaches. For a secret it prints only whether it is set.
 - `suco serve` listens on `http://localhost:7826` and writes what it is doing to stdout.
-  `/healthz` says the process is up; `/readyz` says whether it can serve.
+  `/healthz` says the process is up. `/readyz` says whether it can serve.
 
 ## Taking a payment
 
@@ -72,32 +84,38 @@ assets:
       version: "1"
 ```
 
-Then, with a database configured:
+`suco serve` reads `suco.yaml` once, at start, so restart it after this change. Then register a
+credential for the API and the wallet payments are paid to, and try a payment:
 
 ```bash
 ./suco credential new --read-write          # writes a token file for the API
 ./suco asset accept jpyc 0xYourWalletHere   # where a payment in jpyc is paid to
-./suco payment await <id>                   # prints what a payer signs, until suco Checkout exists
+./suco payment await <id>                   # prints what a payer signs, until suco Checkout takes payments
 ```
 
-Give `asset accept` a wallet that can sign EIP-712 typed data. A refund is signed out of the
-wallet the payment was paid to, so an address nobody can sign for takes payments and returns
-none. Registration asks the asset's contract whether it refuses transfers to the address, and
-an address the contract refuses is not registered; [docs/operating.md](docs/operating.md) has
-the rest.
+Give `asset accept` a wallet that can sign EIP-712 typed data. Refunds are signed by the wallet
+the payment was paid to, so an address nobody can sign for can receive payments and cannot
+refund them. Registration asks the asset's contract whether it refuses transfers to the address,
+and refuses an address the contract refuses. [docs/operating.md](docs/operating.md) has the rest.
 
 Your server opens payments and reads them back over the API. `suco serve` reads the chain round
-after round and records the transfers that answer them.
+after round and records the transfers that pay them.
+
+## Where things stand
+
+A transfer is seen, matched, recorded and settled, and a payment reaches `succeeded`. That
+path has run end to end against a chain inside the process, and step by step against Polygon
+on one real payment. [ROADMAP.md](ROADMAP.md) says what works today and what does not.
 
 ## Documentation
 
 | | |
 |---|---|
-| [docs/api.md](docs/api.md) | The HTTP API a merchant's server calls |
-| [docs/webhooks.md](docs/webhooks.md) | What suco sends a merchant's server, and how to receive it |
-| [docs/checkout.md](docs/checkout.md) | The page a payer pays on, and where to send them |
-| [docs/refunds.md](docs/refunds.md) | Sending a payment back, and the page a merchant signs on |
-| [docs/configuration.md](docs/configuration.md) | Every setting `suco.yaml` takes |
+| [docs/api.md](docs/api.md) | The HTTP API your server calls: payments, refunds and webhook endpoints |
+| [docs/webhooks.md](docs/webhooks.md) | What suco sends your server, and what a receiver has to do |
+| [docs/checkout.md](docs/checkout.md) | suco Checkout, the page a payer pays on: where to send a payer, and how to integrate it |
+| [docs/refunds.md](docs/refunds.md) | Sending a payment back, and the page you sign on |
+| [docs/configuration.md](docs/configuration.md) | Every setting in `suco.yaml` |
 | [docs/operating.md](docs/operating.md) | `/readyz`, `suco doctor`, and putting a stopped instance right |
 | [ROADMAP.md](ROADMAP.md) | What works today and what does not |
 
