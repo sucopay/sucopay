@@ -202,8 +202,8 @@ func TestObserver_SameTransactionObservedTwiceCreatesOneRow(t *testing.T)
 
 ### ファジング
 
-他人が書いた入力を読む箇所には fuzz target を置いてください。設定ファイル、金額、アドレス、
-metadata が該当します。期待する出力ではなく、成り立つべき性質を書きます。生成される入力は
+他人が書いた入力（設定ファイル、金額、アドレス、metadata）を読む箇所には、fuzz target を
+置いてください。期待する出力ではなく、成り立つべき性質を書きます。生成される入力は
 ほとんど拒否されます。拒否は失敗ではないためです。
 
 ```go

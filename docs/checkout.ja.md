@@ -100,7 +100,7 @@ Webhook と `GET /payments/{id}` です。支払者が戻り先に来たこと�
 
 | 項目 | 説明 |
 |---|---|
-| `status` | `awaiting_payment`、`awaiting_finality`、`succeeded`、`expired`、`failed` のどれか。まだ `created` の支払いは `awaiting_payment` として見せる。支払者には同じこと |
+| `status` | `awaiting_payment`、`awaiting_finality`、`succeeded`、`expired`、`failed` のどれか。まだ `created` の支払いは `awaiting_payment` として見せる。支払者には `created` と `awaiting_payment` の違いが無い |
 | `amount`、`asset` | `GET /payments/{id}` が返す `amount` と `asset` に、ウォレットが切り替える `chain_id` を足した値 |
 | `expires_at` | 支払いの期限 |
 | `merchant.name` | account の名前 |
