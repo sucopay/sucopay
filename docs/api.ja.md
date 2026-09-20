@@ -330,7 +330,7 @@ draft はここに `422` を挙げています。suco はリクエストのほ�
 | `GET /payments/{id}` | read-only | 支払いを 1 つ読み戻す |
 | `POST /payments/{id}/refunds` | read-write | `succeeded` の支払いに返金を 1 つ作る |
 | `GET /payments/{id}/refunds/{refund}` | read-only | 返金を 1 つ読み戻す |
-| `/webhook_endpoints…` | read-only か read-write | Webhook エンドポイントの登録、変更、配送の確認。一覧と、それぞれが求める資格情報は [webhooks.ja.md](webhooks.ja.md) |
+| `/webhook_endpoints…` | read-only か read-write | Webhook エンドポイントの登録、変更、通知の確認。一覧と、それぞれが求める資格情報は [webhooks.ja.md](webhooks.ja.md) |
 | `/checkout/…` と `/checkout-assets/…` | 不要 | 支払いページと、ページが呼ぶもの。一覧は [checkout.ja.md](checkout.ja.md) |
 | `/refund/…` と `/refund-assets/…` | 不要 | 署名ページと、ページが呼ぶもの。一覧は [refunds.ja.md](refunds.ja.md) |
 | `GET /healthz` | 不要 | プロセスが動いているか。詳細は [operating.ja.md](operating.ja.md) |

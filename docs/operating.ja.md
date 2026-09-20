@@ -102,14 +102,14 @@ RPC エンドポイントの断片も持ちません。
 
 ### webhooks
 
-`webhooks` は suco Pay 全体で 1 語です。全部の Webhook エンドポイントへの配送を 1 つの worker が
+`webhooks` は suco Pay 全体で 1 語です。全部の Webhook エンドポイントへの通知を 1 つの worker が
 送るからです。
 
 | 語 | 意味 | 対処 |
 |---|---|---|
-| `delivering` | `round` が、支払いの変化を配送にし、時刻の来たものを送った | なし |
+| `delivering` | `round` が、支払いの変化を通知にし、時刻の来たものを送った | なし |
 | `no-round` | このインスタンスが起きてから `round` が 1 度も終わっていない | 最初の `round` を待つ |
-| `waiting` | 別のインスタンスが配送を持っている。こちらは控え | なし |
+| `waiting` | 別のインスタンスが通知を持っている。こちらは控え | なし |
 | `unreachable` | 直前の `round` が終わらなかった。止めたのはデータベース。答えない受信側は試行として記録され、`round` を止めない | `database` を見る |
 | `stalled` | `round` が終わらなくなった | インスタンスを再起動する |
 
@@ -153,11 +153,11 @@ networks:
 | `paused` | 発行者がその資産の送金を全部止めている | 発行者に確かめる。止まっていない資産の行には何も出ない |
 | `paused not read` | その資産のコントラクトが、止まっているかどうかを答えなかった | プロバイダーを確かめる |
 | `paid to 0x…, which is blocklisted, the provider says` | その資産のコントラクトが、account の受取アドレスへの送金を拒む | 別のアドレスで `suco asset accept` を実行する |
-| `2 pending, 1 failed to 7c1d…` | データベースが持つ、1 つの account の配送。次の試行を待つ `pending` と、最後の試行の後に諦めた `failed`。`failed` には、その配送の Webhook エンドポイントの id を添える | なし |
-| `nothing pending, nothing failed` | 待っている配送も、諦めた配送も無い | なし |
-| `3 endpoints hold a secret sealed under another key` | 今と違う鍵で暗号化した署名シークレットを持つ Webhook エンドポイントの数。`credentials.key` を入れ替えた後に残るもので、あるときだけ account の後に出る | なし。その加盟店が署名シークレットを更新すれば、配送は続く |
+| `2 pending, 1 failed to 7c1d…` | データベースが持つ、1 つの account の通知。次の試行を待つ `pending` と、最後の試行の後に諦めた `failed`。`failed` には、その通知の Webhook エンドポイントの id を添える | なし |
+| `nothing pending, nothing failed` | 待っている通知も、諦めた通知も無い | なし |
+| `3 endpoints hold a secret sealed under another key` | 今と違う鍵で暗号化した署名シークレットを持つ Webhook エンドポイントの数。`credentials.key` を入れ替えた後に残るもので、あるときだけ account の後に出る | なし。その加盟店が署名シークレットを更新すれば、通知は続く |
 
-配送を送る worker 自身が何をしているかは、`/readyz` の `webhooks` の語が言います。
+通知を送る worker 自身が何をしているかは、`/readyz` の `webhooks` の語が言います。
 
 資産の受取アドレスは、問い合わせのときに `network` の RPC エンドポイントへ渡ります。運用者の
 `own` のノードか、`others` の最初の 1 つです。読めなかった `network` の受取アドレスには問い
@@ -275,7 +275,7 @@ update webhook_endpoints set allowed = '{10.0.5.0/24}' where id = '<endpoint id>
 許可は Webhook エンドポイントとアドレスに結び付き、名前には結び付きません。名前を別の内側の
 アドレスに向け直せば、前と同じく断ります。内側に解決する URL は登録できません。加盟店が外側に
 解決する URL で登録し、運用者が許可を書き、加盟店が `PATCH /webhook_endpoints/{id}` で URL を
-変えます。変更時の検査は許可込みです。prefix として読めない値は何も許さず、他の配送も止め
+変えます。変更時の検査は許可込みです。prefix として読めない値は何も許さず、他の通知も止め
 ません。
 
 ## 関連
@@ -283,4 +283,4 @@ update webhook_endpoints set allowed = '{10.0.5.0/24}' where id = '<endpoint id>
 - [configuration.ja.md](configuration.ja.md): 設定の意味と、`others` の何本が一致すればよいか
 - [api.ja.md](api.ja.md): `network cursor` と `payment await` が挙げる支払いの状態
 - [refunds.ja.md](refunds.ja.md): `network cursor` が挙げる返金の状態
-- [webhooks.ja.md](webhooks.ja.md): `doctor` が数える配送について、受信側がすること
+- [webhooks.ja.md](webhooks.ja.md): `doctor` が数える通知について、受信側がすること

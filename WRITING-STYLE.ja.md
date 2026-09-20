@@ -155,6 +155,8 @@
 
 コードに現れる語は、その字面を指すときだけコードの書体で書きます。それ以外は概念の語で
 書きます。初出で「支払い（`payment`）」のように併記します。製品名と規格名はそのままです。
+英語の語を漢語に写しただけの訳（delivery を配送）は使いません。日本語でその物事を指す語で
+書きます（delivery は通知）。
 suco Pay、Polygon、JPYC、EIP-712、EIP-3009、Standard Webhooks がそうです。製品名は
 suco Pay、リポジトリとパッケージとコマンドは `sucopay` と `suco` です。
 
@@ -180,8 +182,8 @@ suco Pay、リポジトリとパッケージとコマンドは `sucopay` と `su
 | Webhook の受け口 | Webhook エンドポイント | webhook endpoint | `webhook_endpoints` |
 | API の経路 | API エンドポイント | route | 表の列は「パス」 |
 | RPC の接続先 | RPC エンドポイント | RPC endpoint | `rpc.own` |
-| 1 つの event の 1 回の送信 | 配送 | delivery | `deliveries` |
-| 配送の 1 回の試み | 配送試行 | delivery attempt | `attempts` |
+| 1 つの event の 1 回の送信 | 通知 | delivery | `deliveries` |
+| 通知の 1 回の試み | 通知の試行 | delivery attempt | `attempts` |
 | Webhook の秘密 | 署名シークレット | signing secret | `secret`、`whsec_` |
 | 暗号の鍵 | 鍵 | key | `credentials.key` |
 | 設定や JSON のキー | キー | key | |
@@ -213,7 +215,7 @@ suco Pay、リポジトリとパッケージとコマンドは `sucopay` と `su
 ROADMAP、SECURITY も同じ規則で書き、検査は後から広げます。
 
 - 印字（「印字可能な ASCII」を除く）、訊く、配備、宛先、経路、要求、応答、契約（コントラクトの
-  意味で）、周
+  意味で）、周、配送
 - 長音なしのサーバ、ユーザ、インタフェース、アダプタ、エクスプローラ、プロバイダ
 - 地の文の Payment と Refund。Webhook は日本語版では大文字のまま使い、英語版は webhook です
 - 裸の「エンドポイント」。API エンドポイント、RPC エンドポイント、Webhook エンドポイントの

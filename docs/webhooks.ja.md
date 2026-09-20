@@ -3,7 +3,7 @@
 English: [webhooks.md](webhooks.md)
 
 suco は、支払いか返金が変わるたびに、登録した URL へ HTTP `POST` を送ります。このページは、
-受信側がしなければならないことと、Webhook エンドポイントと配送を API でどう管理するかを説明
+受信側がしなければならないことと、Webhook エンドポイントと通知を API でどう管理するかを説明
 します。
 
 受信側を作る加盟店の開発者向けです。[api.ja.md](api.ja.md) のとおりに支払い（`payment`）を
@@ -15,7 +15,7 @@ suco は、支払いか返金が変わるたびに、登録した URL へ HTTP `
    しないでください。timestamp の許容差は 5 分です。ヘッダーは規格どおりの `webhook-id`、
    `webhook-timestamp`、`webhook-signature` です。シークレットは登録のレスポンスにあった
    `whsec_…` の文字列です。
-2. **`webhook-id` をキーにして、同じ配送を 2 度処理しないでください。** id は同じ配送の
+2. **`webhook-id` をキーにして、同じ通知を 2 度処理しないでください。** id は同じ通知の
    どの試行でも同じで、再送と手動の再送でも変わりません。
 3. **先に `2xx` を返し、後で処理してください。** 持ち時間は接続を含めて 20 秒です。それより
    遅いレスポンスは失敗した試行として数え、再送します。
@@ -93,8 +93,8 @@ POST /webhook_endpoints
 レスポンスは `201` で、Webhook エンドポイントと、この 1 度だけ `secret` が入ります。1 つの
 account が持てる Webhook エンドポイントは 8 つまでです。
 
-無効にした Webhook エンドポイント（`"enabled": false`）には何も届かず、配送も作られません。
-待っていた配送はそのまま待ち、有効に戻すと送られます。
+無効にした Webhook エンドポイント（`"enabled": false`）には何も届かず、通知も作られません。
+待っていた通知はそのまま待ち、有効に戻すと送られます。
 
 ## Webhook エンドポイントの API
 
@@ -105,10 +105,10 @@ account が持てる Webhook エンドポイントは 8 つまでです。
 | `GET /webhook_endpoints/{id}` | read-only | 1 つ読む |
 | `PATCH /webhook_endpoints/{id}` | read-write | `url`、`description`、`events`、`enabled` を変える |
 | `POST /webhook_endpoints/{id}/secret` | read-write | シークレットを更新する。古いシークレットはあと 24 時間、検証に通る |
-| `DELETE /webhook_endpoints/{id}` | read-write | 消す。待っていた配送は `failed` になる |
-| `POST /webhook_endpoints/{id}/test` | read-write | `endpoint.test` を 1 つ送る。`202` で配送の id を返す。前の test が pending の間は次を断る |
-| `GET /webhook_endpoints/{id}/deliveries` | read-only | 新しい順に 100 件の配送と、それぞれの全部の試行 |
-| `POST /webhook_endpoints/{id}/deliveries/{delivery}/resend` | read-write | delivered か failed の配送をもう 1 度送る。`202` |
+| `DELETE /webhook_endpoints/{id}` | read-write | 消す。待っていた通知は `failed` になる |
+| `POST /webhook_endpoints/{id}/test` | read-write | `endpoint.test` を 1 つ送る。`202` で通知の id を返す。前の test が pending の間は次を断る |
+| `GET /webhook_endpoints/{id}/deliveries` | read-only | 新しい順に 100 件の通知と、それぞれの全部の試行 |
+| `POST /webhook_endpoints/{id}/deliveries/{delivery}/resend` | read-write | delivered か failed の通知をもう 1 度送る。`202` |
 
 更新したシークレットの 24 時間の間は、`webhook-signature` に 2 つの署名が空白で区切って
 並びます。それぞれのシークレットによる署名で、ライブラリはどちらか一方で検証に通します。
@@ -129,18 +129,18 @@ account が持てる Webhook エンドポイントは 8 つまでです。
 | 9 回目 | 20 時間 |
 | 10 回目 | 24 時間 |
 
-10 回目の後、3 日と少しで配送は `failed` になり、それ以上は送りません。`3xx` は追わず、失敗に
+10 回目の後、3 日と少しで通知は `failed` になり、それ以上は送りません。`3xx` は追わず、失敗に
 数えます。
 
-同じ Webhook エンドポイントへの同じ支払いの配送は、event の起きた順に送ります。後の配送は、
-先の配送が delivered か failed になるまで待ちます。別の支払いの配送は待ちません。
+同じ Webhook エンドポイントへの同じ支払いの通知は、event の起きた順に送ります。後の通知は、
+先の通知が delivered か failed になるまで待ちます。別の支払いの通知は待ちません。
 
-失敗が続いても Webhook エンドポイントを止めることはしません。何が失敗しているかは配送の記録に
+失敗が続いても Webhook エンドポイントを止めることはしません。何が失敗しているかは通知の記録に
 あり、運用者の `suco doctor` が数を出力します。
 
-## 配送の記録
+## 通知の記録
 
-`GET /webhook_endpoints/{id}/deliveries` は、その Webhook エンドポイントへの配送を新しい順に
+`GET /webhook_endpoints/{id}/deliveries` は、その Webhook エンドポイントへの通知を新しい順に
 100 件、それぞれの全部の試行と一緒に返します。
 
 ```json
@@ -161,12 +161,12 @@ account が持てる Webhook エンドポイントは 8 つまでです。
 
 | 項目 | 型 | 説明 |
 |---|---|---|
-| `id` | string | 配送の id。`webhook-id` として送られる |
+| `id` | string | 通知の id。`webhook-id` として送られる |
 | `type` | string | event の種類 |
 | `payment` | string か null | その event の支払い。`endpoint.test` では `null` |
 | `occurred_at` | string | event が起きた時刻 |
 | `state` | string | `pending`、`delivered`、`failed` のどれか |
-| `attempts` | array | その配送の全部の試行。古い順 |
+| `attempts` | array | その通知の全部の試行。古い順 |
 | `attempts[].at` | string | 試行の時刻 |
 | `attempts[].status` | integer か null | 受信側が返した HTTP ステータス。答えなかったときは `null` |
 | `attempts[].reason` | string | 答えが無かった理由。`status` が `null` のときだけ |
@@ -182,20 +182,20 @@ account が持てる Webhook エンドポイントは 8 つまでです。
 | `destination` | URL が登録時の検査に通らなくなった |
 | `secret` | 署名に使うシークレットを suco Pay が読めなくなった。下の節を参照 |
 
-delivered と failed の配送は 30 日残ります。
+delivered と failed の通知は 30 日残ります。
 
 ## 手動の再送
 
-`POST /webhook_endpoints/{id}/deliveries/{delivery}/resend` は、delivered か failed の配送を
+`POST /webhook_endpoints/{id}/deliveries/{delivery}/resend` は、delivered か failed の通知を
 もう 1 度送ります。同じ `webhook-id` で、新しい `webhook-timestamp` と署名を付け、試行の数は
 続きから数えます。落ちていた受信側が戻ったときや、`2xx` を返した後に受け取ったものを失った
-ときに使います。見た id を覚えている受信側は、受け取り済みの配送の再送を捨てます。pending の
-配送は再送できません。すでに送る途中だからです。
+ときに使います。見た id を覚えている受信側は、受け取り済みの通知の再送を捨てます。pending の
+通知は再送できません。すでに送る途中だからです。
 
 ## 運用者による鍵の入れ替え
 
 シークレットは、`credentials.key` から導いた鍵で暗号化して保存されています。運用者がその鍵を
-入れ替えると、それまでのシークレットは読めなくなります。その Webhook エンドポイントへの配送は
+入れ替えると、それまでのシークレットは読めなくなります。その Webhook エンドポイントへの通知は
 `secret` の理由の試行になり、`suco doctor` が影響を受けた Webhook エンドポイントの数を出力
 します。
 `POST /webhook_endpoints/{id}/secret` でシークレットを更新すると、新しいシークレットが今の鍵で
@@ -205,4 +205,4 @@ delivered と failed の配送は 30 日残ります。
 
 - [api.ja.md](api.ja.md): 支払い、`transfer`、支払いを読み戻す API エンドポイント
 - [refunds.ja.md](refunds.ja.md): `refund.` の event が運ぶ返金
-- [operating.ja.md](operating.ja.md): 失敗している配送について `suco doctor` が出力するもの
+- [operating.ja.md](operating.ja.md): 失敗している通知について `suco doctor` が出力するもの

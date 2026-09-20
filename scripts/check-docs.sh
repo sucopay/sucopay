@@ -120,7 +120,7 @@ export LC_ALL=C.UTF-8
 if ! printf 'サーバが\n' | grep -qP 'サーバ(?!ー)'; then
   note "grep cannot read UTF-8 under this locale, so the documents were not checked"
 fi
-forbidden='印字(?!可能)|訊|配備|宛先|経路|要求|応答|契約|周(?=[がをはにのとでも、。]|$)|[0-9] ?周|(サーバ|ユーザ|インタフェース|アダプタ|エクスプローラ|プロバイダ)(?!ー)|(?<![A-Za-z/._])(Payment|Refund)s?(?![A-Za-z_])|(?<!API )(?<!RPC )(?<!Webhook )(?<![A-Za-z])エンドポイント'
+forbidden='印字(?!可能)|訊|配備|宛先|経路|要求|応答|契約|配送|周(?=[がをはにのとでも、。]|$)|[0-9] ?周|(サーバ|ユーザ|インタフェース|アダプタ|エクスプローラ|プロバイダ)(?!ー)|(?<![A-Za-z/._])(Payment|Refund)s?(?![A-Za-z_])|(?<!API )(?<!RPC )(?<!Webhook )(?<![A-Za-z])エンドポイント'
 for doc in docs/*.ja.md README.ja.md; do
   [ -f "$doc" ] || { note "$doc is not a file"; continue; }
   case " $unwritten " in *" $doc "*) continue ;; esac
