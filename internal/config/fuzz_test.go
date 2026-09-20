@@ -102,6 +102,10 @@ func FuzzResolve(f *testing.F) {
 		"networks:\n  polygon:\n    chain_id: 137\n    rpc:\n      own: ${SECRET}\n",
 		"networks:\n  local:\n    kind: simulated\nassets:\n  jpyc:\n    network: local\n    reference: \"0x1\"\n    symbol: JPYC\n    decimals: 18\n",
 		"listen:\n  host: ${SECRET}\n",
+		// A variable at a setting of another type. The problem names the
+		// variable and not what it holds, whichever path the document put it
+		// under: a secret in the wrong place is the mistake to expect.
+		"database:\n  managed: ${SECRET}\n",
 		"listen:\n  host: [\"a\\nb\"]\n",
 		"listen:\n  port: [\"a\\u001b[31mb\"]\n",
 		"database:\n  managed: {a: \"a\\nb\"}\n",

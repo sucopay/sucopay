@@ -124,10 +124,17 @@ func defaultBaseURL(port int) string {
 
 // shown returns a value as it may appear in a problem. A problem reaches an
 // operator's terminal and their logs, so a value at a secret path is replaced
-// rather than quoted.
-func shown(path string, v any) any {
+// rather than quoted, and so is one a variable supplied, whichever path the
+// document named it at: the variable is named instead, and what it holds
+// stays where the operator can read it on their own. A report prints such a
+// value in full, under [reader.refuseCredentials]; a problem is not a report,
+// and is written to a log by whatever failed to start.
+func (r *reader) shown(path string, v any) any {
 	if Secret(path) {
 		return "(secret)"
+	}
+	if s := r.sources[path]; s.Origin == FromEnv {
+		return "(the value of " + s.Var + ")"
 	}
 	// Rendered first, then quoted. Quoting only the string case left a list or
 	// a mapping to be expanded by %v, which prints the bytes of every string
@@ -179,7 +186,7 @@ func (r *reader) raw(path string) (any, bool) {
 	name, isRef, err := reference(s)
 	switch {
 	case err != nil:
-		r.fail(path, "%s: %v", err, shown(path, s))
+		r.fail(path, "%s: %v", err, r.shown(path, s))
 		return nil, false
 	case !isRef:
 		r.sources[path] = Source{Origin: FromFile}
@@ -205,7 +212,7 @@ func (r *reader) text(path, def string) string {
 	}
 	s, isString := v.(string)
 	if !isString {
-		r.fail(path, "want text, got %s: %v", kindOf(v), shown(path, v))
+		r.fail(path, "want text, got %s: %v", kindOf(v), r.shown(path, v))
 		return def
 	}
 	r.refuseCredentials(path, s)
@@ -241,7 +248,7 @@ func (r *reader) integer(path string, def int) int {
 	}
 	n, err := toInt(v)
 	if err != nil {
-		r.fail(path, "%s: %v%s", err, shown(path, v), suppliedBy(r.sources[path]))
+		r.fail(path, "%s: %v", err, r.shown(path, v))
 		return def
 	}
 	return n
@@ -257,12 +264,12 @@ func (r *reader) duration(path string, def time.Duration) time.Duration {
 	}
 	s, isString := v.(string)
 	if !isString {
-		r.fail(path, "want a duration such as 3s, got %s: %v", kindOf(v), shown(path, v))
+		r.fail(path, "want a duration such as 3s, got %s: %v", kindOf(v), r.shown(path, v))
 		return def
 	}
 	d, err := time.ParseDuration(s)
 	if err != nil {
-		r.fail(path, "want a duration such as 3s: %v%s", shown(path, v), suppliedBy(r.sources[path]))
+		r.fail(path, "want a duration such as 3s: %v", r.shown(path, v))
 		return def
 	}
 	return d
@@ -279,12 +286,12 @@ func (r *reader) boolean(path string, def bool) bool {
 	case string:
 		parsed, err := strconv.ParseBool(b)
 		if err != nil {
-			r.fail(path, "want true or false: %v%s", shown(path, b), suppliedBy(r.sources[path]))
+			r.fail(path, "want true or false: %v", r.shown(path, b))
 			return def
 		}
 		return parsed
 	}
-	r.fail(path, "want true or false, got %s: %v", kindOf(v), shown(path, v))
+	r.fail(path, "want true or false, got %s: %v", kindOf(v), r.shown(path, v))
 	return def
 }
 
@@ -511,7 +518,7 @@ func (r *reader) asset(path string, networks map[string]Network) (payment.Asset,
 		if network == "" {
 			r.fail(p, "required")
 		} else if _, known := networks[network]; !known {
-			r.fail(p, "no network named %v", shown(p, network))
+			r.fail(p, "no network named %v", r.shown(p, network))
 		}
 	}
 	if p := path + ".reference"; !r.failed(p) && reference == "" {
@@ -587,7 +594,7 @@ func (r *reader) validateNetwork(path string, n Network) {
 	}
 	if _, known := networkKinds[n.Kind]; !known {
 		r.fail(path+".kind", "unknown kind %v, want one of %s",
-			shown(path+".kind", n.Kind), strings.Join(NetworkKinds(), ", "))
+			r.shown(path+".kind", n.Kind), strings.Join(NetworkKinds(), ", "))
 		return
 	}
 	for _, key := range []string{"chain_id", "rpc"} {
@@ -726,11 +733,11 @@ func (r *reader) validateBaseURL(raw string) {
 	u, err := url.Parse(raw)
 	switch {
 	case err != nil:
-		r.fail(path, "not a URL: %v", shown(path, raw))
+		r.fail(path, "not a URL: %v", r.shown(path, raw))
 	case u.Scheme != "http" && u.Scheme != "https":
-		r.fail(path, "needs an http or https scheme: %v", shown(path, raw))
+		r.fail(path, "needs an http or https scheme: %v", r.shown(path, raw))
 	case !hasHost(u):
-		r.fail(path, "has no host: %v", shown(path, raw))
+		r.fail(path, "has no host: %v", r.shown(path, raw))
 	}
 }
 
@@ -926,13 +933,6 @@ func toInt(v any) (int, error) {
 		return parsed, nil
 	}
 	return 0, fmt.Errorf("want a number, got %s", kindOf(v))
-}
-
-func suppliedBy(s Source) string {
-	if s.Origin == FromEnv {
-		return " (from " + s.Var + ")"
-	}
-	return ""
 }
 
 func kindOf(v any) string {
