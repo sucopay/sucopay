@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -30,6 +31,25 @@ const migrationLock = 0x5c0_9a7
 // hangs with nothing to read.
 const lockTimeout = 2 * time.Minute
 
+// lockPoll is how often a start that finds the lock held asks for it again.
+// Asked for rather than waited on: a session waiting in pg_advisory_lock is a
+// transaction holding a snapshot, and a CREATE INDEX CONCURRENTLY the holder
+// is running waits for every such transaction to end, which this one would
+// not do until the holder was done. Each ask is a statement that returns at
+// once, and between asks the session holds nothing.
+const lockPoll = time.Second
+
+// outsideMarker is the first line of a migration that runs outside a
+// transaction, which is what CREATE INDEX CONCURRENTLY has to do.
+const outsideMarker = "-- suco: index concurrently"
+
+// concurrentIndex is the one shape a marked migration has: one index, made
+// concurrently, under a name plain enough to go back into a statement. The
+// character class stops at anything that could end the statement or hide a
+// second one. Comment lines are taken out before it is matched.
+var concurrentIndex = regexp.MustCompile(
+	`^create (?:unique )?index concurrently ([a-z_][a-z0-9_]*) on [^;$]+;?$`)
+
 // ErrNoMigrations reports a directory holding no migration. A build with no
 // schema would otherwise report success and leave an empty database behind it.
 var ErrNoMigrations = errors.New("no migrations to apply")
@@ -48,10 +68,10 @@ var ErrMigrationChanged = errors.New("an applied migration has changed")
 // the second into something to act on: it is what `pg_terminate_backend` and
 // the server's own log are addressed by.
 //
-// Asked over a connection of its own, because the one that just timed out was
-// cancelled mid-statement. Nothing here fails the caller: a lock that cannot
-// be attributed is reported as a lock that could not be taken, which is what
-// the caller already knows.
+// Asked over a connection of its own: the one that just timed out may have
+// been cancelled mid-statement. Nothing here fails the caller: a lock that
+// cannot be attributed is reported as a lock that could not be taken, which
+// is what the caller already knows.
 func (p *Pool) holder(ctx context.Context) string {
 	ask, stop := context.WithTimeout(context.WithoutCancel(ctx), queryTimeout)
 	defer stop()
@@ -133,7 +153,7 @@ func (p *Pool) migrate(ctx context.Context, fsys fs.FS, dir string) (applied int
 
 	taking, stopTaking := context.WithTimeout(ctx, lockTimeout)
 	defer stopTaking()
-	if _, err := conn.Exec(taking, `select pg_advisory_lock($1)`, migrationLock); err != nil {
+	if err := takeLock(taking, conn.Conn()); err != nil {
 		return 0, fmt.Errorf("migrations: taking the lock%s: %w", p.holder(ctx), err)
 	}
 	defer func() {
@@ -190,7 +210,7 @@ func (p *Pool) migrate(ctx context.Context, fsys fs.FS, dir string) (applied int
 			}
 			continue
 		}
-		if err := apply(ctx, conn.Conn(), version, checksum, string(body)); err != nil {
+		if err := run(ctx, conn.Conn(), version, checksum, string(body)); err != nil {
 			return applied, fmt.Errorf("migrations: %s: %w", name, err)
 		}
 		applied++
@@ -222,6 +242,98 @@ func refuseASchemaFromTheFuture(recorded map[string]string, names []string) erro
 	slices.Sort(ahead)
 	return fmt.Errorf("migrations: the database has %s applied, which this build does not carry. "+
 		"It was migrated by a later build", strings.Join(ahead, ", "))
+}
+
+// takeLock takes the migration lock, asking again every lockPoll until ctx
+// ends.
+func takeLock(ctx context.Context, conn *pgx.Conn) error {
+	again := time.NewTicker(lockPoll)
+	defer again.Stop()
+	for {
+		var taken bool
+		if err := conn.QueryRow(ctx, `select pg_try_advisory_lock($1)`, migrationLock).Scan(&taken); err != nil {
+			return err
+		}
+		if taken {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-again.C:
+		}
+	}
+}
+
+// marked reports whether a migration's first line says it runs outside a
+// transaction.
+func marked(body string) bool {
+	first, _, _ := strings.Cut(body, "\n")
+	return strings.TrimSpace(first) == outsideMarker
+}
+
+// indexOf is the name of the index a marked migration makes, or the reason
+// the migration is not one the runner runs outside a transaction.
+func indexOf(body string) (string, error) {
+	var kept []string
+	for _, line := range strings.Split(body, "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "--") {
+			kept = append(kept, line)
+		}
+	}
+	found := concurrentIndex.FindStringSubmatch(strings.TrimSpace(strings.Join(kept, "\n")))
+	if found == nil {
+		return "", errors.New("marked to run outside a transaction, and not one " +
+			"\"create [unique] index concurrently <name> on ...\" in lower case")
+	}
+	return found[1], nil
+}
+
+// run applies one migration the way its first line says.
+func run(ctx context.Context, conn *pgx.Conn, version, checksum, body string) error {
+	if marked(body) {
+		return applyOutside(ctx, conn, version, checksum, body)
+	}
+	return apply(ctx, conn, version, checksum, body)
+}
+
+// applyOutside runs a marked migration with no transaction around it, and
+// records it once the index it made is there and valid.
+//
+// The index is dropped first. A CREATE INDEX CONCURRENTLY that fails, or is
+// cut short, leaves an index of its name behind that is not valid: it
+// enforces nothing and no plan reads it. "if not exists" would take that for
+// the index and skip, and the migration would be recorded over it. A run that
+// made the index and then failed to record it leaves a valid one, which is
+// dropped and made again rather than trusted to be what the migration says.
+//
+// Each statement is sent on its own. Sent together they would run in one
+// transaction, which is what the marker is here to avoid.
+func applyOutside(ctx context.Context, conn *pgx.Conn, version, checksum, body string) error {
+	index, err := indexOf(body)
+	if err != nil {
+		return err
+	}
+	// The name goes into a statement that cannot take a parameter. It is
+	// matched above to letters, digits and underscores, and comes from a
+	// migration this build carries.
+	if _, err := conn.Exec(ctx, "drop index concurrently if exists "+index); err != nil {
+		return err
+	}
+	if _, err := conn.Exec(ctx, body); err != nil {
+		return err
+	}
+	var valid bool
+	if err := conn.QueryRow(ctx,
+		`select indisvalid from pg_index where indexrelid = to_regclass($1)`, index).Scan(&valid); err != nil {
+		return fmt.Errorf("reading whether %s is valid: %w", index, err)
+	}
+	if !valid {
+		return fmt.Errorf("made %s, which is not a valid index", index)
+	}
+	_, err = conn.Exec(ctx,
+		`insert into schema_migrations (version, checksum) values ($1, $2)`, version, checksum)
+	return err
 }
 
 // apply runs one migration and records it in the same transaction, so that a
