@@ -124,6 +124,20 @@ A setting is named for the value it holds.
   change. Nothing checks that the tables and the code agree, so a setting left out of one of them
   is one half the readers cannot find.
 
+## Migrations
+
+A migration that has been applied is never edited. The runner keeps a checksum of each one it
+applied, and a start that finds one of them changed is refused: nothing can then tell which of
+the two the database holds. Add a migration instead.
+
+A migration runs in one transaction with the record of it, so one that fails half way leaves
+nothing behind. `CREATE INDEX CONCURRENTLY` cannot run in a transaction. A migration whose first
+line is `-- suco: index concurrently` runs outside one, and its body is one
+`create [unique] index concurrently <name> on ...` in lower case, as every migration here is
+written, and nothing else, without `if not exists`. The runner drops an index of that name
+first, which is what a run that failed or was cut short leaves behind, and records the
+migration once the catalogue says the index is valid.
+
 ## Errors
 
 An error repeats nothing typed after `suco`. The word may be a token, from the file

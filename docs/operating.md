@@ -170,8 +170,12 @@ Records that the account takes the asset the document lists under that name, pai
 address, and asks the asset's contract two things first: what it signs under, so that a payer's
 wallet signs under the same, and whether it refuses transfers to the address, which an issuer
 does to one account at a time. A domain that is not the document's refuses the registration,
-and so does an address the contract refuses. So does no answer to either question: an address
-is not registered on the strength of a provider that would not carry it.
+and so does an address the contract refuses. So does an answer that could not be read: an
+address is not registered on the strength of a provider that would not carry it. A contract
+with no `DOMAIN_SEPARATOR()` to answer, which JPYC is, is checked by what it does answer: the
+chain it is on against the network's `chain_id`, and what it calls itself against the domain's
+`name`. The `version` is then the document's word, and the line that confirms the registration
+says so.
 The provider asked is the network's endpoint, the operator's own node or the first of the
 others, and the address goes to it in the asking. It is public the moment a payment reaches it.
 

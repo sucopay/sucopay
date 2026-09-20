@@ -50,6 +50,12 @@ const (
 	hidden = "[rpc]"
 )
 
+// errReverted is a call the contract refused with nothing to say: what a
+// contract answers to a function it does not have, and what a bare revert()
+// answers. The chain does not tell the two apart. A revert with a reason is
+// a function that ran and refused, and is not this.
+var errReverted = errors.New("the contract reverted with nothing to say")
+
 // client speaks JSON-RPC to one endpoint.
 //
 // The deadline and the bound on a body are fields rather than constants so
@@ -210,7 +216,14 @@ func (c *client) refused(method string, status int, retryAfter string, raised *r
 	switch {
 	case status == http.StatusTooManyRequests:
 		return fmt.Errorf("%s: %s: %w", method, said, chain.RateLimited{RetryAfter: seconds(retryAfter)})
-	case status == http.StatusBadRequest, raised.tooWide():
+	case method == "eth_call" && raised.reverted():
+		// Only there, so that no other method's refusal changes its reading
+		// over the words in it.
+		return fmt.Errorf("%s: %s: %w", method, said, errReverted)
+	case method != "eth_call" && (status == http.StatusBadRequest || raised.tooWide()):
+		// A call to a contract asks for no span, so there is nothing for
+		// its 400 to say to narrow: a provider that answers a revert under
+		// 400 would otherwise have it read as one.
 		return fmt.Errorf("%s: %s: %w", method, said, chain.ErrTooWide)
 	case status != http.StatusOK:
 		return fmt.Errorf("%s: the provider answered %d: %s", method, status, said)
@@ -249,6 +262,9 @@ func (c *client) say(s string) string {
 type rpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
+	// Data is what a contract's revert carried, where the provider passes
+	// it on: the reason it gave, or nothing.
+	Data json.RawMessage `json:"data"`
 }
 
 // String is the error as it may be shown: the code, and the provider's own
@@ -266,6 +282,28 @@ func (e *rpcError) String(say func(string) string) string {
 // the codes do not.
 func (e *rpcError) tooWide() bool {
 	return e != nil && (e.Code == -32701 || e.Code == -32602)
+}
+
+// reverted reports whether the provider says the contract refused the call
+// and gave no reason. The words are held to exactly: a reason follows them
+// after a colon on the providers that write it into the message, and the
+// codes differ between providers where the words do not. Read off the
+// message as the provider wrote it, before it is cut short for showing.
+func (e *rpcError) reverted() bool {
+	return e != nil && strings.TrimSpace(e.Message) == "execution reverted" && e.bare()
+}
+
+// bare reports whether the error carries no data: none, null, or an empty
+// string of bytes.
+func (e *rpcError) bare() bool {
+	if e == nil {
+		return true
+	}
+	switch string(bytes.TrimSpace(e.Data)) {
+	case "", "null", `""`, `"0x"`:
+		return true
+	}
+	return false
 }
 
 // seconds reads a Retry-After of whole seconds. A date is how the header may

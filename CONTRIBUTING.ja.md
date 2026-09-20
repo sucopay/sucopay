@@ -59,8 +59,9 @@ internal/payment/
 
 向きはテストで確かめます。パッケージ内のファイルの import を読み、内側のファイルに許して
 いないものがあれば失敗するテストです。`internal/accepted`、`internal/adapter/chain`、
-`internal/adapter/chain/evm`、`internal/config`、`internal/credential`、`internal/finality`、
-`internal/observe`、`internal/payment`、`internal/postgres` にそれぞれあります。
+`internal/adapter/chain/evm`、`internal/checkout`、`internal/config`、`internal/credential`、
+`internal/finality`、`internal/observe`、`internal/payment`、`internal/postgres`、
+`internal/refund`、`internal/webhook` にそれぞれあります。
 
 ## ドメインモデル
 
@@ -117,6 +118,20 @@ internal/payment/
 - 足した設定は同じ変更で `docs/configuration.md` と `docs/configuration.ja.md` の両方に書きます。
   表とコードが合っているかを確かめるものは無いので、片方から漏れた設定は読み手の半分に
   見つけられません。
+
+## 移行
+
+適用された移行は書き換えません。適用した移行ごとに checksum を記録していて、変わった移行が
+あれば起動を断ります。データベースがどちらを持っているのか、分からなくなるからです。新しい
+移行を足してください。
+
+移行は記録と同じ 1 つのトランザクションで走り、途中で落ちれば何も残りません。
+`CREATE INDEX CONCURRENTLY` はトランザクションの中で走りません。1 行目が
+`-- suco: index concurrently` の移行はトランザクションの外で走ります。本文は
+`create [unique] index concurrently <名前> on ...` の 1 文だけで、ほかの移行と同じく小文字で
+書き、`if not exists` は書きません。先にその名前のインデックスを削除し、カタログがインデックスを
+有効と言ってから記録します。落ちた実行や途中で切れた実行が残すのは、その名前の有効でない
+インデックスです。
 
 ## エラー
 

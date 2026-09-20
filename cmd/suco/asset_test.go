@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/hex"
+	"fmt"
 	"os"
 	"slices"
 	"strconv"
@@ -346,6 +347,104 @@ func TestRun_AssetAcceptRefusesAnAddressTheContractRefusesTransfersTo(t *testing
 			}
 			if n := rowsAccepted(t, d); n != 0 {
 				t.Errorf("%d addresses were accepted, want none", n)
+			}
+		})
+	}
+}
+
+// abiString is a string as a contract answers one: where its bytes begin,
+// how many there are, and the bytes padded to a whole word.
+func abiString(s string) string {
+	h := hex.EncodeToString([]byte(s))
+	return fmt.Sprintf("0x%064x%064x%s%s", 32, len(s), h, strings.Repeat("0", (64-len(h)%64)%64))
+}
+
+// A contract that answers no separator, which JPYC is, is checked by what
+// it does answer: the chain against the network's chain_id and its name
+// against the domain's. The version is then the document's word, and the
+// line that confirms the registration says so.
+func TestRun_AssetAcceptChecksTheChainAndTheNameWhereTheContractAnswersNoSeparator(t *testing.T) {
+	given := "    eip712:\n      name: JPY Coin\n      version: \"1\"\n"
+	answers := func(name string, chain any) map[string]any {
+		a := map[string]any{
+			"eth_call 0x3644e515": refusal{3, "execution reverted", nil},
+			"eth_call 0x06fdde03": abiString(name),
+			"eth_call 0x8e204c43": clear,
+		}
+		if chain != nil {
+			a["eth_chainId"] = chain
+		}
+		return a
+	}
+
+	d := deployed(t)
+	document(t, evmDocument(answering(t, answers("JPY Coin", "0x89")), 137, given))
+	stdout, _, err := runArgs(t, "asset", "accept", "jpyc", theAddress)
+	if err != nil {
+		t.Fatalf("with the contract's chain and name: %v, want accepted", err)
+	}
+	if want := "Accepted JPYC on local, paying to " + theAddress + `, taking eip712.version "1" from `; !strings.HasPrefix(stdout, want) {
+		t.Errorf("stdout = %q, want it to begin %q", stdout, want)
+	}
+	if n := rowsAccepted(t, d); n != 1 {
+		t.Errorf("accepted %d, want the one", n)
+	}
+
+	for name, c := range map[string]struct {
+		answers map[string]any
+		chainID uint64
+		want    string
+	}{
+		"another name":                {answers("JPYC", "0x89"), 137, "calls itself"},
+		"another chain":               {answers("JPY Coin", "0x89"), 1, "chain_id"},
+		"a provider not saying which": {answers("JPY Coin", nil), 137, "which chain"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := deployed(t)
+			document(t, evmDocument(answering(t, c.answers), c.chainID, given))
+
+			_, _, err := runArgs(t, "asset", "accept", "jpyc", theAddress)
+
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Errorf("err = %v, want a refusal saying %q", err, c.want)
+			}
+			if n := rowsAccepted(t, d); n != 0 {
+				t.Errorf("accepted %d, want none", n)
+			}
+		})
+	}
+}
+
+// A contract answering no separator is one thing, and every other way of not
+// reading one is another: a revert with a reason is a function that ran, an
+// empty answer is an address with no code, and a provider's own refusal is
+// neither. None of them has the name checked instead.
+func TestRun_AssetAcceptReadsNothingElseAsTheContractAnsweringNoSeparator(t *testing.T) {
+	given := "    eip712:\n      name: JPY Coin\n      version: \"1\"\n"
+	for name, c := range map[string]struct {
+		separator any
+		want      string
+	}{
+		"a revert with a reason":     {refusal{3, "execution reverted", "0x08c379a0"}, "signs under"},
+		"an empty answer":            {"0x", "no DOMAIN_SEPARATOR()"},
+		"the provider's own refusal": {refusal{-32601, "no such method", nil}, "signs under"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := deployed(t)
+			document(t, evmDocument(answering(t, map[string]any{
+				"eth_chainId":         "0x89",
+				"eth_call 0x3644e515": c.separator,
+				"eth_call 0x06fdde03": abiString("JPY Coin"),
+				"eth_call 0x8e204c43": clear,
+			}), 137, given))
+
+			_, _, err := runArgs(t, "asset", "accept", "jpyc", theAddress)
+
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Errorf("err = %v, want a refusal saying %q", err, c.want)
+			}
+			if n := rowsAccepted(t, d); n != 0 {
+				t.Errorf("accepted %d, want none", n)
 			}
 		})
 	}

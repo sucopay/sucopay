@@ -1,8 +1,11 @@
 package evm
 
 import (
+	"errors"
 	"os"
 	"testing"
+
+	"github.com/sucopay/sucopay/internal/adapter/chain"
 )
 
 // live is an adapter on the endpoint the environment names, or no test at all.
@@ -101,5 +104,30 @@ func TestPausedAndBlocklisted_ReadJPYCOnPolygonAsNeitherPausedNorListing(t *test
 	}
 	if listed {
 		t.Error("an address nobody holds reads as blocklisted")
+	}
+}
+
+// JPYC has no DOMAIN_SEPARATOR(): the call reverts with nothing to say,
+// while name() answers. Read off both JPYC contracts on Polygon on
+// 2026-09-20, which is what holds the adapter to this: the separator is
+// absent rather than unreadable, and the name is the domain's.
+func TestDomainSeparatorAndName_ReadJPYCOnPolygonAsNamedButWithoutASeparator(t *testing.T) {
+	t.Parallel()
+	n := live(t)
+	for _, jpyc := range []string{
+		"0xE7C3D8C9a439feDe00D2600032D5dB0Be71C3c29",
+		"0x431D5dfF03120AFA4bDf332c61A6e1766eF37BDB",
+	} {
+		_, err := n.DomainSeparator(t.Context(), jpyc)
+		if !errors.Is(err, chain.ErrNoSeparator) {
+			t.Errorf("DomainSeparator of %s: %v, want ErrNoSeparator", jpyc, err)
+		}
+		name, err := n.Name(t.Context(), jpyc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if name != "JPY Coin" {
+			t.Errorf("Name of %s = %q, want JPY Coin", jpyc, name)
+		}
 	}
 }
