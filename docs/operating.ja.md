@@ -91,9 +91,9 @@ RPC プロバイダーです。`finality` と `webhooks` の語は `status` を 
 
 60 秒は、インスタンスが `network` に対して持つ 30 秒の lease の 2 倍です。
 
-読みが止まっている間は、`network` の支払いは期限切れになりません。`unreachable`、`stalled`、
-`chain-mismatch`、`no-finalized`、`finalized-changed` のどれでも同じです。期限切れを決めるのは、
-時計ではなく、読んだ位置のブロックの時刻です。規則は
+読みが止まっている `network` では、支払いは期限切れになりません。`unreachable`、`stalled`、
+`chain-mismatch`、`no-finalized`、`finalized-changed` のどれでも期限切れになりません。期限切れを
+決めるのは、時計ではなく、読んだ位置のブロックの時刻です。規則は
 [configuration.ja.md](configuration.ja.md) にあります。
 
 ### finality
@@ -302,7 +302,7 @@ update webhook_endpoints set allowed = '{10.0.5.0/24}' where id = '<endpoint id>
 ```
 
 許可は Webhook エンドポイントとアドレスに結び付き、名前には結び付きません。名前を別の内側の
-アドレスに向け直せば、前と同じく拒否します。内側に解決する URL は登録できません。加盟店が
+アドレスに向け直せば、拒否します。内側に解決する URL は登録できません。加盟店が
 外側に解決する URL で登録し、運用者が許可を書き、加盟店が `PATCH /webhook_endpoints/{id}` で
 URL を変えます。変更時の検査は許可込みです。prefix として読めない値は何も許さず、他の通知も
 止めません。

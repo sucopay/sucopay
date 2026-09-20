@@ -122,10 +122,12 @@ if ! printf 'サーバが\n' | grep -qP 'サーバ(?!ー)'; then
 fi
 forbidden='印字(?!可能)|訊|配備|宛先|経路|要求|応答|契約|配送|要り|要る|断(り|る|っ|れ)|名指|押さえ|落ち(た|る|て|れ)|控え|素の|周(?=[がをはにのとでも、。]|$)|[0-9] ?周|(サーバ|ユーザ|インタフェース|アダプタ|エクスプローラ|プロバイダ)(?!ー)|(?<![A-Za-z/._])(Payment|Refund)s?(?![A-Za-z_])|(?<!API )(?<!RPC )(?<!Webhook )(?<![A-Za-z])エンドポイント'
 # A sentence that opens with a demonstrative points at the sentence before it,
-# and a thing named by a verb and もの has no name. Both are ruled out by the
-# sentence rules in WRITING-STYLE.ja.md; the lead's このページは is the one
-# demonstrative allowed.
-unnamed='(^|。|\| )(それ(?!ぞれ)|その|これ|この(?!ページ)|そこ|あれ|あの)|(る|た|ない)もの'
+# and so does one that adds an example or a condition with がそうです, が該当します
+# or も同じです; a thing named by a verb and もの has no name. All are ruled out
+# by the sentence rules in WRITING-STYLE.ja.md; the lead's このページは is the
+# one demonstrative allowed. も同じで after で compares within its own sentence
+# (どの試行でも同じで) and is not one of these.
+unnamed='(^|。|\| )(それ(?!ぞれ)|その|これ|この(?!ページ)|そこ|あれ|あの)|(る|た|ない)もの|がそうです|が該当します|も同じです|(?<!で)も同じで[、。]'
 for doc in docs/*.ja.md README.ja.md CONTRIBUTING.ja.md ROADMAP.ja.md SECURITY.ja.md; do
   [ -f "$doc" ] || { note "$doc is not a file"; continue; }
   case " $unwritten " in *" $doc "*) continue ;; esac
@@ -133,7 +135,7 @@ for doc in docs/*.ja.md README.ja.md CONTRIBUTING.ja.md ROADMAP.ja.md SECURITY.j
     note "$doc uses a word WRITING-STYLE.ja.md rules out: $line"
   done < <(prose "$doc" | grep -nP "$forbidden")
   while IFS= read -r line; do
-    note "$doc opens a sentence with a demonstrative, or names a thing by a verb and もの: $line"
+    note "$doc points a sentence at the one before it, or names a thing by a verb and もの: $line"
   done < <(prose "$doc" | grep -nP "$unnamed")
 done
 
